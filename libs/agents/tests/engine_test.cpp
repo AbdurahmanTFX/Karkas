@@ -2,6 +2,7 @@
 
 #include "kk/agents/changes.hpp"
 #include "kk/agents/engine.hpp"
+#include "kk/code/import.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/tickets.hpp"
 #include "kk/test/support.hpp"
@@ -246,4 +247,28 @@ TEST_CASE("engine: real build — the ring wraparound bug is found by descent an
   CHECK(core::contains(after_test, "never loses or duplicates frames"));
   auto snap = rig.engine->index().snapshot();
   CHECK(snap.block("stream.ring")->status == "passing");
+}
+
+TEST_CASE("engine: approving an import writes the cards, and agents leave imported code alone") {
+  test::FixtureCopy p{"legacy"};
+  test::ScriptedModel model;
+  test::FakeTests tests;
+  agents::EngineOptions o;
+  o.providers = model.factory();
+  o.tests = &tests;
+  auto e = agents::Engine::create(p.path(), test::test_config(), o);
+  REQUIRE(e);
+  auto plan = code::plan_import(p.path());
+  REQUIRE(plan);
+  auto c = agents::ChangeStore(p.path()).create("import", "karkas import", plan->diff);
+  REQUIRE(c);
+  auto r = (*e)->approve(c->id);
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  CHECK(core::contains(*r, "C-0001 approved: 8 card(s) written"));
+  CHECK(core::contains(*r, "describe existing code"));
+  CHECK_FALSE(core::contains(*r, "karkas expand"));  // the code exists, no api/ to write
+  auto w = (*e)->run_worker("game.player", "", "make the player faster");
+  CHECK(w.status == "failed");
+  CHECK(core::contains(w.cause, "imported"));
+  CHECK(model.calls.empty());  // no model call was spent on it
 }

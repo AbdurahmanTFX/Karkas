@@ -774,7 +774,33 @@ kk::Result<std::string> Engine::approve(const std::string& what, const std::stri
     for (const auto& part : core::split_ws(c->from.value)) {
       if (core::is_record_id(part) && part[0] == 'T') m.note(part, what + " approved");
     }
-    for (const auto& id : fresh) out += fmt::format("next: karkas expand {}  (architect writes the api/)\n", id);
+    // New blocks need an api/ from the architect, except imported code (files), which
+    // already has it; groups made only of imported blocks need nothing either.
+    auto fresh_schema = core::load_schema(root_);
+    auto needs_expand = [&](const std::string& id) {
+      if (!fresh_schema) return true;
+      const auto* b = fresh_schema->find(id);
+      if (b == nullptr) return false;
+      if (b->external()) return false;
+      if (b->kind == core::BlockKind::Group) {
+        auto leaves = fresh_schema->leaves_under(id);
+        return leaves.empty() || std::any_of(leaves.begin(), leaves.end(), [](const core::Block* l) { return !l->external(); });
+      }
+      return true;
+    };
+    std::size_t imported = 0;
+    for (const auto& id : fresh) {
+      if (needs_expand(id)) {
+        out += fmt::format("next: karkas expand {}  (architect writes the api/)\n", id);
+      } else {
+        ++imported;
+      }
+    }
+    if (imported > 0 && imported == fresh.size()) {
+      out += "the blocks describe existing code (files): see them with karkas gui or karkas view\n";
+      m.reindex();
+      return out;
+    }
     for (const auto& id : touched) out += fmt::format("next: karkas expand {}  (update the api/ to the new card)\n", id);
     out += "then: karkas approve api, karkas implement <block>\n";
     m.reindex();
