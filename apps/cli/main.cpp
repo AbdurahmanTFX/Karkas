@@ -55,6 +55,7 @@ int main(int argc, char** argv) {
   using namespace kk::cli;
   CLI::App cli{"Karkas — a development environment where the project is a schema for AI agents"};
   cli.require_subcommand(0, 1);
+  cli.fallthrough();  // global options also after the subcommand: karkas mcp --project <dir>
   App app;
   cli.add_option("--project,-C", app.project_opt, "project directory (default: nearest with project.ksl)");
   cli.add_flag("-v,--verbose", app.verbose, "verbose logging to stderr");

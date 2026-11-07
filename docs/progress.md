@@ -28,3 +28,16 @@
   `karkas view` works on this repository.
 - Timing (debug build, synthetic 44 blocks / ~20k lines, no code analyzer):
   full 31 ms, unchanged 15 ms, one file changed 28 ms.
+
+## Stage 3 — MCP server (kk_mcp)
+- JSON-RPC 2.0 over stdio, one message per line: initialize (version negotiation,
+  capabilities.tools, serverInfo, instructions), notifications/*, ping, tools/list,
+  tools/call; parse/invalid-request/method/params errors.
+- Tools of 15.3: kk_overview, kk_view, kk_children, kk_neighbors, kk_dependents,
+  kk_path, kk_search, kk_history, kk_status, kk_probes, kk_drift, kk_ticket_view,
+  kk_ticket_append, kk_run_tests (only when a test pipeline is wired in).
+- Ticket store in kk_core: append-only files, lock files, path view (10.1, app. D),
+  budget folding (10.4).
+- `karkas mcp [--project <dir>]`: stdout is protocol only, logs go to stderr/.karkas/karkas.log.
+- Golden session: tests/golden/mcp/session.{in,out}.jsonl.
+- Not verified here (manual): MCP Inspector and `claude mcp add karkas -- karkas mcp --project <dir>`.
