@@ -109,6 +109,29 @@ std::string to_lower(std::string_view s) {
   return out;
 }
 
+std::string to_ident(std::string_view s) {
+  auto lower = [](char c) { return c >= 'a' && c <= 'z'; };
+  auto upper = [](char c) { return c >= 'A' && c <= 'Z'; };
+  auto digit = [](char c) { return c >= '0' && c <= '9'; };
+  std::string out;
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    char c = s[i];
+    if (upper(c)) {
+      bool after_word = i > 0 && (lower(s[i - 1]) || digit(s[i - 1]));
+      bool acronym_end = i > 0 && upper(s[i - 1]) && i + 1 < s.size() && lower(s[i + 1]);
+      if ((after_word || acronym_end) && !out.empty() && out.back() != '_') out += '_';
+      out += static_cast<char>(c - 'A' + 'a');
+    } else if (lower(c) || digit(c)) {
+      out += c;
+    } else if (!out.empty() && out.back() != '_') {
+      out += '_';
+    }
+  }
+  while (!out.empty() && out.back() == '_') out.pop_back();
+  if (!out.empty() && !lower(out[0])) out = "x" + out;
+  return out;
+}
+
 bool is_ident(std::string_view s) {
   if (s.empty() || !is_lower_alpha(s[0])) return false;
   return std::all_of(s.begin(), s.end(),

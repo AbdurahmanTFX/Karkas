@@ -3,6 +3,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <set>
@@ -58,6 +59,7 @@ struct Checker {
       for (const auto& p : b.ports) e08(b, to_string(p.dir), p.line, p.col);
       for (const auto& c : b.calls) e08(b, "call", c.line, c.col);
       for (const auto& u : b.uses) e08(b, "use", u.line, u.col);
+      for (const auto& f : b.files) e08(b, "files", f.line, f.col);
       for (const auto& st : b.states) e08(b, "state", st.line, st.col);
       for (const auto& i : b.invs) e08(b, "inv", i.line, i.col);
       for (const auto& h : b.hist) e08(b, "hist", h.line, 1);
@@ -104,6 +106,7 @@ struct Checker {
                       l.dst_block, l.thread_src, l.thread_dst),
           l.line, 1);
     }
+    files();
     call_cycles();
   }
 
@@ -143,7 +146,9 @@ struct Checker {
       const Block* t = s.find(u.target);
       if (t == nullptr) {
         add("E03", 'E', &b, fmt::format("use refers to unknown block '{}'", u.target), u.line, u.col);
-      } else if (t->kind != BlockKind::Shared) {
+      } else if (t->kind != BlockKind::Shared && !t->external()) {
+        // Imported code (files) often includes another module only for its types: such a
+        // "use" of a non-shared imported block is allowed (docs/adr/0009).
         add("E03", 'E', &b, fmt::format("use target '{}' is a {} block, not shared", u.target, t->kind_name()),
             u.line, u.col);
       }
@@ -151,6 +156,29 @@ struct Checker {
     for (const auto& st : b.states) {
       if (s.find(st.with) == nullptr) {
         add("E03", 'E', &b, fmt::format("state with= refers to unknown block '{}'", st.with), st.line, st.col);
+      }
+    }
+  }
+
+  // E09: files of imported blocks exist, are claimed once and stay outside other blocks' folders.
+  void files() {
+    std::map<std::string, const Block*> owner;
+    for (const auto& b : s.blocks) {
+      for (const auto& f : b.files) {
+        for (const auto& p : f.paths) {
+          std::error_code ec;
+          if (!s.root.empty() && !std::filesystem::is_regular_file(s.root / p, ec)) {
+            add("E09", 'E', &b, fmt::format("files: '{}' does not exist", p), f.line, f.col);
+          }
+          if (auto [it, fresh] = owner.emplace(p, &b); !fresh) {
+            add("E09", 'E', &b, fmt::format("files: '{}' already belongs to {}", p, it->second->id), f.line, f.col);
+          }
+          for (const auto& x : s.blocks) {
+            if (&x != &b && x.has_code() && !x.dir.empty() && p.starts_with(x.dir + "/")) {
+              add("E09", 'E', &b, fmt::format("files: '{}' is inside the folder of block {}", p, x.id), f.line, f.col);
+            }
+          }
+        }
       }
     }
   }

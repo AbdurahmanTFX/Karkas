@@ -101,3 +101,18 @@ TEST_CASE("config: syntax errors carry file and line") {
   auto bad = apply_config_text(cfg, "[cache]\nttl = \"2h\"\n", "k.toml");
   CHECK_FALSE(bad);
 }
+
+TEST_CASE("text: to_ident makes KSL identifiers from C++ and file names") {
+  CHECK(to_ident("ResolveCollision") == "resolve_collision");
+  CHECK(to_ident("Update") == "update");
+  CHECK(to_ident("getPosition") == "get_position");
+  CHECK(to_ident("HTTPServer") == "http_server");
+  CHECK(to_ident("ScreenToWorld") == "screen_to_world");
+  CHECK(to_ident("audio_manager") == "audio_manager");
+  CHECK(to_ident("2d-math") == "x2d_math");
+  CHECK(to_ident("glibc_compat") == "glibc_compat");
+  CHECK(to_ident("Vec2") == "vec2");
+  CHECK(to_ident("__x__") == "x");
+  CHECK(to_ident("") == "");
+  CHECK(is_ident(to_ident("Draw_UI")));
+}

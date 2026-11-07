@@ -231,3 +231,38 @@ TEST_CASE("validate: links and data-flow order of the wavkit schema") {
   for (const auto* b : s->ordered_children("dsp")) dsp.push_back(b->id);
   CHECK(dsp == std::vector<std::string>{"dsp.chain", "dsp.echo", "dsp.gain", "dsp.lowpass"});
 }
+
+TEST_CASE("validate: files of imported blocks (E09) and use of imported leaves") {
+  Proj p({{"a", std::string(kLeaf) + "files src/a.cpp src/a.hpp\nuse b\n"},
+          {"b", std::string(kLeaf) + "files src/b.cpp src/missing.hpp\n"},
+          {"c", std::string(kLeaf) + "files src/a.cpp\n"},
+          {"d", std::string(kLeaf) + "files blocks/a/x.cpp\n"}});
+  kk::test::write(p.dir / "src/a.cpp", "int a;\n");
+  kk::test::write(p.dir / "src/a.hpp", "#pragma once\n");
+  kk::test::write(p.dir / "src/b.cpp", "int b;\n");
+  kk::test::write(p.dir / "blocks/a/x.cpp", "int x;\n");
+  auto all = p.issues();
+  auto e = with_code(all, "E09");
+  REQUIRE(e.size() == 3);
+  CHECK(e[0].message == "files: 'src/missing.hpp' does not exist");
+  CHECK(e[1].message == "files: 'src/a.cpp' already belongs to a");
+  CHECK(e[2].message == "files: 'blocks/a/x.cpp' is inside the folder of block a");
+  // "use b" of an imported leaf is allowed (types-only dependency), unlike a native leaf.
+  CHECK(with_code(all, "E03").empty());
+  auto s = p.schema();
+  CHECK(s.find("a")->external());
+  CHECK(s.find("a")->file_list() == std::vector<std::string>{"src/a.cpp", "src/a.hpp"});
+  CHECK(!s.find("app")->external());
+}
+
+TEST_CASE("validate: files is not allowed in a group, paths must be project-relative") {
+  Proj p({{"g", "purpose g\nkind group\nfiles src/a.cpp\n"}, {"g.x", kLeaf}});
+  kk::test::write(p.dir / "src/a.cpp", "int a;\n");
+  auto e = with_code(p.issues(), "E08");
+  REQUIRE(e.size() == 1);
+  CHECK(e[0].message == "'files' is not allowed in a group block");
+  auto bad = parse_block_text("@block x\npurpose p\nkind leaf\nfiles ../a.cpp\n", "x.ksl");
+  REQUIRE(!bad);
+  CHECK(bad.error().code == "S04");
+  CHECK(!parse_block_text("@block x\npurpose p\nkind leaf\nfiles /abs/a.cpp\n", "x.ksl"));
+}

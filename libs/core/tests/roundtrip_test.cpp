@@ -148,3 +148,13 @@ TEST_CASE("roundtrip: free text that needs quotes") {
   CHECK(back->purpose.value == "handles issue #12");
   CHECK(back->notes[0].text == "\"quoted\" start");
 }
+
+TEST_CASE("roundtrip: files directive is canonical and stable") {
+  auto b = parse_block_text("@block game.cat\npurpose the cat\nkind leaf\nfn update(float) -> void\nfiles  src/active/cat.cpp   src/active/hpp/cat.hpp\n", "c.ksl");
+  REQUIRE(b);
+  auto text = write_block(*b);
+  CHECK(text == "@block game.cat\npurpose the cat\nkind    leaf\nfiles   src/active/cat.cpp src/active/hpp/cat.hpp\nfn      update(float) -> void\n");
+  auto again = parse_block_text(text, "c.ksl");
+  REQUIRE(again);
+  CHECK(write_block(*again) == text);
+}

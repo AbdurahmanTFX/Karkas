@@ -21,6 +21,9 @@ std::string to_lower(std::string_view s);
 bool is_ident(std::string_view s);       // [a-z][a-z0-9_]*
 bool is_block_path(std::string_view s);  // ident(.ident)*
 bool is_record_id(std::string_view s);   // T-0042 | C-0003
+// A KSL identifier made from a C++ or file name: "ResolveCollision" → "resolve_collision",
+// "HTTPServer" → "http_server", "2d-math" → "x2d_math". Empty input gives "".
+std::string to_ident(std::string_view s);
 
 // Quote a value for KSL when needed ("..." with \" and \\ escapes).
 std::string quote(std::string_view s);

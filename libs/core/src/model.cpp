@@ -147,6 +147,12 @@ bool Block::has_code() const {
 
 std::string_view Block::kind_name() const { return kind ? to_string(*kind) : "?"; }
 
+std::vector<std::string> Block::file_list() const {
+  std::vector<std::string> out;
+  for (const auto& f : files) out.insert(out.end(), f.paths.begin(), f.paths.end());
+  return out;
+}
+
 void Block::add_hist(std::string ticket, std::string text) {
   hist.push_back(HistEntry{std::move(ticket), std::move(text), {}, 0});
   std::size_t real = 0;
@@ -233,6 +239,7 @@ const std::vector<DirectiveSpec>& directive_table() {
       {"block", "kind", 1, "group|leaf|entry|shared", ""},
       {"block", "thread", 1, "<ident>", "leaf,entry,shared"},
       {"block", "est", 1, "S|M|L", "leaf,entry"},
+      {"block", "files", -1, "<path> [<path>...]", "leaf,entry,shared"},
       {"block", "in", -1, "<name> <Type> [from=<block>:<port>] [link=data|event] [via=] [sync=] [rate=]",
        "leaf,entry,shared"},
       {"block", "out", -1, "<name> <Type> [via=] [sync=] [rate=]", "leaf,entry,shared"},
@@ -524,6 +531,32 @@ Result<UseDecl> parse_use(const Record& rec, const Line& l) {
   return UseDecl{(*t)[0].text, l.trivia, l.line, l.col};
 }
 
+// Project-relative path of an existing file: no absolute paths, no "..", '/' separators.
+bool is_project_path(std::string_view p) {
+  if (p.empty() || p.front() == '/' || p.find('\\') != std::string_view::npos) return false;
+  for (const auto& part : split(p, '/', false)) {
+    if (part.empty() || part == "." || part == "..") return false;
+  }
+  return true;
+}
+
+Result<FilesDecl> parse_files(const Record& rec, const Line& l) {
+  auto t = toks(rec, l);
+  if (!t) return std::unexpected(t.error());
+  FilesDecl f;
+  f.trivia = l.trivia;
+  f.line = l.line;
+  f.col = l.col;
+  for (const auto& w : *t) {
+    if (w.kind != Token::Kind::Word || !is_project_path(w.text)) {
+      return fail("S04", fmt::format("files expects project-relative paths, got '{}'", w.text), loc_of(rec, l, w.col));
+    }
+    f.paths.push_back(w.text);
+  }
+  if (f.paths.empty()) return fail("S04", "files expects at least one path", loc_of(rec, l, l.text_col));
+  return f;
+}
+
 Result<StateDecl> parse_state(const Record& rec, const Line& l) {
   auto t = toks(rec, l);
   if (!t) return std::unexpected(t.error());
@@ -645,6 +678,8 @@ Result<Block> parse_block(const Record& rec) {
       r = push(text_item(rec, l), b.notes);
     } else if (d == "hist") {
       r = push(parse_hist(rec, l), b.hist);
+    } else if (d == "files") {
+      r = push(parse_files(rec, l), b.files);
     }
     if (!r) return std::unexpected(r.error());
   }
@@ -970,6 +1005,7 @@ std::string write_block(const Block& b) {
   emit_scalar(out, "kind", b.kind_text, false);
   emit_scalar(out, "thread", b.thread, false);
   emit_scalar(out, "est", b.est, false);
+  for (const auto& f : b.files) emit(out, f.trivia, format_line("files", join(f.paths, " ")));
   for (auto dir : {PortDir::In, PortDir::Out, PortDir::Fn}) {
     for (const auto& p : b.ports) {
       if (p.dir == dir) emit(out, p.trivia, format_port(p));

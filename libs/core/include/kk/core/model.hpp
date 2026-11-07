@@ -105,6 +105,16 @@ struct StateDecl {
   int col = 0;
 };
 
+// "files <path>..." — the block's code lives in existing files of the project, not in
+// its own api/ impl/ folders (imported projects, docs/adr/0009). Paths are relative to
+// the project root; headers are the block's api, other code files its impl.
+struct FilesDecl {
+  std::vector<std::string> paths;
+  Trivia trivia;
+  int line = 0;
+  int col = 0;
+};
+
 struct HistEntry {
   std::string ticket;  // "T-0042" or "summary" for the folded line (3.10)
   std::string text;
@@ -125,6 +135,7 @@ struct Block {
   std::vector<TextItem> invs;
   std::vector<TextItem> notes;
   std::vector<HistEntry> hist;
+  std::vector<FilesDecl> files;
   Trivia header;
   std::vector<std::string> tail;
   std::string file;
@@ -139,6 +150,9 @@ struct Block {
   [[nodiscard]] const Port* port(std::string_view name) const;
   [[nodiscard]] bool has_code() const;  // leaf, entry or shared
   [[nodiscard]] std::string_view kind_name() const;
+  // Code in existing files ("files" directive) instead of the block's own folders.
+  [[nodiscard]] bool external() const { return !files.empty(); }
+  [[nodiscard]] std::vector<std::string> file_list() const;
 
   // Appends a hist entry and folds entries beyond kMaxHistEntries (3.10).
   void add_hist(std::string ticket, std::string text);

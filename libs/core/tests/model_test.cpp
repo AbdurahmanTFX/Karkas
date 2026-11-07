@@ -282,6 +282,6 @@ TEST_CASE("model: directive table covers every card directive in canonical order
   for (const auto& d : directive_table()) {
     if (d.record == "block") names.emplace_back(d.name);
   }
-  CHECK(names == std::vector<std::string>{"purpose", "kind", "thread", "est", "in", "out", "fn", "call", "use",
+  CHECK(names == std::vector<std::string>{"purpose", "kind", "thread", "est", "files", "in", "out", "fn", "call", "use",
                                           "state", "inv", "note", "hist"});
 }
