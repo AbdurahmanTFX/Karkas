@@ -36,6 +36,7 @@ class Ui {
   void draw_toolbar(const Model& m);
   void draw_tree(const Model& m);
   void draw_graph(const Model& m);
+  void draw_empty(const Model& m);  // explains an empty level instead of a blank canvas
   void draw_all_levels(const Model& m);
   void draw_inspector(const Model& m);
   void draw_bottom(const Model& m);

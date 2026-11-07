@@ -14,13 +14,25 @@ using namespace kk::gui;
 
 TEST_CASE("every tr()/title() text in the GUI sources has a Russian translation") {
   set_lang(Lang::Ru);
-  std::regex call(R"re(\b(?:tr|title)\("((?:[^"\\]|\\.)*)"\))re");
+  // tr("...") / title("...") with one or more adjacent literals ("a" "b" → "ab").
+  std::regex call(R"re(\b(?:tr|title)\(((?:\s*"(?:[^"\\]|\\.)*")+)\s*\))re");
+  std::regex literal(R"re("((?:[^"\\]|\\.)*)")re");
+  auto unescape = [](const std::string& s) {
+    std::string out;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+      if (s[i] == '\\' && i + 1 < s.size()) ++i;
+      out += s[i];
+    }
+    return out;
+  };
   int checked = 0;
   for (const char* f : {"ui.cpp", "worker.cpp"}) {
     auto text = kk::core::read_file(std::string(KK_GUI_SRC) + "/" + f);
     REQUIRE(text);
     for (std::sregex_iterator it(text->begin(), text->end(), call), end; it != end; ++it) {
-      std::string en = (*it)[1].str();
+      std::string lits = (*it)[1].str();
+      std::string en;
+      for (std::sregex_iterator l(lits.begin(), lits.end(), literal), le; l != le; ++l) en += unescape((*l)[1].str());
       INFO(f << ": " << en);
       CHECK(std::string(tr(en.c_str())) != en);
       ++checked;

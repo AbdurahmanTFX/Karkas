@@ -110,6 +110,23 @@ const std::unordered_map<std::string_view, const char*>& ru() {
       {"Split %s", "Разделить %s"},
       {"Apply", "Применить"},
       {"Close", "Закрыть"},
+      // empty schema
+      {"No blocks on this level.", "На этом уровне нет блоков."},
+      {"Right click → Add block, or the \"Add block\" button above.",
+       "Правый щелчок → «Добавить блок…» или кнопка «Добавить блок» сверху."},
+      {"The schema has no blocks yet.", "В схеме пока нет ни одного блока."},
+      {"karkas init only creates the project frame (project.ksl, karkas.toml, .karkas/). "
+       "Blocks appear when the architect designs the project (karkas design) or when you add "
+       "them here (\"Add block\").",
+       "karkas init создаёт только каркас проекта (project.ksl, karkas.toml, .karkas/). Блоки "
+       "появляются, когда архитектор проектирует проект (karkas design) или когда вы добавляете их "
+       "здесь («Добавить блок»)."},
+      {"%zu code files of this project are outside blocks (D06):", "Файлов кода вне блоков (D06): %zu"},
+      {"... and %zu more", "... и ещё %zu"},
+      {"Cutting existing code into blocks automatically (import) is not implemented yet "
+       "(stage 11 of the spec).",
+       "Автоматическая нарезка существующего кода на блоки (импорт) пока не реализована (этап 11 "
+       "спецификации)."},
       // settings
       {"Language", "Язык"},
       {"Default block size", "Размер блоков по умолчанию"},

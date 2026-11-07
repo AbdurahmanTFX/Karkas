@@ -229,7 +229,9 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
   draw_tree(m);
   ImGui::Begin(title("Schema").c_str());
   draw_toolbar(m);
-  if (req_.all_levels) {
+  if (m.snap->blocks.empty() || (!req_.all_levels && m.graph.nodes.empty() && m.req.scope == req_.scope)) {
+    draw_empty(m);
+  } else if (req_.all_levels) {
     draw_all_levels(m);
   } else {
     draw_graph(m);
@@ -698,6 +700,42 @@ void Ui::draw_graph(const Model& m) {
     w_.save_positions(view, {});
   }
   if (!go_into.empty()) enter(go_into);
+}
+
+// --- empty level -------------------------------------------------------------------------------
+
+void Ui::draw_empty(const Model& m) {
+  std::vector<std::string> orphans;
+  for (const auto& d : m.snap->drift) {
+    if (d.code == "D06" && d.block.empty()) orphans.push_back(d.file);
+  }
+  ImVec2 avail = ImGui::GetContentRegionAvail();
+  float width = std::min(avail.x - 40.0f, 640.0f);
+  ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + (avail.x - width) / 2, ImGui::GetCursorPosY() + avail.y * 0.15f));
+  ImGui::BeginGroup();
+  ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
+  if (!m.snap->blocks.empty()) {
+    ImGui::TextUnformatted(tr("No blocks on this level."));
+    ImGui::TextDisabled("%s", tr("Right click → Add block, or the \"Add block\" button above."));
+  } else {
+    ImGui::TextUnformatted(tr("The schema has no blocks yet."));
+    ImGui::Spacing();
+    ImGui::TextWrapped("%s", tr("karkas init only creates the project frame (project.ksl, karkas.toml, .karkas/). "
+                                "Blocks appear when the architect designs the project (karkas design) or when you add "
+                                "them here (\"Add block\")."));
+    if (!orphans.empty()) {
+      ImGui::Spacing();
+      ImGui::TextColored(rgb(230, 180, 60), tr("%zu code files of this project are outside blocks (D06):"), orphans.size());
+      std::size_t shown = std::min<std::size_t>(orphans.size(), 8);
+      for (std::size_t i = 0; i < shown; ++i) ImGui::BulletText("%s", orphans[i].c_str());
+      if (orphans.size() > shown) ImGui::TextDisabled(tr("... and %zu more"), orphans.size() - shown);
+      ImGui::Spacing();
+      ImGui::TextWrapped("%s", tr("Cutting existing code into blocks automatically (import) is not implemented yet "
+                                  "(stage 11 of the spec)."));
+    }
+  }
+  ImGui::PopTextWrapPos();
+  ImGui::EndGroup();
 }
 
 // --- all levels (nested boxes) ----------------------------------------------------------------
