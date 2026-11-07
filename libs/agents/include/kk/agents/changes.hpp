@@ -33,7 +33,8 @@ struct ApplyResult {
   std::vector<std::string> files;
   std::vector<core::Issue> issues;
 };
-kk::Result<ApplyResult> apply_diff(const std::filesystem::path& root, const std::vector<core::DiffLine>& diff);
+kk::Result<ApplyResult> apply_diff(const std::filesystem::path& root, const std::vector<core::DiffLine>& diff,
+                                   const std::vector<std::string>& tolerate = {});
 
 // A unified-diff-like text of the card changes, for showing before confirmation (14.6).
 std::string preview_diff(const std::filesystem::path& root, const std::vector<core::DiffLine>& diff);

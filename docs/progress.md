@@ -110,3 +110,29 @@
   from failing to passing). The orchestrator and navigators never receive code (checked on
   the recorded requests).
 - Not verified here: "idea → working wavkit" with real models (needs an API key and money).
+
+## Stages 8–9 — GUI (kk_layout, karkas-gui)
+- kk_layout: ILayoutEngine with a built-in Sugiyama engine (cycle removal, longest-path
+  ranks, dummy nodes, barycentric crossing reduction, coordinates without overlaps;
+  rankdir LR) and a Graphviz dot engine compiled when libgvc/libcgraph are found
+  (not built here: Graphviz is not installed, docs/adr/0002). Layout cache by structure
+  hash (.karkas/cache/layout), manual positions in .karkas/layout/<view>.json win.
+  "All levels" lays groups out as boxes around their children.
+- karkas-gui: Dear ImGui docking + GLFW + OpenGL 3.3 + imgui-node-editor +
+  ImGuiColorTextEdit. Left: block tree with status dots; center: schema of the current
+  level (pins = ports, lifted links, colors of 14.5, pulsing yellow while an agent runs,
+  orange border = needs_review), breadcrumbs, double click group → enter, leaf → code;
+  right: inspector (card, ports, invariants, history, files, model view) and read-only
+  code view; bottom tabs: tickets (trail), agents (active and recent runs), build & tests,
+  costs (by block/model/ticket, cache-read share), drift, changes (approve/reject).
+- Editing (stage 9): add/remove block and port, drag a link (out → in writes
+  "in ... from=", fn → "call"), delete a link, rename (folder moves, references follow),
+  split, merge; every edit is shown as a KSL diff first, applied only if the schema checks
+  pass, and can be undone (kk_agents edit ops, tested in libs/agents/tests/edit_test.cpp).
+  Manual node moves are saved; "open in editor" runs editor_command detached.
+- Threads: the index, layouts, file reads and edits run in a worker thread; the GUI thread
+  only reads finished models. Live updates through inotify. Cyrillic font with glyph
+  ranges, HiDPI content scale.
+- Measured under Xvfb (debug build, software GL): a 44-block / ~20k-line project opens in
+  ≈0.35 s with an existing index and ≈0.95 s from scratch; idle CPU 0% over 10 s.
+  Screenshot: docs/screenshots/stream_level.png.

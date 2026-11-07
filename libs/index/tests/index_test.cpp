@@ -231,3 +231,31 @@ TEST_CASE("index: schema errors are stored in the drift table and mark blocks") 
   CHECK(snap.block("dsp")->status == "drift");
   CHECK(core::contains(idx->drift("dsp"), "drift E E03 dsp.chain blocks/dsp/chain/block.ksl:10 block 'dsp.echo' has no port 'missing'"));
 }
+
+#include <condition_variable>
+#include <mutex>
+
+#include "kk/index/watch.hpp"
+
+TEST_CASE("watch: inotify reports card and ticket changes after a debounce (GUI live updates)") {
+  test::FixtureCopy p("wavkit");
+  std::mutex mu;
+  std::condition_variable cv;
+  int events = 0;
+  index::Watcher w;
+  REQUIRE(w.start(p.path(), [&] {
+    std::lock_guard lk(mu);
+    ++events;
+    cv.notify_all();
+  }, std::chrono::milliseconds(50)));
+  auto wait_event = [&](int n) {
+    std::unique_lock lk(mu);
+    return cv.wait_for(lk, std::chrono::seconds(5), [&] { return events >= n; });
+  };
+  test::write(p / "blocks/dsp/gain/block.ksl", test::read(p / "blocks/dsp/gain/block.ksl") + "note    edited\n");
+  CHECK(wait_event(1));
+  test::write(p / ".karkas/tickets/T-0001.ksl", "@ticket T-0001\nkind    bug\n");  // new folder inside the tree
+  CHECK(wait_event(2));
+  w.stop();
+  CHECK_FALSE(w.running());
+}

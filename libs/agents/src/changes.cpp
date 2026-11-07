@@ -177,7 +177,8 @@ kk::Result<std::map<std::string, std::string>> compute(const fs::path& root, con
 
 }  // namespace
 
-kk::Result<ApplyResult> apply_diff(const fs::path& root, const std::vector<core::DiffLine>& diff) {
+kk::Result<ApplyResult> apply_diff(const fs::path& root, const std::vector<core::DiffLine>& diff,
+                                   const std::vector<std::string>& tolerate) {
   auto schema = core::load_schema(root);
   if (!schema) return std::unexpected(schema.error());
   auto cards = compute(root, diff, *schema);
@@ -204,7 +205,8 @@ kk::Result<ApplyResult> apply_diff(const fs::path& root, const std::vector<core:
   ApplyResult out;
   for (const auto& i : core::validate(next)) {
     bool touched = cards->contains(i.block) || i.block.empty();
-    if (i.severity == 'E' && touched) out.issues.push_back(i);
+    bool tolerated = std::find(tolerate.begin(), tolerate.end(), i.code) != tolerate.end();
+    if (i.severity == 'E' && touched && !tolerated) out.issues.push_back(i);
   }
   for (const auto& [id, text] : *cards) {
     if (!text.empty() && core::parent_id(id) != "" && next.find(core::parent_id(id)) == nullptr) {
