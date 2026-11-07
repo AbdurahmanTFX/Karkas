@@ -54,6 +54,8 @@ VoidResult apply_config_text(Config& cfg, std::string_view text, std::string_vie
       if (auto v = (*m)["provider"].value<std::string>()) tier.provider = *v;
       if (auto v = (*m)["model"].value<std::string>()) tier.model = *v;
       if (auto v = (*m)["base_url"].value<std::string>()) tier.base_url = *v;
+      if (auto v = (*m)["effort"].value<std::string>()) tier.effort = *v;
+      if (auto v = (*m)["fallbacks"].value<std::string>()) tier.fallbacks = *v;
     }
   }
   if (const auto* roles = t.get_as<toml::table>("roles")) {
@@ -93,6 +95,9 @@ VoidResult apply_config_text(Config& cfg, std::string_view text, std::string_vie
         Price& price = cfg.prices[key];
         if (auto v = (*p)["input"].value<double>()) price.input = *v;
         if (auto v = (*p)["output"].value<double>()) price.output = *v;
+        if (auto v = (*p)["cache_read"].value<double>()) price.cache_read = *v;
+        if (auto v = (*p)["cache_write_5m"].value<double>()) price.cache_write_5m = *v;
+        if (auto v = (*p)["cache_write_1h"].value<double>()) price.cache_write_1h = *v;
       } else if (auto v = node.value<double>()) {
         if (key == "cache_write_5m") cfg.cache_write_5m = *v;
         if (key == "cache_write_1h") cfg.cache_write_1h = *v;

@@ -15,11 +15,18 @@ struct ModelTier {
   std::string provider = "anthropic";  // anthropic | openai_compat
   std::string model;
   std::string base_url;  // openai_compat; anthropic default https://api.anthropic.com
+  std::string effort;    // output_config.effort ("" = model default)
+  std::string fallbacks = "auto";  // "default" | "off" | "auto" (on where the model supports it)
 };
 
 struct Price {
   double input = 0.0;   // USD per 1M tokens
   double output = 0.0;  // USD per 1M tokens
+  // Optional absolute overrides (USD per 1M tokens) when a model's cache prices are
+  // not the standard multiples of the input price (e.g. cache reads at 0.05x).
+  double cache_read = -1.0;
+  double cache_write_5m = -1.0;
+  double cache_write_1h = -1.0;
 };
 
 struct Config {

@@ -1,0 +1,2 @@
+{"url":"https://api.anthropic.com/v1/messages","status":429,"headers":{"retry-after":"2"},"body":{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}}
+{"url":"https://api.anthropic.com/v1/messages","status":200,"headers":{},"body":{"id":"msg_03","type":"message","model":"m","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}}

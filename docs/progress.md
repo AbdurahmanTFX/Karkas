@@ -41,3 +41,20 @@
 - `karkas mcp [--project <dir>]`: stdout is protocol only, logs go to stderr/.karkas/karkas.log.
 - Golden session: tests/golden/mcp/session.{in,out}.jsonl.
 - Not verified here (manual): MCP Inspector and `claude mcp add karkas -- karkas mcp --project <dir>`.
+
+## Stage 4 — model clients and accounting (kk_llm, kk_metrics)
+- Anthropic Messages API client: tools/system/messages, cache_control markers
+  (max 4, ttl 5m/1h), output_config.effort, optional server-side refusal fallback,
+  usage incl. cache_creation/cache_read, verbatim replay of assistant blocks
+  (thinking signatures), retries on 429/5xx/529 and transport errors with
+  exponential backoff honouring retry-after (≤ 5 attempts), no retry on 400,
+  count_tokens endpoint. API version header 2026-10-21 (docs/adr/0005).
+- OpenAI-compatible client (POST {base_url}/chat/completions, function calling).
+- Record/replay at HTTP level (RecordingTransport never stores keys; ReplayTransport,
+  optional strict request matching); KARKAS_LLM_RECORD / KARKAS_LLM_REPLAY.
+- kk_metrics: run journals .karkas/runs/*.jsonl with an active marker, cost formula of
+  16.2 with per-model cache price overrides, unpriced cloud model = error, local = 0,
+  `karkas cost [--by] [--since]`, `karkas llm ping|tokens`.
+- Replay tests: plain answer, tool use, 429 (retry-after), 500/529/transport error, 400,
+  persistent 529, request shape. Not run here: the live smoke call (`karkas llm ping`)
+  and the cache_read growth check — they need ANTHROPIC_API_KEY and spend money.

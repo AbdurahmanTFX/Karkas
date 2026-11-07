@@ -20,7 +20,6 @@ if(KARKAS_GUI)
   target_include_directories(kk_imgui SYSTEM PUBLIC "${_imgui}" "${_imgui}/backends" "${_imgui}/misc/cpp")
   target_link_libraries(kk_imgui PUBLIC glfw OpenGL::GL)
   target_compile_options(kk_imgui PRIVATE -w)
-  target_precompile_headers(kk_imgui PRIVATE "${_imgui}/imgui.h")
 
   set(_ned "${imgui_node_editor_SOURCE_DIR}")
   add_library(kk_imgui_node_editor STATIC

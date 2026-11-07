@@ -1,0 +1,4 @@
+{"url":"https://api.anthropic.com/v1/messages","status":500,"headers":{},"body":{"type":"error","error":{"type":"api_error","message":"internal"}}}
+{"url":"https://api.anthropic.com/v1/messages","status":529,"headers":{},"body":{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}}
+{"url":"https://api.anthropic.com/v1/messages","error":"request failed: Timeout was reached"}
+{"url":"https://api.anthropic.com/v1/messages","status":200,"headers":{},"body":{"id":"msg_04","type":"message","model":"m","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}}
