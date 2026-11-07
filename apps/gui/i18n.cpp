@@ -110,6 +110,7 @@ const std::unordered_map<std::string_view, const char*>& ru() {
       {"Split %s", "Разделить %s"},
       {"Apply", "Применить"},
       {"Close", "Закрыть"},
+      {"{} → {}: {} {} links", "{} → {}: связей {}: {}"},
       // empty schema
       {"No blocks on this level.", "На этом уровне нет блоков."},
       {"Right click → Add block, or the \"Add block\" button above.",

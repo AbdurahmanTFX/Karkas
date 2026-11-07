@@ -1,0 +1,77 @@
+2 groups, 6 blocks with code (entry 1, shared 1), 11 links, 10 files
+
+game                               group  src/game: inventory, player, world, main
+  game.inventory                   shared fn 0  call 0  use 0  src/game/hpp/inventory.hpp
+  game.main                        entry  fn 0  call 6  use 0  src/game/main.cpp
+  game.player                      leaf   fn 3  call 1  use 2  src/game/hpp/player.hpp src/game/player.cpp
+  game.world                       leaf   fn 3  call 1  use 0  src/game/hpp/world.hpp src/game/world.cpp
+util                               group  src/util: camera, math
+  util.camera                      leaf   fn 3  call 1  use 0  src/util/camera.cpp src/util/hpp/camera.hpp
+  util.math                        leaf   fn 1  call 0  use 0  src/util/math.c src/util/math.h
+
+skipped folders: third_party
+
++ @block game
++ purpose src/game: inventory, player, world, main
++ kind    group
++ @block game.inventory
++ purpose Items the player carries
++ kind    shared
++ thread  main
++ files   src/game/hpp/inventory.hpp
++ note    types: Item, Inventory
++ @block game.main
++ purpose entry point: main() in src/game/main.cpp
++ kind    entry
++ thread  main
++ files   src/game/main.cpp
++ call    game.player:bag
++ call    game.player:position
++ call    game.player:update
++ call    game.world:draw
++ call    game.world:update
++ call    util.camera:follow
++ note    purpose was not found in comments: describe the block
++ @block game.player
++ purpose The player: walks on walkable tiles and carries an inventory
++ kind    leaf
++ thread  main
++ files   src/game/hpp/player.hpp src/game/player.cpp
++ fn      update(float, World)
++ fn      position() -> Vec2
++ fn      bag() -> Inventory
++ call    game.world:is_walkable
++ use     game.inventory
++ use     util.math
++ note    types: Player
++ @block game.world
++ purpose World (src/game/hpp/world.hpp)
++ kind    leaf
++ thread  main
++ files   src/game/hpp/world.hpp src/game/world.cpp
++ fn      update(float)
++ fn      is_walkable(Vec2) -> bool
++ fn      draw()
++ call    util.math:clampf
++ note    types: World
++ note    purpose was not found in comments: describe the block
++ @block util
++ purpose src/util: camera, math
++ kind    group
++ @block util.camera
++ purpose Camera wrapper: smooth follow and world bounds
++ kind    leaf
++ thread  main
++ files   src/util/camera.cpp src/util/hpp/camera.hpp
++ fn      follow(Vec2, float)
++ fn      screen_to_world(Vec2) -> Vec2
++ fn      zoom() -> float
++ call    util.math:clampf
++ note    types: GameCamera
++ @block util.math
++ purpose Small math helpers shared by the game
++ kind    leaf
++ thread  main
++ files   src/util/math.c src/util/math.h
++ fn      clampf(float, float, float) -> float
++ note    types: Vec2

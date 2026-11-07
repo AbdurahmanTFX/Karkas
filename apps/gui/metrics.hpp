@@ -14,7 +14,9 @@ inline std::pair<double, double> base_block_size(const std::string& id, const st
                                                  int ins, int outs, double char_w, double line_h) {
   std::size_t chars = std::max<std::size_t>({id.size() + 4, std::min<std::size_t>(purpose.size(), 34), 18});
   double w = static_cast<double>(chars) * char_w + 28;
-  int pin_rows = kind == "group" ? 1 : std::max(ins + 1, outs);
+  // At most 10 rows of pins by default: blocks of imported code may have dozens of
+  // functions; the rest fold into "+N" until the block is made bigger.
+  int pin_rows = kind == "group" ? 1 : std::min(std::max(ins + 1, outs), 10);
   double h = (2.0 + pin_rows) * line_h + 14;
   return {w, h};
 }

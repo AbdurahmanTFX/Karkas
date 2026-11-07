@@ -20,6 +20,7 @@ struct SymbolFact {
   std::string scope;      // enclosing class or namespace
   bool pure_virtual = false;
   std::string signature;  // functions/methods: return type + name + params (for mocks)
+  std::string access;     // inside a class: public | protected | private; "" outside classes
 };
 
 struct RefFact {

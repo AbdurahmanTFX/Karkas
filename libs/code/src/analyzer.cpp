@@ -144,13 +144,15 @@ struct Walker {
   std::string_view src;
   bool api = false;
   index::FileFacts facts;
-  std::vector<std::string> ns;  // namespace / class scope stack
+  std::vector<std::string> ns;      // namespace / class scope stack
+  std::vector<std::string> access;  // per scope: "" for namespaces, current access in classes
 
   std::string scope() const { return core::join(ns, "::"); }
 
   void add(std::string name, std::string kind, int line, int params = -1, bool pure = false, std::string sig = {}) {
     if (name.empty()) return;
-    facts.symbols.push_back(index::SymbolFact{std::move(name), std::move(kind), line, api, params, scope(), pure, std::move(sig)});
+    facts.symbols.push_back(index::SymbolFact{std::move(name), std::move(kind), line, api, params, scope(), pure, std::move(sig),
+                                              access.empty() ? std::string() : access.back()});
   }
 
   void function_like(TSNode decl, TSNode fn, bool in_class, bool definition) {
@@ -213,8 +215,10 @@ struct Walker {
     if (t == "namespace_definition") {
       TSNode name = field(n, "name");
       ns.push_back(ts_node_is_null(name) ? std::string() : text_of(name, src));
+      access.emplace_back();
       TSNode body = field(n, "body");
       if (!ts_node_is_null(body)) each_named(body, [&](TSNode c) { walk(c, false); });
+      access.pop_back();
       ns.pop_back();
       return;
     }
@@ -225,9 +229,15 @@ struct Walker {
         std::string nm = declarator_name(name, src);
         add(nm, t == "class_specifier" ? "class" : "struct", line_of(n));
         ns.push_back(nm);
+        access.emplace_back(t == "class_specifier" ? "private" : "public");
         each_named(body, [&](TSNode c) { walk(c, true); });
+        access.pop_back();
         ns.pop_back();
       }
+      return;
+    }
+    if (t == "access_specifier") {
+      if (!access.empty()) access.back() = std::string(core::trim(text_of(n, src)));
       return;
     }
     if (t == "enum_specifier") {
@@ -342,6 +352,16 @@ Signature decode_signature(std::string_view json_text) {
   return s;
 }
 
+const std::set<std::string>& common_call_names() {
+  static const std::set<std::string> names = {
+      "size", "push_back", "emplace_back", "begin", "end", "get", "set", "run", "process", "open", "close", "read",
+      "write", "start", "stop", "init", "reset", "clear", "data", "value", "push", "pop", "find", "insert", "erase",
+      "empty", "front", "back", "load", "store", "count", "make", "create", "update", "apply", "main", "CHECK",
+      "REQUIRE", "log", "error", "ok", "has_value", "fill", "capacity", "min", "max", "abs", "move", "swap",
+      "is_null", "str", "text", "name", "path", "type", "id", "parse", "dump", "load", "save", "list", "add"};
+  return names;
+}
+
 std::vector<std::string> allowed_api_blocks(const core::Schema& schema, std::string_view block) {
   std::set<std::string> out;
   const auto* b = schema.find(block);
@@ -396,7 +416,7 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
   struct Target {
     std::string block, role, path;
   };
-  auto resolve = [&](const index::CodeFile& from, const std::string& inc) -> std::vector<Target> {
+  auto resolve = [&](const index::CodeFile& from, const std::string& inc, bool system) -> std::vector<Target> {
     std::vector<Target> cands;
     auto rel = (fs::path(from.path).parent_path() / inc).lexically_normal().generic_string();
     if (known.contains(rel)) {
@@ -413,7 +433,7 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
     }
     // Imported code: include paths come from the project's own build; match a unique
     // file of an imported block by its path suffix.
-    if (cands.empty()) {
+    if (cands.empty() && !system) {
       const index::CodeFile* hit = nullptr;
       int n = 0;
       for (const auto& f : facts.files) {
@@ -448,12 +468,7 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
   }
 
   // D01 / D02 + resolved include refs; D09 call heuristics.
-  static const std::set<std::string> kCommon = {
-      "size", "push_back", "emplace_back", "begin", "end", "get", "set", "run", "process", "open", "close", "read",
-      "write", "start", "stop", "init", "reset", "clear", "data", "value", "push", "pop", "find", "insert", "erase",
-      "empty", "front", "back", "load", "store", "count", "make", "create", "update", "apply", "main", "CHECK",
-      "REQUIRE", "log", "error", "ok", "has_value", "fill", "capacity", "min", "max", "abs", "move", "swap",
-      "is_null", "str", "text", "name", "path", "type", "id", "parse", "dump", "load", "save", "list", "add"};
+  const auto& kCommon = common_call_names();
   for (const auto& f : facts.files) {
     auto it = facts.facts.find(f.path);
     if (it == facts.facts.end() || f.block.empty()) continue;
@@ -461,7 +476,7 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
     bool entry = owner != nullptr && owner->kind == core::BlockKind::Entry;
     for (const auto& r : it->second.refs) {
       if (r.kind == "include") {
-        auto cands = resolve(f, r.target);
+        auto cands = resolve(f, r.target, r.system);
         if (cands.empty()) continue;
         // Prefer the own block, then allowed blocks.
         std::stable_sort(cands.begin(), cands.end(), [&](const Target& a, const Target& b) {

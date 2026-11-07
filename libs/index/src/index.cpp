@@ -80,7 +80,7 @@ json facts_to_json(const FileFacts& f) {
   json syms = json::array();
   for (const auto& s : f.symbols) {
     syms.push_back(json{{"n", s.name}, {"k", s.kind}, {"l", s.line}, {"e", s.exported}, {"p", s.params},
-                        {"s", s.scope}, {"v", s.pure_virtual}, {"g", s.signature}});
+                        {"s", s.scope}, {"v", s.pure_virtual}, {"g", s.signature}, {"a", s.access}});
   }
   json refs = json::array();
   for (const auto& r : f.refs) {
@@ -93,7 +93,8 @@ FileFacts facts_from_json(const json& j) {
   FileFacts f;
   for (const auto& s : j.value("symbols", json::array())) {
     f.symbols.push_back(SymbolFact{s.value("n", ""), s.value("k", ""), s.value("l", 0), s.value("e", false),
-                                   s.value("p", -1), s.value("s", ""), s.value("v", false), s.value("g", "")});
+                                   s.value("p", -1), s.value("s", ""), s.value("v", false), s.value("g", ""),
+                                   s.value("a", "")});
   }
   for (const auto& r : j.value("refs", json::array())) {
     f.refs.push_back(RefFact{r.value("l", 0), r.value("k", ""), r.value("t", ""), r.value("y", false)});

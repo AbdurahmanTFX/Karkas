@@ -1,5 +1,7 @@
 #pragma once
 // C++ code analysis with tree-sitter (8.1) and the deterministic drift checks D01–D09 (8.2).
+#include <set>
+#include <string>
 #include <string_view>
 
 #include "kk/index/analyzer.hpp"
@@ -24,6 +26,9 @@ struct Signature {
   bool is_noexcept = false;
 };
 Signature decode_signature(std::string_view json_text);
+
+// Call names too common to attribute to one block (D09 skips them; so does import).
+const std::set<std::string>& common_call_names();
 
 // Names of blocks whose api/ the block may include (links of the schema, 5.5/8.2).
 std::vector<std::string> allowed_api_blocks(const core::Schema& schema, std::string_view block);

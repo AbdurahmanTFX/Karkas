@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <tuple>
 
 #include "i18n.hpp"
 #include "metrics.hpp"
@@ -537,6 +538,14 @@ void Ui::draw_graph(const Model& m) {
     return hid(pin_key(block, "", side));
   };
   std::map<std::uintptr_t, const index::LinkRow*> link_of;
+  // call/use/state links between the same two blocks are drawn as one line (thicker with
+  // more links); the hover tooltip names them. data/event links stay port to port.
+  struct Bundle {
+    std::uintptr_t from = 0, to = 0;
+    std::string kind, a, b;
+    std::vector<const index::LinkRow*> links;
+  };
+  std::map<std::tuple<std::string, std::string, std::string>, Bundle> bundles;
   for (const auto& l : snap.links) {
     if (l.kind == "use" && !req_.show_use) continue;
     auto a = child_of(scope, l.src_block);
@@ -562,11 +571,37 @@ void Ui::draw_graph(const Model& m) {
         from = endpoint(b, "", "calls");
       }
       to = leaf_a ? endpoint(a, "", "calls") : hid(pin_key(a, "", "in"));
+      auto& bundle = bundles[{a, b, l.kind}];
+      if (bundle.links.empty()) bundle = Bundle{from, to, l.kind, a, b, {}};
+      bundle.links.push_back(&l);
+      continue;
     }
     auto lid = hid(fmt::format("link:{}", l.id));
     link_of[lid] = &l;
-    float thick = l.kind == "use" ? 1.0f : (l.kind == "state" ? 3.0f : 2.0f);
-    ed::Link(lid, from, to, link_color(l.kind), thick);
+    ed::Link(lid, from, to, link_color(l.kind), 2.0f);
+  }
+  std::map<std::uintptr_t, std::string> bundle_text;
+  for (const auto& [key, bd] : bundles) {
+    auto n = bd.links.size();
+    auto lid = n == 1 ? hid(fmt::format("link:{}", bd.links[0]->id)) : hid(fmt::format("bundle:{}>{}:{}", bd.a, bd.b, bd.kind));
+    float base = bd.kind == "use" ? 1.0f : (bd.kind == "state" ? 3.0f : 2.0f);
+    float thick = base + std::min(3.0f, std::log2(static_cast<float>(n)));
+    if (n == 1) {
+      link_of[lid] = bd.links[0];  // a single link can be deleted on the picture
+    } else {
+      std::vector<std::string> names;
+      for (const auto* l : bd.links) {
+        if (names.size() == 12) {
+          names.emplace_back("…");
+          break;
+        }
+        names.push_back(l->dst_port.empty() ? l->dst_block : l->dst_port);
+      }
+      bundle_text[lid] = fmt::format(fmt::runtime(tr("{} → {}: {} {} links")), core::last_segment(bd.a),
+                                     core::last_segment(bd.b), n, bd.kind) +
+                         "\n" + core::join(names, ", ");
+    }
+    ed::Link(lid, bd.from, bd.to, link_color(bd.kind), thick);
   }
 
   // Draw a link from an out port or fn to a consumer (14.6).
@@ -634,6 +669,7 @@ void Ui::draw_graph(const Model& m) {
     if (req_.selected != id && !ImGui::IsMouseDragging(0)) select(id);
   }
   ed::Suspend();
+  if (auto hl = ed::GetHoveredLink(); hl && bundle_text.contains(hl.Get())) ImGui::SetTooltip("%s", bundle_text[hl.Get()].c_str());
   ed::NodeId ctx;
   if (ed::ShowNodeContextMenu(&ctx) && node_of.contains(ctx.Get())) {
     target_ = node_of[ctx.Get()];

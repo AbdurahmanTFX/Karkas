@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "kk/agents/changes.hpp"
+#include "kk/code/import.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/validate.hpp"
 #include "kk/test/support.hpp"
@@ -58,4 +59,26 @@ TEST_CASE("changes: removals, errors and schema checks before writing") {
   CHECK_FALSE(bad->issues.empty());
   CHECK(bad->issues[0].code == "E03");
   CHECK(test::read(p / "blocks/dsp/chain/block.ksl") == before);
+}
+
+TEST_CASE("changes: karkas import goes through a change and applies cleanly") {
+  test::FixtureCopy p("legacy");
+  auto plan = code::plan_import(p.path());
+  REQUIRE(plan);
+  agents::ChangeStore store(p.path());
+  auto c = store.create("import", "karkas import", plan->diff);
+  REQUIRE(c);
+  auto loaded = store.load(c->id);  // the change file parses back (files lines included)
+  REQUIRE(loaded);
+  CHECK(loaded->diff.size() == plan->diff.size());
+  CHECK(core::contains(agents::preview_diff(p.path(), loaded->diff), "+files   src/game/hpp/player.hpp src/game/player.cpp"));
+  auto r = agents::apply_diff(p.path(), loaded->diff);
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  for (const auto& i : r->issues) MESSAGE(i.str());
+  CHECK(r->issues.empty());
+  CHECK(r->files.size() == 8);
+  auto s = core::load_schema(p.path());
+  REQUIRE(s);
+  CHECK(s->find("game.player")->external());
+  CHECK(test::read(p / "src/game/player.cpp").find("Player::Update") != std::string::npos);  // code untouched
 }
