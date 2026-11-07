@@ -81,16 +81,32 @@
   a leaf without a link fails to compile when including another leaf's api.
 - Karkas checks itself: 0 errors (warnings: orphan support files, heuristic D09).
 
-## Stages 6–7 — agents (kk_agents) — IN PROGRESS
-- Done: role prompts (templates/prompts, appendix B + KSL reference), agent loop (9.4:
-  cache-friendly prefix order, moving cache marker, step/token/timeout limits, journal,
-  costs), leaf sandbox (9.5: '..', absolute paths, symlinks outward, api/ writes, unlinked
-  api/ and other impl/ refused; the tester never reads impl/), tool sets of all roles
-  (9.3), router (11.2) with self-tuning (11.4), test service (gen cmake + build + ctest +
-  recording), regression plan (12.4), @change store with diff apply/preview (10.7),
-  Engine (design/expand/approve/implement/task/debug/run_ticket/ask with escalation 11.3).
-- Tests: sandbox, loop, changes (13 cases, scripted model responses, no network).
-- Not done yet: Engine tests (descent, escalation, not_here, contract change, ask,
-  design flow, real-build ring bug fix), CLI commands design/expand/approve/implement/
-  test/task/debug/ticket, stage 8–9 GUI (kk_layout + karkas-gui), stage 10 bench
-  harness, ADR files.
+## Stages 6–7 — agents, tickets, routing (kk_agents)
+- Role prompts in templates/prompts (appendix B + a KSL reference), overridable per
+  project in .karkas/prompts/<role>.txt.
+- Agent loop (9.4): tools → system (cache marker) → stable context (marker) → task;
+  the marker moves to the newest tool results; limits: steps, tokens, timeout; one nudge
+  when the model answers in prose; refusal handling; journal per run, runs table.
+- Sandbox (9.5): '..', absolute paths, symlinks pointing outside, writes to api/ (with the
+  needs_contract_change hint), unlinked api/ and other blocks' impl/ are refused; the
+  tester never reads impl/; build/test run through kk_runner with a cleaned environment.
+- Tools of all roles (9.3), router (11.2) with self-tuning (11.4), escalation (11.3):
+  two failed attempts → next tier, budget/steps exhausted → next tier, strongest tier
+  failed → ticket escalated; "fixed" with failing tests counts as failed.
+- Tickets: descent root → navigators → leaf with path views (10.1), not_here (twice on a
+  level → one level up, stronger navigator), needs_contract_change → pending @change,
+  ask() (10.5), regression after a fix (12.4), hist line written by the program (3.10),
+  result section with cost.
+- 13.1: design (stop) → approve L0 → expand --all → approve api (freeze + gen probe, skel,
+  mocks, cmake) → implement (testers, workers in parallel, composition root by a medium
+  worker, integration testers for groups, final test run). @change approval applies the
+  diff, unfreezes changed contracts and marks dependents needs_review.
+- CLI: design, expand, approve, implement, test, task, debug, ask, ticket list|show|run,
+  change list|show|reject.
+- Tests (scripted model responses, no network): sandbox escapes one by one, loop limits,
+  descent with trail lines as in 10.2, escalation cheap→medium→strong→human, not_here,
+  contract change + approval, ask, tester without impl/, design flow, and a real build
+  where the injected ring wraparound bug is found by descent and fixed (contract tests go
+  from failing to passing). The orchestrator and navigators never receive code (checked on
+  the recorded requests).
+- Not verified here: "idea → working wavkit" with real models (needs an API key and money).
