@@ -5,4 +5,5 @@ thread  any
 est     M
 fn      layout(Graph) -> Result<Positions>
 call    libs.index:overview
+use     libs.core
 inv     the same graph always gets the same positions

@@ -87,41 +87,44 @@ TEST_CASE("index: tables follow the DDL of 7.1") {
 
 TEST_CASE("index: statuses from approvals, files and test results") {
   test::FixtureCopy p("wavkit");
-  test::write(p / "blocks/dsp/gain/api/gain.hpp", "#pragma once\nstruct IGain { virtual ~IGain() = default; };\n");
+  test::write(p / "blocks/dsp/reverb/block.ksl",
+              "@block dsp.reverb\npurpose apply Schroeder reverb to frames\nkind    leaf\nthread  main\n"
+              "fn      process(Frame[]) -> void\nuse     shared.types\ninv     zero mix leaves samples unchanged\n");
+  test::write(p / "blocks/dsp/reverb/api/reverb.hpp", "#pragma once\nstruct IReverb { virtual ~IReverb() = default; };\n");
   auto idx = open_index(p.path());
   update(*idx);
   auto status = [&](std::string_view id) { return idx->snapshot().block(id)->status; };
-  CHECK(status("dsp.gain") == "design");
+  CHECK(status("dsp.reverb") == "design");
 
   auto schema = core::load_schema(p.path());
   REQUIRE(schema);
   auto files = index::collect_code_files(*schema);
   index::StateStore store(p.path());
-  REQUIRE(store.freeze_api("dsp.gain", index::block_api_hash(files, "dsp.gain")));
+  REQUIRE(store.freeze_api("dsp.reverb", index::block_api_hash(files, "dsp.reverb")));
   update(*idx);
-  CHECK(status("dsp.gain") == "api_frozen");
+  CHECK(status("dsp.reverb") == "api_frozen");
 
-  test::write(p / "blocks/dsp/gain/tests/contract/gain_contract.cpp", "// tests\n");
+  test::write(p / "blocks/dsp/reverb/tests/contract/reverb_contract.cpp", "// tests\n");
   update(*idx);
-  CHECK(status("dsp.gain") == "tests_ready");
+  CHECK(status("dsp.reverb") == "tests_ready");
 
-  test::write(p / "blocks/dsp/gain/impl/gain.cpp", "// karkas:skeleton\n");
+  test::write(p / "blocks/dsp/reverb/impl/reverb.cpp", "// karkas:skeleton\n");
   update(*idx);
-  CHECK(status("dsp.gain") == "tests_ready");
-  test::write(p / "blocks/dsp/gain/impl/gain.cpp", "#include \"gain.hpp\"\n");
+  CHECK(status("dsp.reverb") == "tests_ready");
+  test::write(p / "blocks/dsp/reverb/impl/reverb.cpp", "#include \"reverb.hpp\"\n");
   update(*idx);
-  CHECK(status("dsp.gain") == "implemented");
+  CHECK(status("dsp.reverb") == "implemented");
 
   schema = core::load_schema(p.path());
   files = index::collect_code_files(*schema);
   index::TestResult r;
-  r.block = "dsp.gain";
-  r.code_hash = index::block_code_hash(files, "dsp.gain");
+  r.block = "dsp.reverb";
+  r.code_hash = index::block_code_hash(files, "dsp.reverb");
   r.contract = {1, 2};
-  r.failures = {"contract: gain 1.0 leaves samples unchanged"};
+  r.failures = {"contract: zero mix leaves samples unchanged"};
   REQUIRE(store.record_tests({r}));
   update(*idx);
-  CHECK(status("dsp.gain") == "failing");
+  CHECK(status("dsp.reverb") == "failing");
   CHECK(status("dsp") == "failing");
   CHECK(idx->snapshot().block("dsp")->failed_tests == 1);
 
@@ -129,15 +132,15 @@ TEST_CASE("index: statuses from approvals, files and test results") {
   r.failures.clear();
   REQUIRE(store.record_tests({r}));
   update(*idx);
-  CHECK(status("dsp.gain") == "passing");
+  CHECK(status("dsp.reverb") == "passing");
 
   // Code change makes the result stale: back to implemented.
-  test::write(p / "blocks/dsp/gain/impl/gain.cpp", "#include \"gain.hpp\"\n// edited\n");
+  test::write(p / "blocks/dsp/reverb/impl/reverb.cpp", "#include \"reverb.hpp\"\n// edited\n");
   update(*idx);
-  CHECK(status("dsp.gain") == "implemented");
+  CHECK(status("dsp.reverb") == "implemented");
 
   // A changed api after freezing; needs_review marks.
-  REQUIRE(store.mark_review("dsp.chain", "api of dsp.gain changed"));
+  REQUIRE(store.mark_review("dsp.chain", "api of dsp.reverb changed"));
   update(*idx);
   CHECK(status("dsp.chain") == "needs_review");
 }

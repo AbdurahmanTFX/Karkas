@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace kk::core {
@@ -32,6 +33,9 @@ std::size_t estimate_tokens(std::string_view text);
 // FNV-1a 64-bit (for in-memory keys; file hashes use xxh3 in kk_index).
 std::uint64_t fnv1a64(std::string_view s);
 std::string hex64(std::uint64_t v);
+
+// Replaces {{key}} placeholders (9.7). Unknown placeholders are left as they are.
+std::string render_template(std::string_view tmpl, const std::vector<std::pair<std::string, std::string>>& vars);
 
 // Current UNIX time in seconds.
 std::int64_t unix_now();

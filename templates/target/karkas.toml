@@ -1,0 +1,53 @@
+# Karkas settings (appendix E). The API key comes only from ANTHROPIC_API_KEY.
+[project]
+lang      = "cpp"
+build     = "cmake-ninja"
+build_dir = "build"
+
+[models.strong]
+provider = "anthropic"
+model    = "claude-opus-5-5"
+
+[models.medium]
+provider = "anthropic"
+model    = "claude-sonnet-5-5"
+
+[models.cheap]
+provider = "anthropic"
+model    = "claude-haiku-5-5"
+
+[roles]
+architect    = "strong"
+orchestrator = "strong"
+navigator    = "medium"
+worker       = "auto"
+tester       = "cheap"
+
+[routing]
+cheap_max                  = 3
+medium_max                 = 6
+attempts_before_escalation = 2
+
+[limits]
+max_steps_worker    = 25
+max_steps_navigator = 6
+max_tokens_per_run  = 150000
+max_parallel_agents = 2
+max_parallel_builds = 1
+build_timeout_s     = 300
+test_timeout_s      = 120
+request_timeout_s   = 300
+
+[cache]
+ttl = "5m"
+
+[prices]   # USD per 1M tokens; check the official pricing page before relying on these
+"claude-opus-5-5"   = { input = 4.0, output = 20.0, cache_read = 0.20 }
+"claude-sonnet-5-5" = { input = 2.0, output = 10.0 }
+"claude-haiku-5-5"  = { input = 0.10, output = 0.50 }
+cache_write_5m = 1.25
+cache_write_1h = 2.0
+cache_read     = 0.1
+
+[gui]
+editor_command = "kitty -e nvim +{line} {file}"

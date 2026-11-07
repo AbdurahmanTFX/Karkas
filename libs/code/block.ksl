@@ -5,8 +5,9 @@ thread  any
 est     L
 fn      check_drift(Schema) -> Issue[]
 fn      gen_cmake(Schema) -> string
-fn      gen_mocks(Schema, block) -> Result<int>
-call    libs.core:load_schema
+fn      write_mocks(Schema, block) -> Result<GenResult>
 call    libs.index:update
+call    libs.runner:build
+use     libs.core
 inv     generated files are deterministic
 inv     a leaf without a link cannot include another leaf api

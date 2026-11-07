@@ -58,3 +58,25 @@
 - Replay tests: plain answer, tool use, 429 (retry-after), 500/529/transport error, 400,
   persistent 529, request shape. Not run here: the live smoke call (`karkas llm ping`)
   and the cache_read growth check — they need ANTHROPIC_API_KEY and spend money.
+
+## Stage 5 — code analysis, generation, runner (kk_code, kk_runner)
+- tree-sitter-cpp: includes (quoted/system), declarations of api/ (class, struct, enum,
+  alias, functions, methods with parameter counts, pure virtual flag, signatures),
+  definitions and called names in other files; facts cached by content hash in the index.
+- Drift checks D01–D09 (D01–D05, D07 errors; D06, D08, D09 warnings; D04 parameter count
+  and stale CMakeLists are warnings). Each has a deliberately broken variant of the
+  reference project in libs/code/tests/drift_test.cpp.
+- Generation: `karkas gen cmake|mocks|probe|skel|all`, `karkas init`. CMakeLists.txt per 5.5
+  (leaf/shared → STATIC or INTERFACE, PRIVATE links from the consumer cards, groups →
+  INTERFACE, entry → executable, tests per leaf with labels id+ancestors, integration tests
+  per group, cmake/user.cmake), karkas-hash line for D07. Mocks implement the neighbor
+  interfaces with call records and on_<method> handlers. Probe header KK_PROBE (lock-free
+  ring + background flush, KK_PROBES=0 for zero cost).
+- Runner: reproc++ with deadline, terminate/kill, cleaned environment (whitelist, no
+  *KEY*/*TOKEN*/*SECRET*), cmake configure/build, `ctest -V` parsing into per-block
+  contract/unit/integration counts and failing test cases, log compression (errors only,
+  deduplicated, ≤ 40 lines).
+- The reference project tests/fixtures/wavkit now has real code (13 code blocks), builds
+  with the generated CMake, its 21 test cases pass, the program runs and writes probes;
+  a leaf without a link fails to compile when including another leaf's api.
+- Karkas checks itself: 0 errors (warnings: orphan support files, heuristic D09).

@@ -6,5 +6,6 @@ est     M
 fn      run(RunOptions) -> Result<RunResult>
 fn      build(BuildOptions) -> Result<BuildResult>
 fn      test(TestOptions) -> Result<TestSummary>
+use     libs.core
 inv     API keys and other secrets never reach child processes
 inv     a process past its timeout is killed

@@ -9,6 +9,7 @@ call    libs.llm:send
 call    libs.runner:test
 call    libs.index:view
 call    libs.code:check_drift
-call    libs.metrics:cost
+call    libs.metrics:cost_usd
+use     libs.core
 inv     the orchestrator never receives source code
 inv     a worker writes only impl/ and tests/unit/ of its own leaf

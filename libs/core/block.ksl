@@ -1,8 +1,7 @@
 @block libs.core
 purpose data model, KSL parser/writer, schema checks
-kind    leaf
+kind    shared
 thread  any
-est     L
 fn      load_schema(path) -> Result<Schema>
 fn      check_schema(Schema) -> Issue[]
 fn      parse_records(text, file) -> Result<Record[]>

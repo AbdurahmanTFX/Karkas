@@ -4,10 +4,9 @@ kind    leaf
 thread  any
 est     L
 fn      update(UpdateOptions) -> Result<UpdateStats>
-fn      view(block, level) -> Result<string>
-fn      overview() -> string
+fn      view(block, level, options) -> Result<string>
+fn      overview(options) -> string
 fn      runs(since) -> RunRow[]
-call    libs.core:load_schema
-call    libs.core:check_schema
+use     libs.core
 inv     deleting index.db loses no information
 inv     an update without changes rewrites nothing

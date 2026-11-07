@@ -55,6 +55,14 @@ FetchContent_Declare(reproc
 
 FetchContent_MakeAvailable(nlohmann_json doctest CLI11 tomlplusplus fmt spdlog reproc)
 
+foreach(_t reproc reproc++)
+  if(TARGET ${_t})
+    get_target_property(_aliased ${_t} ALIASED_TARGET)
+    if(NOT _aliased)
+      set_target_properties(${_t} PROPERTIES SYSTEM TRUE)
+    endif()
+  endif()
+endforeach()
 if(TARGET reproc++ AND NOT TARGET reproc++::reproc++)
   add_library(reproc++::reproc++ ALIAS reproc++)
 endif()

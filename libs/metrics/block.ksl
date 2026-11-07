@@ -3,7 +3,8 @@ purpose run journals, token costs, cost reports
 kind    leaf
 thread  any
 est     M
-fn      cost(model, Usage) -> Result<double>
-fn      report(by, since) -> Result<string>
+fn      cost_usd(Config, provider, model, Tokens) -> Result<double>
+fn      cost_report(Config, runs, by) -> Result<string>
 call    libs.index:runs
+use     libs.core
 inv     a cloud model without a price is an error, never zero

@@ -5,5 +5,5 @@ thread  main
 est     M
 fn      serve(in, out) -> int
 call    libs.index:view
-call    libs.runner:test
+use     libs.core
 inv     stdout carries only protocol messages
