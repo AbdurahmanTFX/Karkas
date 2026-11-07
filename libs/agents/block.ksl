@@ -5,6 +5,8 @@ thread  any
 est     L
 fn      run_ticket(id) -> Result<Outcome>
 fn      design(idea) -> Result<Outcome>
+fn      apply_edit(root, EditOp) -> Result<AppliedEdit>
+fn      bench_run(BenchOptions, Config, progress) -> Result<BenchResult[]>
 call    libs.llm:send
 call    libs.runner:test
 call    libs.index:view

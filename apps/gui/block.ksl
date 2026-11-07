@@ -6,6 +6,9 @@ est     L
 call    libs.layout:layout
 call    libs.index:view
 call    libs.index:update
+call    libs.agents:apply_edit
+call    libs.code:check_drift
+call    libs.metrics:active_runs
 use     libs.core
 inv     the GUI thread never waits for disk or network
 inv     idle CPU use stays near zero
