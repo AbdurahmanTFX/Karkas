@@ -1,0 +1,61 @@
+#include <doctest/doctest.h>
+
+#include "kk/agents/changes.hpp"
+#include "kk/core/text.hpp"
+#include "kk/core/validate.hpp"
+#include "kk/test/support.hpp"
+
+using namespace kk;
+
+TEST_CASE("changes: the spec example adds dsp.reverb and a call from dsp.chain (10.7)") {
+  test::FixtureCopy p("wavkit");
+  auto diff = agents::parse_diff(R"(+ @block dsp.reverb
++ purpose apply Schroeder reverb to frames
++ kind    leaf
++ thread  main
++ fn      process(Frame[]) -> void
++ use     shared.types
++ inv     zero mix leaves samples unchanged
+~ @block dsp.chain
++ call    dsp.reverb:process)");
+  REQUIRE(diff);
+  agents::ChangeStore store(p.path());
+  auto c = store.create("orchestrator T-0051", "reverb requested; no existing block provides it", *diff);
+  REQUIRE(c);
+  CHECK(c->id == "C-0001");
+  CHECK(store.load("C-0001")->status.value == "pending");
+  auto preview = agents::preview_diff(p.path(), *diff);
+  CHECK(core::contains(preview, "+call    dsp.reverb:process"));
+  CHECK(core::contains(preview, "--- /dev/null"));
+  auto r = agents::apply_diff(p.path(), *diff);
+  REQUIRE(r);
+  CHECK(r->issues.empty());
+  CHECK(r->files.size() == 2);
+  auto s = core::load_schema(p.path());
+  REQUIRE(s);
+  REQUIRE(s->find("dsp.reverb") != nullptr);
+  const auto* chain = s->find("dsp.chain");
+  REQUIRE(chain->calls.size() == 4);
+  CHECK(chain->calls[3].target.str() == "dsp.reverb:process");
+  // The card stays canonical: the call sits with the other calls, before use.
+  CHECK(core::contains(test::read(p / "blocks/dsp/chain/block.ksl"), "call    dsp.reverb:process\nuse     shared.types"));
+  REQUIRE(store.set_status("C-0001", "approved"));
+}
+
+TEST_CASE("changes: removals, errors and schema checks before writing") {
+  test::FixtureCopy p("wavkit");
+  auto rm = agents::parse_diff("~ @block dsp.chain\n- call dsp.echo:process");
+  REQUIRE(rm);
+  REQUIRE(agents::apply_diff(p.path(), *rm));
+  CHECK(core::load_schema(p.path())->find("dsp.chain")->calls.size() == 2);
+  CHECK_FALSE(agents::parse_diff("call dsp.x:y"));
+  CHECK_FALSE(agents::apply_diff(p.path(), *agents::parse_diff("~ @block nope\n+ note x")));
+  CHECK_FALSE(agents::apply_diff(p.path(), *agents::parse_diff("~ @block dsp.chain\n- call dsp.none:process")));
+  // A change that breaks the links (E03) writes nothing.
+  auto before = test::read(p / "blocks/dsp/chain/block.ksl");
+  auto bad = agents::apply_diff(p.path(), *agents::parse_diff("~ @block dsp.chain\n+ call dsp.missing:run"));
+  REQUIRE(bad);
+  CHECK_FALSE(bad->issues.empty());
+  CHECK(bad->issues[0].code == "E03");
+  CHECK(test::read(p / "blocks/dsp/chain/block.ksl") == before);
+}

@@ -80,3 +80,17 @@
   with the generated CMake, its 21 test cases pass, the program runs and writes probes;
   a leaf without a link fails to compile when including another leaf's api.
 - Karkas checks itself: 0 errors (warnings: orphan support files, heuristic D09).
+
+## Stages 6–7 — agents (kk_agents) — IN PROGRESS
+- Done: role prompts (templates/prompts, appendix B + KSL reference), agent loop (9.4:
+  cache-friendly prefix order, moving cache marker, step/token/timeout limits, journal,
+  costs), leaf sandbox (9.5: '..', absolute paths, symlinks outward, api/ writes, unlinked
+  api/ and other impl/ refused; the tester never reads impl/), tool sets of all roles
+  (9.3), router (11.2) with self-tuning (11.4), test service (gen cmake + build + ctest +
+  recording), regression plan (12.4), @change store with diff apply/preview (10.7),
+  Engine (design/expand/approve/implement/task/debug/run_ticket/ask with escalation 11.3).
+- Tests: sandbox, loop, changes (13 cases, scripted model responses, no network).
+- Not done yet: Engine tests (descent, escalation, not_here, contract change, ask,
+  design flow, real-build ring bug fix), CLI commands design/expand/approve/implement/
+  test/task/debug/ticket, stage 8–9 GUI (kk_layout + karkas-gui), stage 10 bench
+  harness, ADR files.

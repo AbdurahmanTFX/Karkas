@@ -1,0 +1,18 @@
+KSL (Karkas Schema Language) reference. One fact per line: "<directive> <args>". Comments start with " #".
+Records: @project <name>, @block <id>, @ticket T-NNNN, @report T-NNNN, @change C-NNNN, @view <id>.
+Block id = folder path joined with dots: blocks/stream/ring -> stream.ring. Identifiers: [a-z][a-z0-9_]*.
+Card directives in this order:
+  purpose <one English sentence, no " and ">      kind group|leaf|entry|shared
+  thread <name|any>          est S|M|L
+  in  <name> <Type> [from=<block>:<out port>] [link=data|event] [via=ring_buffer(N)|queue|mutex|atomic|direct] [sync=lock_free|mutex|none] [rate=48k/s]
+  out <name> <Type>          fn <name>(<params>) -> <Type>
+  call <block>:<fn>          use <shared block>          state <name> <Type> with=<block>   (shared mutable state: avoid)
+  inv <one checkable guarantee>                         note <text>      hist (written by the program)
+Links are declared in the consumer card: data/event on "in ... from=", call, use, state.
+Groups have only purpose, kind and children (sub-folders). Exactly one entry block (main + composition root).
+Types are C++ names declared in the supplier's api/ or in shared.types; KSL does not describe their fields.
+A leaf: one-sentence purpose, <= ~400 lines, <= 6 ports, one thread, testable through its ports with mocks.
+Threads differ and neither is any -> give via=. Every leaf has inv lines; each inv becomes a contract test.
+Ticket trail lines: L<n> <role> at=<block> suspect=<a,b> ruled_out=<a> pick=<block> difficulty=S|M|L why="<= 20 words"
+Change diff lines: "+ <ksl line>" add, "- <ksl line>" remove, "~ @block <id>" select the record to change,
+"+ @block <id>" starts a new block whose following "+" lines form its card.
