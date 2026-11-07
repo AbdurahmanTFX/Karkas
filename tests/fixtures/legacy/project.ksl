@@ -1,0 +1,6 @@
+@project legacy
+idea    an existing small game, used to test karkas import
+lang    cpp
+build   cmake-ninja
+std     c++17
+test    doctest

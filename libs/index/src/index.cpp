@@ -140,6 +140,28 @@ void add_files_under(const core::Schema& schema, const fs::path& dir, const std:
   }
 }
 
+bool is_header(const fs::path& p) {
+  auto ext = p.extension().string();
+  return ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx" || ext == ".ipp" || ext == ".inl";
+}
+
+// Files listed by "files" of an imported block: headers are its api, the rest its impl.
+void add_listed_files(const core::Schema& schema, const core::Block& b, std::vector<CodeFile>& out) {
+  for (const auto& rel : b.file_list()) {
+    auto p = schema.root / rel;
+    auto text = core::read_file(p);
+    if (!text) continue;  // E09 reports it
+    CodeFile f;
+    f.path = rel;
+    f.block = b.id;
+    f.role = is_header(p) ? "api" : "impl";
+    f.hash = xxh3_hex(*text);
+    f.lines = static_cast<int>(std::count(text->begin(), text->end(), '\n'));
+    f.skeleton = text->find(kSkeletonMarker) != std::string::npos;
+    out.push_back(std::move(f));
+  }
+}
+
 std::string file_fingerprint(const fs::path& p) {
   std::error_code ec;
   if (!fs::exists(p, ec)) return "-";
@@ -186,6 +208,10 @@ core::BlockStatus compute_status(const core::Block& b, const std::vector<const C
     if (f->role == "test" && f->path.find("/" + std::string("contract") + "/") != std::string::npos) contract = true;
   }
   if (impl) return BlockStatus::Implemented;
+  // Imported code (header-only modules included): it exists, so it is implemented.
+  if (b.external() && std::any_of(files.begin(), files.end(), [](const CodeFile* f) { return f->role == "api" && !f->skeleton; })) {
+    return BlockStatus::Implemented;
+  }
   if (contract) return BlockStatus::TestsReady;
   auto fz = st.frozen_api.find(b.id);
   if (fz != st.frozen_api.end() && !api_hash.empty() && fz->second == api_hash) return BlockStatus::ApiFrozen;
@@ -204,6 +230,7 @@ std::vector<CodeFile> collect_code_files(const core::Schema& schema) {
     auto dir = schema.root / b.dir;
     add_files_under(schema, dir, b.id, [&](const fs::path& p) { return role_of(dirs, p.lexically_relative(dir)); },
                     out);
+    if (b.external()) add_listed_files(schema, b, out);
   }
   // Integration tests of groups: tests/integration/<group id>/ (12.3).
   auto integ = schema.root / "tests" / "integration";

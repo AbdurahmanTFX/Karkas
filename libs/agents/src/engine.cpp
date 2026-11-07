@@ -66,6 +66,9 @@ core::TrailEntry level_entry(int level, std::string role, std::vector<core::Attr
 
 }  // namespace
 
+constexpr const char* kImportedBlock =
+    "block is imported code (files): agents do not edit imported blocks yet (docs/adr/0009)";
+
 struct Engine::Impl {
   fs::path root;
   core::Config& cfg;
@@ -273,6 +276,11 @@ struct Engine::Impl {
       return out;
     }
     const auto* b = s->find(block);
+    if (b != nullptr && b->external()) {
+      out.status = "failed";
+      out.cause = kImportedBlock;
+      return out;
+    }
     if (b == nullptr || !b->has_code()) {
       out.status = "failed";
       out.cause = "not a leaf: " + block;
@@ -406,6 +414,11 @@ struct Engine::Impl {
     if (b == nullptr) {
       out.status = "failed";
       out.cause = "unknown block";
+      return out;
+    }
+    if (b->external()) {
+      out.status = "failed";
+      out.cause = kImportedBlock;
       return out;
     }
     if (!integration) (void)code::write_mocks(*s, block);

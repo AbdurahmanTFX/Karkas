@@ -90,8 +90,8 @@ struct Checker {
               b.purpose.line, b.purpose.col);
         }
       }
-      // W06
-      if (b.kind == BlockKind::Leaf && b.invs.empty()) add("W06", 'W', &b, "leaf has no inv", b.line, 1);
+      // W06 (imported code has no invariants written yet; they come later, from people)
+      if (b.kind == BlockKind::Leaf && b.invs.empty() && !b.external()) add("W06", 'W', &b, "leaf has no inv", b.line, 1);
     }
     if (!s.blocks.empty() && entries != 1) {
       out.push_back(Issue{"E06", 'E', "", fmt::format("project must have exactly one entry block, found {}", entries),

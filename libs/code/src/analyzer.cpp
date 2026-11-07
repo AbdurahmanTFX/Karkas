@@ -411,6 +411,21 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
       auto p = (fs::path(root) / inc).lexically_normal().generic_string();
       if (known.contains(p)) cands.push_back({blk, "impl", p});
     }
+    // Imported code: include paths come from the project's own build; match a unique
+    // file of an imported block by its path suffix.
+    if (cands.empty()) {
+      const index::CodeFile* hit = nullptr;
+      int n = 0;
+      for (const auto& f : facts.files) {
+        const auto* ob = f.block.empty() ? nullptr : schema.find(f.block);
+        if (ob == nullptr || !ob->external()) continue;
+        if (f.path == inc || f.path.ends_with("/" + inc)) {
+          hit = &f;
+          ++n;
+        }
+      }
+      if (n == 1) cands.push_back({hit->block, hit->role, hit->path});
+    }
     return cands;
   };
 
@@ -532,8 +547,12 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
     for (const auto& p : b.ports) {
       if (p.dir != core::PortDir::Fn) continue;
       std::vector<const index::SymbolFact*> overloads;
+      // Names are compared as KSL identifiers: imported C++ code keeps "ResolveCollision"
+      // while the card says "resolve_collision".
       for (const auto* s : exported[b.id]) {
-        if (s->name == p.name && (s->kind == "method" || s->kind == "function")) overloads.push_back(s);
+        if ((s->name == p.name || core::to_ident(s->name) == p.name) && (s->kind == "method" || s->kind == "function")) {
+          overloads.push_back(s);
+        }
       }
       if (overloads.empty()) {
         issue("D04", 'E', b.id, fmt::format("fn {} of the card is not declared in api/", p.signature()), b.file, p.line);
@@ -546,7 +565,7 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
     }
   }
   for (const auto& b : schema.blocks) {
-    if (b.kind != core::BlockKind::Leaf) continue;
+    if (b.kind != core::BlockKind::Leaf || b.external()) continue;  // imported code has its own tests (or none)
     bool contract = std::any_of(facts.files.begin(), facts.files.end(),
                                 [&](const index::CodeFile& f) { return f.block == b.id && is_contract_test(f.path); });
     if (!contract) issue("D08", 'W', b.id, "leaf has no contract tests (tests/contract/)", b.dir, 0);

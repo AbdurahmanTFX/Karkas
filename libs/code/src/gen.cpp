@@ -97,6 +97,7 @@ std::string gen_cmake(const core::Schema& s) {
   std::vector<std::string> leaf_targets;
   for (const auto& b : s.blocks) {
     if (b.kind != core::BlockKind::Leaf && b.kind != core::BlockKind::Shared) continue;
+    if (b.external()) continue;  // imported code: the project builds it itself (docs/adr/0009)
     auto t = tname(b.id);
     leaf_targets.push_back(t);
     auto deps = deps_of(s, b);
@@ -157,6 +158,7 @@ std::string gen_cmake(const core::Schema& s) {
   }
   for (const auto& b : s.blocks) {
     if (b.kind != core::BlockKind::Entry) continue;
+    if (b.external()) continue;  // imported code: the project builds it itself (docs/adr/0009)
     auto t = tname(b.id);
     body += fmt::format("\n# --- {} (entry): {}\n", b.id, b.purpose.value);
     if (has_cpp(s.root / b.dir / dirs.impl)) {
@@ -318,6 +320,7 @@ kk::Result<GenResult> write_mocks(const core::Schema& s, std::string_view block)
   for (const auto& b : s.blocks) {
     if (b.kind != core::BlockKind::Leaf) continue;
     if (!block.empty() && block != "all" && !core::Schema::is_under(block, b.id)) continue;
+    if (b.external()) continue;  // imported code: the project builds it itself (docs/adr/0009)
     for (const auto& n : allowed_api_blocks(s, b.id)) {
       const auto* nb = s.find(n);
       if (nb == nullptr || nb->kind == core::BlockKind::Shared || !nb->has_code()) continue;
@@ -383,6 +386,7 @@ kk::Result<GenResult> write_skel(const core::Schema& s, std::string_view block) 
   };
   for (const auto& b : s.blocks) {
     if (!b.has_code() || b.kind == core::BlockKind::Shared) continue;
+    if (b.external()) continue;  // imported code: the project builds it itself (docs/adr/0009)
     if (!block.empty() && block != "all" && !core::Schema::is_under(block, b.id)) continue;
     auto root = s.root / b.dir;
     std::string includes;
