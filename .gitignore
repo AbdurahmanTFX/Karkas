@@ -7,3 +7,4 @@
 .vscode/
 # local copy of the spec (the tracked one is docs/SPEC.txt)
 /karkas_spec.txt
+/tests/fixtures/**/.karkas/

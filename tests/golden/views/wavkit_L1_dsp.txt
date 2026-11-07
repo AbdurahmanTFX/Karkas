@@ -1,0 +1,13 @@
+@view dsp level=1
+purpose effect chain applied to frames
+dsp.chain    leaf  run configured effects over frames in a fixed order  thr=main  ok
+dsp.echo     leaf  feedback delay line                                  thr=main  ok
+dsp.gain     leaf  multiply samples by gain                             thr=main  ok
+dsp.lowpass  leaf  one-pole low-pass filter                             thr=main  ok
+--- links
+dsp.chain  -call->  dsp.gain:process
+dsp.chain  -call->  dsp.lowpass:process
+dsp.chain  -call->  dsp.echo:process
+--- external
+in   stream.ring:pop  -data->  dsp.chain:in  sync=lock_free thr=any->main
+out  dsp.chain:out    -data->  mix:in

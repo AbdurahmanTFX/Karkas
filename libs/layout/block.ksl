@@ -1,0 +1,8 @@
+@block libs.layout
+purpose graph layout with Graphviz or a built-in Sugiyama engine
+kind    leaf
+thread  any
+est     M
+fn      layout(Graph) -> Result<Positions>
+call    libs.index:overview
+inv     the same graph always gets the same positions

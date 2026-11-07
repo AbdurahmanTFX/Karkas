@@ -1,0 +1,7 @@
+@view io level=1
+purpose WAV file input/output
+io.reader  leaf  parse WAV (PCM16, float32) into normalized float frames  thr=reader  ok
+io.writer  leaf  write frames to a WAV file                               thr=main    ok
+--- external
+in   mix:out           -data->  io.writer:frames
+out  io.reader:frames  -data->  stream.pump:src   via=direct

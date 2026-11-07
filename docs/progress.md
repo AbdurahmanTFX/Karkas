@@ -15,3 +15,16 @@
   comments preserved as trivia, checks E01–E08 and W01–W06 (4.6), `karkas check`.
 - Tests: 71 test cases in kk_core_tests; every E and W code has a dedicated test;
   round trip of every fixture .ksl file is byte-identical.
+
+## Stage 2 — index and views (kk_index)
+- DDL of 7.1 (plus test_results, facts tables and runs.journal / probes.link /
+  tickets.title columns, see docs/adr/0003), WAL, one writer.
+- Full and incremental indexing by xxh3 fingerprints; code facts cached by content hash;
+  runs/probes/tickets/approvals/test results loaded from .karkas/.
+- Queries of 7.3, lifted links (3.6), L0/L1/L2 views with golden files
+  (tests/golden/views), token budget checks (estimate) L0 ≤ 800, L1 ≤ 600, L2 ≤ 1200.
+- `karkas index [--watch] [--full]`, `karkas view`, `karkas query`.
+- Karkas describes itself: project.ksl + block.ksl in libs/* and apps/*;
+  `karkas view` works on this repository.
+- Timing (debug build, synthetic 44 blocks / ~20k lines, no code analyzer):
+  full 31 ms, unchanged 15 ms, one file changed 28 ms.

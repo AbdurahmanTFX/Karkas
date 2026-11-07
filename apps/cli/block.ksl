@@ -1,0 +1,5 @@
+@block apps.cli
+purpose karkas command line, composition root of the libraries
+kind    entry
+thread  main
+est     M

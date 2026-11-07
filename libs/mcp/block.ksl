@@ -1,0 +1,9 @@
+@block libs.mcp
+purpose MCP server over stdio (JSON-RPC 2.0)
+kind    leaf
+thread  main
+est     M
+fn      serve(in, out) -> int
+call    libs.index:view
+call    libs.runner:test
+inv     stdout carries only protocol messages

@@ -1,0 +1,10 @@
+@block libs.runner
+purpose run cmake/ninja/ctest with timeouts in a clean environment
+kind    leaf
+thread  any
+est     M
+fn      run(RunOptions) -> Result<RunResult>
+fn      build(BuildOptions) -> Result<BuildResult>
+fn      test(TestOptions) -> Result<TestSummary>
+inv     API keys and other secrets never reach child processes
+inv     a process past its timeout is killed

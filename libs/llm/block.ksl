@@ -1,0 +1,8 @@
+@block libs.llm
+purpose model clients: Anthropic Messages API, OpenAI-compatible, record/replay
+kind    leaf
+thread  any
+est     L
+fn      send(Request) -> Result<Response>
+inv     the API key comes only from ANTHROPIC_API_KEY
+inv     429, 5xx, 529 are retried at most 5 times, 400 never

@@ -1,0 +1,12 @@
+@view root level=0
+idea CLI audio pipeline: read WAV files, apply effects, mix tracks, write WAV
+app     entry  CLI args, composition root, run loop              ok
+io      group  WAV file input/output (2)                         ok
+stream  group  move frames from reader thread to processing (2)  FAIL 1
+dsp     group  effect chain applied to frames (4)                ok
+mix     leaf   mix N tracks with per-track gain, clip-safe       ok
+--- links
+io      -data->  stream
+stream  -data->  dsp     sync=lock_free thr=any->main
+dsp     -data->  mix
+mix     -data->  io

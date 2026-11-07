@@ -1,0 +1,9 @@
+@block libs.metrics
+purpose run journals, token costs, cost reports
+kind    leaf
+thread  any
+est     M
+fn      cost(model, Usage) -> Result<double>
+fn      report(by, since) -> Result<string>
+call    libs.index:runs
+inv     a cloud model without a price is an error, never zero

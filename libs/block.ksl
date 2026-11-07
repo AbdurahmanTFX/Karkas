@@ -1,0 +1,3 @@
+@block libs
+purpose Karkas libraries, bottom-up from the data model to agents
+kind    group

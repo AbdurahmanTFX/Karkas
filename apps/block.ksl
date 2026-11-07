@@ -1,0 +1,3 @@
+@block apps
+purpose Karkas executables: command line, graphical interface
+kind    group

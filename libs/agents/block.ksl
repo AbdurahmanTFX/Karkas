@@ -1,0 +1,14 @@
+@block libs.agents
+purpose agent roles, agent loop, sandbox, tickets, routing
+kind    leaf
+thread  any
+est     L
+fn      run_ticket(id) -> Result<Outcome>
+fn      design(idea) -> Result<Outcome>
+call    libs.llm:send
+call    libs.runner:test
+call    libs.index:view
+call    libs.code:check_drift
+call    libs.metrics:cost
+inv     the orchestrator never receives source code
+inv     a worker writes only impl/ and tests/unit/ of its own leaf

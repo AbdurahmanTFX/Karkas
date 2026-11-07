@@ -1,0 +1,10 @@
+@block apps.gui
+purpose karkas-gui: schema viewer/editor
+kind    leaf
+thread  main
+est     L
+call    libs.layout:layout
+call    libs.index:view
+call    libs.index:update
+inv     the GUI thread never waits for disk or network
+inv     idle CPU use stays near zero

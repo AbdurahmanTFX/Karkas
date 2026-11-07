@@ -1,0 +1,11 @@
+@view stream level=1
+purpose move frames from reader thread to processing
+stream.pump  leaf  reader thread that moves frames from io.reader into stream.ring  thr=reader  ok
+stream.ring  leaf  lock-free single-producer single-consumer ring of audio frames   thr=any     FAIL 1
+--- links
+stream.pump:frames  -data->  stream.ring:push  sync=lock_free rate=48k/s thr=reader->any
+--- external
+in   io.reader:frames  -data->  stream.pump:src  via=direct
+out  stream.ring:pop   -data->  dsp.chain:in     sync=lock_free thr=any->main
+--- probes
+stream.pump->stream.ring fill min=0 avg=3810 max=8192 anomaly=min0

@@ -1,0 +1,10 @@
+@project karkas
+idea    development environment where the project for AI is a hierarchical schema of blocks
+lang    cpp
+build   cmake-ninja
+std     c++23
+test    doctest
+dirs    blocks=. api=include impl=src
+rule    module dependencies go only top-down, no cycles
+rule    no exceptions across module boundaries, use std::expected
+rule    deterministic algorithms wherever possible, models only for judgement
