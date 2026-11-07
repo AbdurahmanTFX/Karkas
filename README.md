@@ -22,6 +22,17 @@ C++23, CMake + Ninja. Состояние по этапам — docs/progress.md,
     karkas implement all               # тестировщики, исполнители, корень сборки
     karkas test
 
+## Существующий проект
+
+    cd ~/мой/проект
+    karkas init .                      # каркас: project.ksl, karkas.toml, .karkas/
+    karkas import --dry-run            # что получится: группы по папкам, блоки по парам файлов
+    karkas import                      # предложение C-NNNN → утвердить во вкладке «Изменения»
+                                       # GUI или karkas approve C-NNNN
+
+Код не переносится: карточки лежат в blocks/, а в них строка `files` указывает на
+существующие файлы (docs/adr/0009). Свой CMakeLists.txt остаётся как был.
+
 ## Работа с проектом
 
     karkas task "добавить эффект reverb"

@@ -152,6 +152,21 @@
   block far below the minimum stops at 120 × 56; enlarging unfolds the hidden ports; sizes
   survive a restart. kk_gui_tests: translations complete, settings round-trip and clamping.
 
+## Stage 11 (first part) — import of existing projects (docs/adr/0009)
+- Card directive `files` (leaf/entry/shared): a block over existing files that stay in place;
+  E09; index roles by extension; drift checks, statuses, generation and agents aware of it.
+- `karkas import [--dry-run|--apply] [--exclude DIR]`: deterministic cut of C/C++ code into
+  groups (folders) and leaves (file pairs), fn ports from public functions, call/use links from
+  calls and includes, purposes from header comments; proposes a @change for approval.
+- `karkas init` in a folder with code keeps its C++ standard and suggests `karkas import`.
+- GUI: call/use links between two blocks drawn as one line with a tooltip; at most 10 pin rows
+  by default; an empty schema explains what to do.
+- Verified on tests/fixtures/legacy (golden, clean schema and drift, approval through a change)
+  and on a copy of a real 4.5k-line raylib game: 3 groups, 16 blocks, 120 links, 0 errors,
+  0 warnings, 0 drift.
+- Not done: agents inside imported blocks, clustering of big folders, `--describe` with a model,
+  type-aware call matching.
+
 ## Stage 10 — benchmarks (harness)
 - bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
   (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip

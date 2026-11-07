@@ -2,6 +2,7 @@
 #include <fmt/format.h>
 
 #include <iostream>
+#include <regex>
 
 #include "app.hpp"
 #include "kk/code/gen.hpp"
@@ -57,11 +58,34 @@ AutoRegister reg_init([](CLI::App& cli, App& app) {
     }
     if (name.empty() || !(name[0] >= 'a' && name[0] <= 'z')) die("project folder name must start with a letter");
     if (fs::exists(root / "project.ksl")) die(root.string() + " already holds a project.ksl");
+    // An existing project: keep its C++ standard and do not invent rules for its code.
+    bool existing = false;
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
+         it != fs::recursive_directory_iterator() && !existing; it.increment(ec)) {
+      if (ec) break;
+      auto n = it->path().filename().string();
+      if (it->is_directory(ec) && (n.starts_with(".") || n.starts_with("build") || n == "third_party" || n == "_deps")) {
+        it.disable_recursion_pending();
+        continue;
+      }
+      existing = it->is_regular_file(ec) && core::is_code_file(it->path());
+    }
+    std::string cxx = "20";
+    if (auto cm = core::read_file(root / "CMakeLists.txt")) {
+      std::smatch m;
+      if (std::regex_search(*cm, m, std::regex(R"(CMAKE_CXX_STANDARD\s+(\d+))")) ||
+          std::regex_search(*cm, m, std::regex(R"(cxx_std_(\d+))"))) {
+        cxx = m[1].str();
+      }
+    }
     std::string project = fmt::format("@project {}\n", name);
     if (!idea.empty()) project += core::format_line("idea", core::format_free_text(idea)) + "\n";
-    project += "lang    cpp\nbuild   cmake-ninja\nstd     c++20\ntest    doctest\n"
-               "rule    blocks talk only through api/ headers\n"
-               "rule    no exceptions across block boundaries, use Result<T>\n";
+    project += fmt::format("lang    cpp\nbuild   cmake-ninja\nstd     c++{}\ntest    doctest\n", cxx);
+    if (!existing) {
+      project += "rule    blocks talk only through api/ headers\n"
+                 "rule    no exceptions across block boundaries, use Result<T>\n";
+    }
     auto w = [&](const fs::path& p, std::string_view text) {
       if (fs::exists(p)) return;
       if (auto r = core::write_file(p, text); !r) die(r.error().str());
@@ -75,12 +99,16 @@ AutoRegister reg_init([](CLI::App& cli, App& app) {
     w(root / "cmake" / "user.cmake", user.value_or(""));
     auto gi = code::target_template("gitignore");
     w(root / ".gitignore", gi.value_or(""));
-    std::error_code ec;
     fs::create_directories(root / "blocks", ec);
     fs::create_directories(root / "tests" / "integration", ec);
     if (auto r = index::ensure_karkas_dir(root); !r) die(r.error().str());
     setup_logging(app, root, false);
-    std::cout << "initialized " << name << " in " << root.string() << "\nnext: karkas design \"<idea>\"\n";
+    std::cout << "initialized " << name << " in " << root.string() << "\n";
+    if (existing) {
+      std::cout << "next: karkas import   (existing code becomes blocks; files stay where they are)\n";
+    } else {
+      std::cout << "next: karkas design \"<idea>\"\n";
+    }
   });
 });
 

@@ -766,8 +766,8 @@ void Ui::draw_empty(const Model& m) {
       for (std::size_t i = 0; i < shown; ++i) ImGui::BulletText("%s", orphans[i].c_str());
       if (orphans.size() > shown) ImGui::TextDisabled(tr("... and %zu more"), orphans.size() - shown);
       ImGui::Spacing();
-      ImGui::TextWrapped("%s", tr("Cutting existing code into blocks automatically (import) is not implemented yet "
-                                  "(stage 11 of the spec)."));
+      ImGui::TextWrapped("%s", tr("Existing code becomes blocks without moving files: run karkas import, then "
+                                  "approve the proposed change in the Changes tab."));
     }
   }
   ImGui::PopTextWrapPos();

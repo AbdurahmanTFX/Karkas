@@ -124,10 +124,10 @@ const std::unordered_map<std::string_view, const char*>& ru() {
        "здесь («Добавить блок»)."},
       {"%zu code files of this project are outside blocks (D06):", "Файлов кода вне блоков (D06): %zu"},
       {"... and %zu more", "... и ещё %zu"},
-      {"Cutting existing code into blocks automatically (import) is not implemented yet "
-       "(stage 11 of the spec).",
-       "Автоматическая нарезка существующего кода на блоки (импорт) пока не реализована (этап 11 "
-       "спецификации)."},
+      {"Existing code becomes blocks without moving files: run karkas import, then "
+       "approve the proposed change in the Changes tab.",
+       "Существующий код превращается в блоки без переноса файлов: выполните karkas import, затем "
+       "утвердите предложенное изменение во вкладке «Изменения»."},
       // settings
       {"Language", "Язык"},
       {"Default block size", "Размер блоков по умолчанию"},
