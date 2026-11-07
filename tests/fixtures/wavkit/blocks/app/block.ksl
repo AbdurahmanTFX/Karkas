@@ -1,0 +1,7 @@
+@block app
+purpose CLI args, composition root, run loop
+kind    entry
+thread  main
+est     M
+use     shared.types
+use     shared.log

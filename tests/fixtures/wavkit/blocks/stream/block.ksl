@@ -1,0 +1,3 @@
+@block stream
+purpose move frames from reader thread to processing
+kind    group

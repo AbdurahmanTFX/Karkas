@@ -1,0 +1,11 @@
+@block mix
+purpose mix N tracks with per-track gain, clip-safe
+kind    leaf
+thread  main
+est     S
+in      in Frame[] from=dsp.chain:out link=data
+out     out Frame[]
+fn      set_track_gain(size_t, float) -> void
+use     shared.types
+inv     output samples stay within [-1, 1]
+inv     a single track with gain 1.0 passes through unchanged

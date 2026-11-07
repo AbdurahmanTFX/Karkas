@@ -1,0 +1,10 @@
+@block io.reader
+purpose parse WAV (PCM16, float32) into normalized float frames
+kind    leaf
+thread  reader
+est     S
+out     frames Frame[]
+fn      open(path) -> Result<AudioFormat>
+use     shared.types
+inv     rejects unsupported formats with an error, never crashes
+inv     PCM16 samples map into [-1, 1]

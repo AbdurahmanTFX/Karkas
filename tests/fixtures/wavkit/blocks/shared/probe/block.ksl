@@ -1,0 +1,5 @@
+@block shared.probe
+purpose Karkas probes (generated)
+kind    shared
+thread  any
+inv     KK_PROBE never blocks the caller

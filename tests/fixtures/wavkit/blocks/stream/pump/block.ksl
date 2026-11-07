@@ -1,0 +1,12 @@
+@block stream.pump
+purpose reader thread that moves frames from io.reader into stream.ring
+kind    leaf
+thread  reader
+est     S
+in      src Frame[] from=io.reader:frames link=data via=direct
+out     frames Frame[]
+fn      start() -> void
+fn      stop() -> void
+use     shared.types
+use     shared.probe
+inv     stops cleanly on end of file and on stop()

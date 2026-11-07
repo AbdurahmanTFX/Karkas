@@ -1,0 +1,8 @@
+@project wavkit
+idea    CLI audio pipeline: read WAV files, apply effects, mix tracks, write WAV
+lang    cpp
+build   cmake-ninja
+std     c++20
+test    doctest
+rule    blocks talk only through api/ headers
+rule    no exceptions across block boundaries, use Result<T>

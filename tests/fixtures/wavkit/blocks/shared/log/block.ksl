@@ -1,0 +1,7 @@
+@block shared.log
+purpose logging
+kind    shared
+thread  any
+fn      log(Level, msg) -> void
+use     shared.types
+inv     log never throws

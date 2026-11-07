@@ -1,0 +1,10 @@
+@block dsp.gain
+purpose multiply samples by gain
+kind    leaf
+thread  main
+est     S
+fn      process(Frame[]) -> void
+fn      set_gain(float) -> void
+use     shared.types
+inv     gain 1.0 leaves samples unchanged
+inv     gain is applied exactly once per sample

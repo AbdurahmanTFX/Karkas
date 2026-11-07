@@ -1,0 +1,6 @@
+@block shared.types
+purpose Frame, AudioFormat, Result<T>
+kind    shared
+thread  any
+inv     Frame is a plain struct of two floats
+inv     Result<T> holds either a value or an error message

@@ -1,0 +1,10 @@
+@block dsp.lowpass
+purpose one-pole low-pass filter
+kind    leaf
+thread  main
+est     S
+fn      process(Frame[]) -> void
+fn      set_cutoff(float, float) -> void
+use     shared.types
+inv     a constant signal passes through unchanged after settling
+inv     output stays within the input range

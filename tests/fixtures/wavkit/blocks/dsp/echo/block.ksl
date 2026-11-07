@@ -1,0 +1,10 @@
+@block dsp.echo
+purpose feedback delay line
+kind    leaf
+thread  main
+est     M
+fn      process(Frame[]) -> void
+fn      set_params(size_t, float, float) -> void
+use     shared.types
+inv     feedback below 1.0 never makes the output grow without bound
+inv     zero mix leaves samples unchanged

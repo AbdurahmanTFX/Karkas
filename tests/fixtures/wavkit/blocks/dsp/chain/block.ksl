@@ -1,0 +1,13 @@
+@block dsp.chain
+purpose run configured effects over frames in a fixed order
+kind    leaf
+thread  main
+est     S
+in      in Frame[] from=stream.ring:pop link=data sync=lock_free
+out     out Frame[]
+call    dsp.gain:process
+call    dsp.lowpass:process
+call    dsp.echo:process
+use     shared.types
+inv     output length equals input length
+inv     an empty chain passes frames through unchanged

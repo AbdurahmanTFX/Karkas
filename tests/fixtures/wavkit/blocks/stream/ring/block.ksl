@@ -1,0 +1,15 @@
+@block stream.ring
+purpose lock-free single-producer single-consumer ring of audio frames
+kind    leaf
+thread  any
+est     M
+in      push Frame[] from=stream.pump:frames link=data sync=lock_free rate=48k/s
+out     pop Frame[]
+fn      capacity() -> size_t
+fn      fill() -> size_t
+use     shared.types
+use     shared.probe
+inv     never loses or duplicates frames, including at wraparound
+inv     push and pop never block
+inv     fill() is always within [0, capacity()]
+hist    T-0042 drop at wraparound -> mask index with cap-1

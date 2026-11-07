@@ -1,0 +1,11 @@
+@block io.writer
+purpose write frames to a WAV file
+kind    leaf
+thread  main
+est     S
+in      frames Frame[] from=mix:out link=data
+fn      open(path, AudioFormat) -> Result<Unit>
+fn      close() -> Result<Unit>
+use     shared.types
+inv     output is a valid little-endian PCM16 or float32 WAV file
+inv     header sizes match the number of frames written
