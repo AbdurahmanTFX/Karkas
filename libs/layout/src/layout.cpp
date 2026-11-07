@@ -154,7 +154,14 @@ std::map<std::string, Pos> LayoutStore::manual(const std::string& view) const {
   auto text = core::read_file(p);
   if (!text) return out;
   try {
-    for (const auto& [k, v] : json::parse(*text).items()) out[k] = Pos{v.at(0).get<double>(), v.at(1).get<double>()};
+    for (const auto& [k, v] : json::parse(*text).items()) {
+      Pos pos{v.at(0).get<double>(), v.at(1).get<double>()};
+      if (v.size() >= 4) {
+        pos.w = v.at(2).get<double>();
+        pos.h = v.at(3).get<double>();
+      }
+      out[k] = pos;
+    }
   } catch (const json::exception&) {
   }
   return out;
@@ -162,7 +169,13 @@ std::map<std::string, Pos> LayoutStore::manual(const std::string& view) const {
 
 kk::VoidResult LayoutStore::save_manual(const std::string& view, const std::map<std::string, Pos>& pos) const {
   json j = json::object();
-  for (const auto& [k, p] : pos) j[k] = json::array({std::round(p.x), std::round(p.y)});
+  for (const auto& [k, p] : pos) {
+    if (p.w > 0 && p.h > 0) {
+      j[k] = json::array({std::round(p.x), std::round(p.y), std::round(p.w), std::round(p.h)});
+    } else {
+      j[k] = json::array({std::round(p.x), std::round(p.y)});
+    }
+  }
   return core::write_file(root_ / ".karkas" / "layout" / ((view.empty() ? "root" : view) + ".json"), j.dump(2) + "\n");
 }
 
@@ -179,7 +192,8 @@ Layout LayoutStore::get(const std::string& view, const Graph& g, ILayoutEngine& 
   }
   for (const auto& [id, p] : manual(view)) {
     if (!l.pos.contains(id)) continue;
-    l.pos[id] = p;
+    l.pos[id].x = p.x;
+    l.pos[id].y = p.y;
   }
   for (const auto& n : g.nodes) {
     const auto& p = l.pos[n.id];

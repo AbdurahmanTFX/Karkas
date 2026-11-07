@@ -52,9 +52,13 @@ TEST_CASE("layout: level graphs of wavkit, cache and manual positions") {
   CHECK(l.pos["io"].x < l.pos["stream"].x);
   CHECK(l.pos["stream"].x < l.pos["dsp"].x);
   CHECK(std::filesystem::exists(p / ".karkas/cache/layout"));
-  REQUIRE(store.save_manual("root", {{"mix", {900, 10}}}));
+  REQUIRE(store.save_manual("root", {{"mix", {900, 10, 300, 120}}, {"io", {5, 5}}}));
   auto m = store.get("root", g, eng);
   CHECK(m.pos["mix"].x == 900);
+  auto manual = store.manual("root");
+  CHECK(manual["mix"].w == 300);
+  CHECK(manual["mix"].h == 120);
+  CHECK(manual["io"].w == 0);  // no manual size
   CHECK(layout::graph_hash(g) == layout::graph_hash(layout::level_graph(snap, "", false, fixed())));
   auto dsp = layout::level_graph(snap, "dsp", false, fixed());
   CHECK(dsp.nodes.size() == 4);

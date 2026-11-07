@@ -34,6 +34,7 @@ struct Request {
   bool show_use = false;
   float char_w = 7.0f;
   float line_h = 17.0f;
+  float block_scale = 1.0f;  // default size of blocks (settings)
   bool operator==(const Request&) const = default;
 };
 
@@ -42,6 +43,7 @@ struct Model {
   Request req;
   layout::Graph graph;
   layout::Layout level;
+  std::map<std::string, layout::Pos> manual;  // saved positions and sizes of this view
   std::string layout_key;  // changes when positions must be re-applied
   std::vector<layout::Box> boxes;
   std::vector<index::RunRow> runs;

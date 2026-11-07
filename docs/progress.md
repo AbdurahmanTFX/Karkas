@@ -137,6 +137,21 @@
   ≈0.35 s with an existing index and ≈0.95 s from scratch; idle CPU 0% over 10 s.
   Screenshot: docs/screenshots/stream_level.png.
 
+## GUI addition — settings, language, block sizes (docs/adr/0008)
+- Menu "Karkas → Settings…": interface language (English / Русский, default from LANG),
+  default block size (0.6–2.5), interface text size; saved to ~/.config/karkas/gui.json.
+  All panels, menus, dialogs, tabs, kinds and statuses are translated; window ids are
+  language independent ("Блоки###Blocks").
+- Blocks on the schema are resized by the corner grip (same size on screen at any zoom);
+  sizes are saved with positions in .karkas/layout/<view>.json ([x, y, w, h]); minimum
+  120 × 56. The text scales with the block, long lines end with "…", ports that do not fit
+  fold into "+N". Context menu: "Reset size"; background menu: "Auto layout (reset positions
+  and sizes)"; settings: "Reset block sizes in this view".
+- Headless checks: `--lang en|ru`, `--block-scale F`, `--settings`, `--drag x1,y1,x2,y2`
+  (scripted mouse drag). Verified under Xvfb: both languages; scale 0.6 / 1 / 2; dragging a
+  block far below the minimum stops at 120 × 56; enlarging unfolds the hidden ports; sizes
+  survive a restart. kk_gui_tests: translations complete, settings round-trip and clamping.
+
 ## Stage 10 — benchmarks (harness)
 - bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
   (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip

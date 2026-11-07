@@ -13,6 +13,9 @@
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/index/watch.hpp"
+#include "i18n.hpp"
+#include "metrics.hpp"
+#include "settings.hpp"
 
 extern char** environ;
 
@@ -84,7 +87,7 @@ void Worker::confirm() {
     if (!pending_) return;
     auto r = agents::apply_edit(root_, *pending_);
     if (r) {
-      message_ = "applied: " + r->title;
+      message_ = tr("applied: ") + r->title;
       undo_.push_back(std::move(*r));
       pending_.reset();
       files_changed_ = true;
@@ -107,7 +110,7 @@ void Worker::undo() {
     auto e = std::move(undo_.back());
     undo_.pop_back();
     auto r = agents::undo_edit(root_, e);
-    message_ = r ? "undone: " + e.title : "undo failed: " + r.error().message;
+    message_ = r ? tr("undone: ") + e.title : tr("undo failed: ") + r.error().message;
     files_changed_ = true;
   });
 }
@@ -129,7 +132,7 @@ void Worker::reject_change(const std::string& id) {
   post([this, id] {
     agents::ChangeStore store(root_);
     auto r = store.set_status(id, "rejected");
-    message_ = r ? id + " rejected" : r.error().message;
+    message_ = r ? id + " " + tr("rejected") : r.error().message;
     files_changed_ = true;
   });
 }
@@ -151,9 +154,9 @@ void Worker::open_in_editor(const std::string& rel_file, int line) {
     pid_t pid = 0;
     const char* argv[] = {"/bin/sh", "-c", cmd.c_str(), nullptr};
     if (posix_spawn(&pid, "/bin/sh", nullptr, nullptr, const_cast<char* const*>(argv), environ) != 0) {
-      message_ = "cannot start the editor: " + cmd;
+      message_ = tr("cannot start the editor: ") + cmd;
     } else {
-      message_ = "editor: " + cmd;
+      message_ = tr("editor: ") + cmd;
     }
   });
 }
@@ -227,16 +230,26 @@ void Worker::loop() {
         int in = 0;
         int out = 0;
         for (const auto* p : snap->ports_of(b.id)) (p->dir == "in" ? in : out)++;
-        return std::max(in, out);
+        return std::make_pair(in, out);
       };
+      // Default size of a block (scaled by the settings); the GUI computes the same base.
+      double scale = std::clamp(static_cast<double>(req.block_scale), static_cast<double>(kMinBlockScale),
+                                static_cast<double>(kMaxBlockScale));
       layout::Measure measure = [&](const index::BlockRow& b) {
-        std::size_t chars = std::max<std::size_t>({b.id.size() + 4, std::min<std::size_t>(b.purpose.size(), 34), 18});
-        double w = static_cast<double>(chars) * cw + 28;
-        double h = (3.0 + (b.kind == "group" ? 0 : ports_of(b))) * lh + 18;
-        return std::make_pair(w, h);
+        auto [in, out] = ports_of(b);
+        auto [w, h] = base_block_size(b.id, b.kind, b.purpose, in, out, cw, lh);
+        return std::make_pair(std::max(w * scale, static_cast<double>(kMinBlockW)), std::max(h * scale, static_cast<double>(kMinBlockH)));
       };
       m->graph = layout::level_graph(*snap, req.scope, req.show_use, measure);
       std::string view = req.scope.empty() ? "root" : req.scope;
+      // Sizes set by hand on the picture win over the default ones.
+      m->manual = store.manual(view);
+      for (auto& n : m->graph.nodes) {
+        auto it = m->manual.find(n.id);
+        if (it == m->manual.end() || it->second.w <= 0 || it->second.h <= 0) continue;
+        n.w = std::clamp(it->second.w, static_cast<double>(kMinBlockW), static_cast<double>(kMaxBlockW));
+        n.h = std::clamp(it->second.h, static_cast<double>(kMinBlockH), static_cast<double>(kMaxBlockH));
+      }
       m->level = store.get(view, m->graph, *engine);
       m->layout_key = view + "|" + layout::graph_hash(m->graph) + (req.show_use ? "|use" : "");
       if (req.all_levels) m->boxes = layout::layout_all_levels(*snap, req.show_use, measure, *engine);

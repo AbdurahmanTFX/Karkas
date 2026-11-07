@@ -33,5 +33,14 @@ C++23, CMake + Ninja. Состояние по этапам — docs/progress.md,
     karkas mcp --project .             # для Claude Code: claude mcp add karkas -- karkas mcp --project <dir>
     karkas bench run --scenario s3 --method C --reps 3 ; karkas bench report
 
+## GUI
+
+    karkas gui                         # или karkas-gui --project <dir>
+
+Язык интерфейса (English / Русский), размер блоков по умолчанию и размер текста —
+меню «Karkas → Настройки…», сохраняются в ~/.config/karkas/gui.json. Размер блока
+меняется перетаскиванием его правого нижнего угла (минимум 120 × 56), текст масштабируется
+под размер; позиции и размеры хранятся в .karkas/layout/.
+
 Ключ API — только в переменной окружения ANTHROPIC_API_KEY. Модели и цены — в karkas.toml
 (пример — templates/target/karkas.toml; цены сверить с официальной страницей).

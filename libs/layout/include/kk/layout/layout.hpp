@@ -34,6 +34,7 @@ struct Graph {
 
 struct Pos {
   double x = 0, y = 0;  // top-left corner
+  double w = 0, h = 0;  // manual size of the block on the picture; 0 = automatic
 };
 
 struct Layout {

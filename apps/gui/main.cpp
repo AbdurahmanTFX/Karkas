@@ -1,5 +1,6 @@
 // karkas-gui (14): Dear ImGui (docking) + GLFW + OpenGL 3.3 + imgui-node-editor.
 //   karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]
+//              [--lang en|ru] [--block-scale F] [--settings] [--drag x1,y1,x2,y2]
 //              [--frames N --screenshot out.png]   (headless checks)
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -8,6 +9,7 @@
 #include <spdlog/spdlog.h>
 
 #include <GL/gl.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -18,6 +20,7 @@
 
 #include "kk/core/config.hpp"
 #include "kk/core/paths.hpp"
+#include "kk/core/text.hpp"
 #include "png.hpp"
 #include "ui.hpp"
 #include "worker.hpp"
@@ -46,14 +49,18 @@ std::string find_font(const std::string& configured, bool mono) {
 
 void usage() {
   std::cerr << "usage: karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]\n"
+               "                  [--lang en|ru] [--block-scale F] [--settings] [--drag x1,y1,x2,y2]\n"
                "                  [--frames N] [--screenshot out.png] [--version]\n";
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string project, scope, select, screenshot;
+  std::string project, scope, select, screenshot, lang;
+  float block_scale = 0;
   bool all_levels = false;
+  bool open_settings = false;
+  std::vector<float> drag;  // headless check: a mouse drag in window pixels
   int frames = 0;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -62,6 +69,16 @@ int main(int argc, char** argv) {
     else if (a == "--scope") scope = next();
     else if (a == "--select") select = next();
     else if (a == "--all-levels") all_levels = true;
+    else if (a == "--lang") lang = next();
+    else if (a == "--block-scale") block_scale = std::strtof(next().c_str(), nullptr);
+    else if (a == "--settings") open_settings = true;
+    else if (a == "--drag") {
+      for (const auto& v : kk::core::split(next(), ',')) drag.push_back(std::strtof(v.c_str(), nullptr));
+      if (drag.size() != 4) {
+        usage();
+        return 2;
+      }
+    }
     else if (a == "--frames") frames = std::atoi(next().c_str());
     else if (a == "--screenshot") screenshot = next();
     else if (a == "--version") {
@@ -104,10 +121,7 @@ int main(int argc, char** argv) {
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
-  auto ini = (*root / ".karkas" / "cache" / "imgui.ini").string();
-  fs::create_directories(*root / ".karkas" / "cache");
-  io.IniFilename = frames > 0 ? nullptr : nullptr;  // layout is rebuilt each start; panel sizes stay default
-  (void)ini;
+  io.IniFilename = nullptr;  // the panel layout is rebuilt each start (window ids are language independent)
   ImGui::StyleColorsDark();
   float xs = 1.0f;
   float ys = 1.0f;
@@ -125,11 +139,20 @@ int main(int argc, char** argv) {
   } else {
     io.Fonts->AddFontDefault();
   }
+  // Settings (~/.config/karkas/gui.json). Command-line values override them for this run
+  // only; headless runs (--frames) never write the file.
+  auto settings = kk::gui::load_settings();
+  bool persist = frames == 0;
+  if (!lang.empty()) settings.lang = kk::gui::lang_from_code(lang);
+  if (block_scale > 0) settings.block_scale = std::clamp(block_scale, kk::gui::kMinBlockScale, kk::gui::kMaxBlockScale);
+  kk::gui::set_lang(settings.lang);
+  io.FontGlobalScale = settings.ui_scale;
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init("#version 330");
 
   kk::gui::Worker worker(*root, *cfg, [] { glfwPostEmptyEvent(); });
-  kk::gui::Ui ui(worker);
+  kk::gui::Ui ui(worker, settings, persist);
+  if (open_settings) ui.open_settings();
   ui.request().scope = scope;
   ui.request().selected = select;
   ui.request().all_levels = all_levels;
@@ -137,17 +160,31 @@ int main(int argc, char** argv) {
   int frame = 0;
   int settle = 3;
   std::shared_ptr<const kk::gui::Model> model;
+  int ready_since = -1;
+  int drag_frame = -1;  // >= 0 while the scripted drag runs
+  std::uint64_t release_serial = 0;
   auto start = std::chrono::steady_clock::now();
   while (glfwWindowShouldClose(window) == 0) {
     model = worker.model();
     bool animate = false;
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
+    if (drag_frame >= 0 && drag_frame <= 12) {
+      // Scripted drag (headless checks): move, press, 10 steps, release.
+      if (drag_frame == 0) io.AddMousePosEvent(drag[0], drag[1]);
+      if (drag_frame == 1) io.AddMouseButtonEvent(0, true);
+      if (drag_frame >= 2 && drag_frame <= 11) {
+        float t = static_cast<float>(drag_frame - 1) / 10.0f;
+        io.AddMousePosEvent(drag[0] + (drag[2] - drag[0]) * t, drag[1] + (drag[3] - drag[1]) * t);
+      }
+      if (drag_frame == 12) io.AddMouseButtonEvent(0, false);
+    }
     ImGui::NewFrame();
     ui.request().char_w = ImGui::CalcTextSize("abcdefghijklmnopqrstuvwxyz").x / 26.0f;
     ui.request().line_h = ImGui::GetTextLineHeightWithSpacing();
     animate = ui.draw(model, first);
     first = false;
+    if (ui.quit_requested()) glfwSetWindowShouldClose(window, GLFW_TRUE);
     worker.set_request(ui.request());
     ImGui::Render();
     int w = 0;
@@ -160,8 +197,20 @@ int main(int argc, char** argv) {
     ++frame;
     if (frames > 0) {
       // Headless check: wait until the worker delivered a model, then capture.
-      bool ready = model && model->snap && model->req.scope == ui.request().scope;
+      // Ready: the model of the requested level has been on screen for a few frames
+      // (positions applied, then "fit to view").
+      bool have = model && model->snap && model->req.scope == ui.request().scope;
+      if (!have) ready_since = -1;
+      else if (ready_since < 0) ready_since = frame;
+      bool ready = have && frame - ready_since >= 6;
       auto waited = std::chrono::steady_clock::now() - start;
+      if (!drag.empty() && ready && frame >= frames) {
+        if (drag_frame == 12) release_serial = model->serial;
+        if (drag_frame < 12 || model->serial <= release_serial || drag_frame < 30) {
+          ++drag_frame;
+          ready = false;
+        }
+      }
       if ((frame >= frames && ready) || waited > std::chrono::seconds(30)) {
         if (!screenshot.empty()) {
           std::vector<std::uint8_t> px(static_cast<std::size_t>(w * h * 4));
