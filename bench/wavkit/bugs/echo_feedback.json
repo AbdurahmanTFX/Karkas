@@ -1,0 +1,8 @@
+{
+  "id": "echo_feedback",
+  "file": "blocks/dsp/echo/impl/echo.cpp",
+  "old": "feedback_ = std::clamp(feedback, 0.0f, 0.99f);",
+  "new": "feedback_ = feedback * 1.5f;",
+  "symptom": "with --echo the sound keeps getting louder until it explodes",
+  "fact": "contract dsp.echo 'feedback below 1.0 never makes the output grow without bound' FAIL"
+}

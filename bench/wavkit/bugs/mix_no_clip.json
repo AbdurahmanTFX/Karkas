@@ -1,0 +1,8 @@
+{
+  "id": "mix_no_clip",
+  "file": "blocks/mix/impl/mix.cpp",
+  "old": "      f.left = std::clamp(f.left, -1.0f, 1.0f);\n      f.right = std::clamp(f.right, -1.0f, 1.0f);\n",
+  "new": "",
+  "symptom": "loud distortion when several loud tracks are mixed",
+  "fact": "contract mix 'output samples stay within [-1, 1]' FAIL"
+}

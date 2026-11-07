@@ -1,0 +1,8 @@
+{
+  "id": "ring_wraparound",
+  "file": "blocks/stream/ring/impl/ring.cpp",
+  "old": "buf_[(head + i) & mask_] = frames[i];",
+  "new": "buf_[(head + i) % (buf_.size() - 1)] = frames[i];",
+  "symptom": "crackle in the output after a few seconds of playback",
+  "fact": "contract stream.ring 'never loses or duplicates frames, including at wraparound' FAIL"
+}

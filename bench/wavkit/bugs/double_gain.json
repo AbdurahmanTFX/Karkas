@@ -1,0 +1,8 @@
+{
+  "id": "double_gain",
+  "file": "blocks/dsp/chain/impl/chain.cpp",
+  "old": "    if (gain_ != nullptr) gain_->process(frames);\n",
+  "new": "    if (gain_ != nullptr) gain_->process(frames);\n    if (gain_ != nullptr) gain_->process(frames);\n",
+  "symptom": "--gain 0.5 makes the output four times quieter instead of two",
+  "fact": "integration test dsp: expected 0.4 after gain 0.5, got 0.2"
+}

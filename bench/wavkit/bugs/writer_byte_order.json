@@ -1,0 +1,8 @@
+{
+  "id": "writer_byte_order",
+  "file": "blocks/io/writer/impl/writer.cpp",
+  "old": "le(b, static_cast<std::uint16_t>(v), 2);",
+  "new": "b.push_back(static_cast<unsigned char>((static_cast<std::uint16_t>(v) >> 8) & 0xffu));\n          b.push_back(static_cast<unsigned char>(static_cast<std::uint16_t>(v) & 0xffu));",
+  "symptom": "output files play as loud noise in other players",
+  "fact": "contract io.writer: 0.5 is written as bytes 40 00, expected 00 40"
+}

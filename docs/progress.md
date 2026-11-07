@@ -136,3 +136,28 @@
 - Measured under Xvfb (debug build, software GL): a 44-block / ~20k-line project opens in
   ≈0.35 s with an existing index and ≈0.95 s from scratch; idle CPU 0% over 10 s.
   Screenshot: docs/screenshots/stream_level.png.
+
+## Stage 10 — benchmarks (harness)
+- bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
+  (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip
+  protection, echo feedback overflow, byte order), an example of hidden acceptance tests
+  (hidden_tests.example/run.py: 11 S1 tests + 5 S2 tests; the reference passes all S1).
+- `karkas bench run --scenario s1|s2|s3 --method A|B|C --model <m> --reps N`: fresh copy per
+  run, unique marker at the start of every prompt, method A strips .ksl/.karkas, B adds the
+  Karkas MCP server, C runs the Karkas pipeline (approvals counted as interventions);
+  then build + hidden tests (path from `[bench] hidden_tests`); results in
+  bench/results/<date>/<scenario>-<method>-<n>.json. Claude Code data from its JSON result
+  (total_cost_usd, usage, modelUsage).
+- `karkas bench report`: medians and min–max per scenario/method/model, cost by role for C
+  (where the tokens go, 17.8); report.csv, report.txt, report.html.
+- Tests: Claude Code JSON parsing, bug patches apply, report aggregation, and an end-to-end
+  S3 run of method C with a scripted model (build + hidden tests).
+- Not done: the measurements themselves (need an API key and money: ≥ 3 runs × 3 methods ×
+  3 scenarios). The hidden tests must be copied outside the repository first (17.6).
+
+## Not verified in this environment
+- Real model calls: `karkas llm ping`, cache_read growth, "idea → working wavkit" (stage 7),
+  the benchmark runs (stage 10) — they need ANTHROPIC_API_KEY and spend money.
+- MCP Inspector and `claude mcp add karkas -- karkas mcp --project <dir>` (stage 3) — manual.
+- The Graphviz engine — Graphviz is not installed (docs/adr/0002).
+- karkas-gui was checked under Xvfb with screenshots; interactive use on Wayland is manual.

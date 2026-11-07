@@ -1,0 +1,5 @@
+Add --reverb ROOM (0..1, default off): a Schroeder reverb (4 comb filters + 2 all-pass filters) applied to every track after the echo; ROOM 0 leaves the samples unchanged.
+Add --pan P repeated per track like --track-gain (-1 left .. 1 right, default 0): left gain = min(1, 1-P), right gain = min(1, 1+P), applied in the mix before summing.
+Add --normalize: scale the final mix so that its peak absolute sample is exactly 1.0 (when the peak is above 0), instead of clamping.
+Add batch mode: wavkit --batch IN_DIR -o OUT_DIR [effects] processes every *.wav file of IN_DIR separately and writes OUT_DIR/<same name>; one bad file is reported on stderr and the others are still written; exit code 1 if any file failed.
+Add --progress: print "progress <percent>" lines to stderr while processing, monotonic, integers 0..100, the last line is "progress 100".
