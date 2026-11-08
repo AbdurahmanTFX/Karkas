@@ -272,6 +272,44 @@ kk::Result<EditOp> op_rename(const core::Schema& s, const std::string& id, const
   return op;
 }
 
+kk::Result<EditOp> op_move(const core::Schema& s, const std::string& id, const std::string& new_parent_in) {
+  auto b = need(s, id);
+  if (!b) return std::unexpected(b.error());
+  std::string parent = new_parent_in == "root" ? "" : new_parent_in;
+  if (!parent.empty()) {
+    auto pb = need(s, parent);
+    if (!pb) return std::unexpected(pb.error());
+    if ((*pb)->kind != core::BlockKind::Group) return kk::fail("edit", fmt::format("{} is not a group", parent));
+    if (core::Schema::is_under(id, parent)) return kk::fail("edit", fmt::format("{} cannot move into itself", id));
+  }
+  if (core::parent_id(id) == parent) return kk::fail("edit", fmt::format("{} is already there", id));
+  auto pos = id.rfind('.');
+  std::string name = pos == std::string::npos ? id : id.substr(pos + 1);
+  std::string nid = parent.empty() ? name : parent + "." + name;
+  if (s.find(nid) != nullptr) return kk::fail("edit", fmt::format("{} already exists", nid));
+  EditOp op;
+  op.title = fmt::format("move {} -> {}", id, nid);
+  op.rename_from = id;
+  op.rename_to = nid;
+  op.tolerate.push_back("E06");  // the old group may be left empty
+  add_ref_rewrites(s, op.diff, [&](const std::string& l) { return rewrite_refs(l, id, nid, true); }, {});
+  return op;
+}
+
+kk::Result<EditOp> op_set_purpose(const core::Schema& s, const std::string& id, const std::string& purpose) {
+  auto b = need(s, id);
+  if (!b) return std::unexpected(b.error());
+  if (core::trim(purpose).empty()) return kk::fail("edit", "purpose is required");
+  EditOp op;
+  op.title = "purpose of " + id;
+  op.diff.push_back({'~', "@block " + id, 0});
+  for (const auto& l : card_lines(**b)) {
+    if (l.starts_with("purpose")) op.diff.push_back({'-', l, 0});
+  }
+  op.diff.push_back({'+', core::format_line("purpose", core::format_free_text(purpose)), 0});
+  return op;
+}
+
 kk::Result<EditOp> op_merge(const core::Schema& s, const std::string& keep, const std::string& absorb) {
   auto k = need(s, keep);
   if (!k) return std::unexpected(k.error());
@@ -398,13 +436,14 @@ kk::Result<AppliedEdit> apply_edit(const fs::path& root, const EditOp& op) {
       }
     }
     auto after = core::load_schema(root);
-    if (!after || core::has_errors(core::check_schema(*after))) {
-      std::string why = after ? "" : after.error().message;
-      if (after) {
-        for (const auto& i : core::check_schema(*after)) {
-          if (i.severity == 'E') why += i.str() + "\n";
-        }
+    // Errors the edit accepts (a move may leave its old group empty: E06).
+    std::string why = after ? "" : after.error().message;
+    if (after) {
+      for (const auto& i : core::check_schema(*after)) {
+        if (i.severity == 'E' && std::ranges::find(op.tolerate, i.code) == op.tolerate.end()) why += i.str() + "\n";
       }
+    }
+    if (!why.empty()) {
       (void)undo_edit(root, a);
       return kk::fail("edit", "rename breaks the schema:\n" + why);
     }

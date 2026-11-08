@@ -128,3 +128,26 @@ TEST_CASE("edit: remove links of every kind") {
   no_errors(p);
   CHECK_FALSE(agents::op_disconnect(load(p), "call", "mix", "", "dsp.gain", "process"));
 }
+
+TEST_CASE("edit: move a block under another group and set its purpose") {
+  test::FixtureCopy p("wavkit");
+  apply(p, agents::op_add_block(load(p), "root", "audio", core::BlockKind::Group, "audio processing", ""));
+  auto op = agents::op_move(load(p), "dsp", "audio");
+  REQUIRE(op);
+  CHECK(core::contains(agents::preview_edit(p.path(), *op), "move blocks/dsp -> blocks/audio/dsp"));
+  auto a = apply(p, op);
+  CHECK(core::contains(test::read(p / "blocks/audio/dsp/chain/block.ksl"), "@block audio.dsp.chain"));
+  CHECK(core::contains(test::read(p / "blocks/mix/block.ksl"), "from=audio.dsp.chain:out"));
+  no_errors(p);
+  // Back to the top level, which leaves audio empty (allowed, then removed).
+  apply(p, agents::op_move(load(p), "audio.dsp", "root"));
+  CHECK(core::contains(test::read(p / "blocks/mix/block.ksl"), "from=dsp.chain:out"));
+  apply(p, agents::op_remove_block(load(p), "audio"));
+  no_errors(p);
+  CHECK_FALSE(agents::op_move(load(p), "dsp", "dsp.chain"));  // not a group / into itself
+  CHECK_FALSE(agents::op_move(load(p), "dsp", "root"));       // already there
+  CHECK_FALSE(agents::op_move(load(p), "stream.ring", "dsp.gain"));
+  apply(p, agents::op_set_purpose(load(p), "mix", "sums the tracks into one stream"));
+  CHECK(core::contains(test::read(p / "blocks/mix/block.ksl"), "purpose sums the tracks into one stream"));
+  no_errors(p);
+}

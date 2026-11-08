@@ -36,6 +36,13 @@ kk::Result<EditOp> op_connect(const core::Schema& s, const std::string& from_blo
 kk::Result<EditOp> op_disconnect(const core::Schema& s, const std::string& kind, const std::string& src_block,
                                  const std::string& src_port, const std::string& dst_block, const std::string& dst_port);
 kk::Result<EditOp> op_rename(const core::Schema& s, const std::string& id, const std::string& new_name);
+// Moves a block (with its subtree) under another group ("" or "root" = the top level): its id
+// becomes <parent>.<name>, the card folder moves and every reference is rewritten. Imported
+// code stays where it is (files lines are project-relative). A group left empty is allowed (E06);
+// remove it afterwards.
+kk::Result<EditOp> op_move(const core::Schema& s, const std::string& id, const std::string& new_parent);
+// Replaces the purpose line of a card.
+kk::Result<EditOp> op_set_purpose(const core::Schema& s, const std::string& id, const std::string& purpose);
 // Moves the ports, links and invariants of `absorb` into `keep` and removes `absorb`.
 kk::Result<EditOp> op_merge(const core::Schema& s, const std::string& keep, const std::string& absorb);
 // Moves `ports` of `id` into a new sibling block `new_name`.
