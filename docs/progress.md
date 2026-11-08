@@ -190,6 +190,23 @@
   links start in the block's color; "All levels" uses the opened-in-place view (wheel zoom
   everywhere). Checked by screenshots in both languages.
 
+## Addition — models per level and block, settings window, links, new project (docs/adr/0011)
+- karkas.toml `[levels]` (tier per level of the block tree, 0 = the project) and `[blocks]`
+  (tier per block and everything inside it); order block → level → [roles]/routing, for every
+  agent on that block; the journal says what pinned the model. `[models.*] api_key_env` names
+  the variable with the key of that API (several providers side by side, keys never in files).
+- `core::set_config_value` edits karkas.toml one key at a time, keeping comments; tests.
+- GUI: settings in a separate window (gear, Ctrl+,) with pages Appearance / Schema / Models and
+  API / Help. Models page: APIs (add, edit, delete; key variable set or not, never the key),
+  model of each level, blocks with their own model, role defaults. Schema toolbar: model chip
+  for the level shown and the selected block; inspector: MODEL section.
+- Links: right click on a line removes one of its links or all of them; Delete removes the
+  selected line; one KSL preview for the whole removal.
+- New project from the GUI (Karkas → New project…, Ctrl+N, or the Create tab of the project
+  window): a new folder, or an existing folder (with code: the import is proposed at once).
+  `code::init_project` is shared with `karkas init`; tests.
+- `karkas approve api` also clears needs_review of blocks without an api/ (the entry).
+
 ## Stage 10 — benchmarks (harness)
 - bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
   (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip
