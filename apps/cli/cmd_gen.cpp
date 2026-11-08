@@ -23,12 +23,12 @@ void report(const kk::Result<code::GenResult>& r) {
 }
 
 AutoRegister reg_gen([](CLI::App& cli, App& app) {
-  auto* cmd = cli.add_subcommand("gen", "deterministic generation: cmake | mocks | probe | skel");
+  auto* cmd = cli.add_subcommand("gen", "deterministic generation: cmake | mocks | probe | skel | guide");
   static std::string what;
   static std::string block = "all";
-  cmd->add_option("what", what, "cmake | mocks | probe | skel | all")
+  cmd->add_option("what", what, "cmake | mocks | probe | skel | all | guide (Karkas block of CLAUDE.md)")
       ->required()
-      ->check(CLI::IsMember({"cmake", "mocks", "probe", "skel", "all"}));
+      ->check(CLI::IsMember({"cmake", "mocks", "probe", "skel", "all", "guide"}));
   cmd->add_option("block", block, "block for mocks/skel (default: all)");
   cmd->callback([&app] {
     auto root = app.root();
@@ -42,6 +42,11 @@ AutoRegister reg_gen([](CLI::App& cli, App& app) {
     if (what == "skel" || what == "all") report(code::write_skel(load(), block));
     if (what == "mocks" || what == "all") report(code::write_mocks(load(), block));
     if (what == "cmake" || what == "all") report(code::write_cmake(load()));
+    if (what == "guide") {
+      auto g = code::write_agent_guide(root);
+      if (!g) die(g.error().str());
+      std::cout << "CLAUDE.md: " << *g << "\n";
+    }
   });
 });
 

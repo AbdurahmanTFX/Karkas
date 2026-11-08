@@ -23,7 +23,8 @@ TEST_CASE("init: a new folder gets the project frame") {
   REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
   CHECK(r->name == "my_game");
   CHECK_FALSE(r->existing_code);
-  CHECK(r->written == std::vector<std::string>{"project.ksl", "karkas.toml", "cmake/user.cmake", ".gitignore"});
+  CHECK(r->written == std::vector<std::string>{"project.ksl", "karkas.toml", "cmake/user.cmake", ".gitignore", "CLAUDE.md"});
+  CHECK(core::contains(test::read(root / "CLAUDE.md"), "kk_propose_change"));
   CHECK(fs::is_directory(root / "blocks"));
   CHECK(fs::is_directory(root / ".karkas"));
   auto s = core::load_schema(root);
@@ -48,4 +49,24 @@ TEST_CASE("init: a folder with code keeps its standard and gets no rules") {
   CHECK(core::contains(text, "std     c++17"));
   CHECK_FALSE(core::contains(text, "rule"));
   CHECK(test::read(root / "src/main.cpp") == "int main() { return 0; }\n");
+}
+
+TEST_CASE("init: the agent guide is a managed block of CLAUDE.md") {
+  test::TempDir tmp;
+  auto root = tmp.path();
+  test::write(root / "CLAUDE.md", "# My notes\nbuild with make\n");
+  auto a = code::write_agent_guide(root);
+  REQUIRE(a);
+  CHECK(*a == "updated");
+  auto text = test::read(root / "CLAUDE.md");
+  CHECK(text.starts_with("# My notes\nbuild with make\n\n<!-- karkas:begin"));
+  CHECK(core::contains(text, "Schema first"));
+  CHECK(text.ends_with("<!-- karkas:end -->\n"));
+  // Again: nothing changes; an edited block is replaced, the user's text stays.
+  CHECK(*code::write_agent_guide(root) == "unchanged");
+  auto edited = core::replace_all(text, "Schema first", "old text");
+  test::write(root / "CLAUDE.md", edited + "## After\nmore notes\n");
+  CHECK(*code::write_agent_guide(root) == "updated");
+  auto again = test::read(root / "CLAUDE.md");
+  CHECK(again == text + "## After\nmore notes\n");
 }
