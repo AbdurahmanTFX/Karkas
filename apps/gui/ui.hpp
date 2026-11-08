@@ -24,6 +24,11 @@ class TextEditor;
 
 namespace kk::gui {
 
+// One link of the schema, by value (the snapshot may change while a menu is open).
+struct LinkDesc {
+  std::string kind, src_block, src_port, dst_block, dst_port;
+};
+
 class Ui {
  public:
   // `persist`: save settings changes to ~/.config/karkas/gui.json.
@@ -76,6 +81,7 @@ class Ui {
   std::pair<float, float> node_size(const Model& m, const std::string& id) const;
   void save_view(const Model& m, bool reset_sizes = false, const std::string& reset_one = "");
   void set_all_levels(const Model& m, bool on);
+  void propose_unlink(std::vector<LinkDesc> links);  // KSL preview, then removal
 
   Worker& w_;
   GuiSettings& settings_;
@@ -111,6 +117,7 @@ class Ui {
   std::string path_error_;
   // highlighting (hover, Shift+click)
   std::set<std::string> pinned_;  // blocks whose links stay lit
+  std::vector<LinkDesc> menu_links_;  // links of the line whose menu is open
   std::string hover_unit_;        // block under the mouse on the schema (last frame)
   std::string tree_hover_;        // block under the mouse in the tree (this frame)
   std::string hover_frame_;       // opened group whose path bar is under the mouse

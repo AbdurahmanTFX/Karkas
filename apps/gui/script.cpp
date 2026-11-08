@@ -36,6 +36,11 @@ std::optional<InputScript> InputScript::parse(std::string_view text, std::string
         f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(0, false); });
       }
       key_shift(false);
+    } else if (cmd == "rclick" && w.size() == 3) {
+      float x = num(w[1]), y = num(w[2]);
+      f.emplace_back([x, y](ImGuiIO& io) { io.AddMousePosEvent(x, y); });
+      f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(1, true); });
+      f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(1, false); });
     } else if (cmd == "drag" && w.size() == 5) {
       float x1 = num(w[1]), y1 = num(w[2]), x2 = num(w[3]), y2 = num(w[4]);
       f.emplace_back([x1, y1](ImGuiIO& io) { io.AddMousePosEvent(x1, y1); });

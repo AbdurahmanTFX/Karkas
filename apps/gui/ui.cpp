@@ -117,6 +117,24 @@ void Ui::enter(const std::string& scope) {
 
 void Ui::select(const std::string& id) { req_.selected = id; }
 
+void Ui::propose_unlink(std::vector<LinkDesc> links) {
+  if (links.empty()) return;
+  w_.propose([links](const core::Schema& s) -> kk::Result<agents::EditOp> {
+    agents::EditOp all;
+    for (const auto& l : links) {
+      auto op = agents::op_disconnect(s, l.kind, l.src_block, l.src_port, l.dst_block, l.dst_port);
+      if (!op) return std::unexpected(op.error());
+      all.diff.insert(all.diff.end(), op->diff.begin(), op->diff.end());
+      all.title = op->title;
+    }
+    if (links.size() > 1) {
+      all.title = fmt::format("remove {} {} links {} -> {}", links.size(), links.front().kind, links.front().src_block, links.front().dst_block);
+    }
+    return all;
+  });
+  preview_open_ = true;
+}
+
 void Ui::set_all_levels(const Model& m, bool on) {
   (void)m;
   req_.all_levels = on;
@@ -733,6 +751,7 @@ void Ui::draw_graph(const Model& m) {
     return block_point(block, input);
   };
   std::map<std::uintptr_t, const index::LinkRow*> link_of;
+  std::map<std::uintptr_t, std::vector<LinkDesc>> links_of;  // every drawn line → the links it shows
   // call/use/state links between the same two blocks are drawn as one line (thicker with
   // more links); the hover tooltip names them. data/event links stay port to port.
   struct Bundle {
@@ -784,6 +803,7 @@ void Ui::draw_graph(const Model& m) {
     }
     auto lid = hid(fmt::format("link:{}", l.id));
     link_of[lid] = &l;
+    links_of[lid] = {LinkDesc{l.kind, l.src_block, l.src_port, l.dst_block, l.dst_port}};
     auto [c, thick] = style(l.kind, a, a, b, 2.0f);
     ed::Link(lid, from, to, c, thick);
   }
@@ -794,7 +814,8 @@ void Ui::draw_graph(const Model& m) {
     float base = bd.kind == "use" ? 1.0f : (bd.kind == "state" ? 3.0f : 2.0f);
     float thick = base + std::min(3.0f, std::log2(static_cast<float>(n)));
     if (n == 1) {
-      link_of[lid] = bd.links[0];  // a single link can be deleted on the picture
+      links_of[lid] = {LinkDesc{bd.links[0]->kind, bd.links[0]->src_block, bd.links[0]->src_port, bd.links[0]->dst_block, bd.links[0]->dst_port}};
+      link_of[lid] = bd.links[0];
     } else {
       std::vector<std::string> names;
       for (const auto* l : bd.links) {
@@ -804,6 +825,7 @@ void Ui::draw_graph(const Model& m) {
         }
         names.push_back(l->dst_port.empty() ? l->dst_block : l->dst_port);
       }
+      for (const auto* l : bd.links) links_of[lid].push_back(LinkDesc{l->kind, l->src_block, l->src_port, l->dst_block, l->dst_port});
       bundle_text[lid] = fmt::format(fmt::runtime(tr("{} → {}: {} {} links")), core::last_segment(bd.a),
                                      core::last_segment(bd.b), n, bd.kind) +
                          "\n" + core::join(names, ", ");
@@ -847,12 +869,8 @@ void Ui::draw_graph(const Model& m) {
   if (ed::BeginDelete()) {
     ed::LinkId lid;
     while (ed::QueryDeletedLink(&lid)) {
-      if (ed::AcceptDeletedItem(false) && link_of.contains(lid.Get())) {
-        const auto* l = link_of[lid.Get()];
-        auto k = l->kind, sb = l->src_block, sp = l->src_port, db = l->dst_block, dp = l->dst_port;
-        w_.propose([=](const core::Schema& s) { return agents::op_disconnect(s, k, sb, sp, db, dp); });
-        preview_open_ = true;
-      }
+      // Delete on a selected line removes every link it shows (after the KSL preview).
+      if (ed::AcceptDeletedItem(false) && links_of.contains(lid.Get())) propose_unlink(links_of[lid.Get()]);
     }
     ed::NodeId nid;
     while (ed::QueryDeletedNode(&nid)) {
@@ -885,12 +903,15 @@ void Ui::draw_graph(const Model& m) {
     if (req_.selected != id && !ImGui::IsMouseDragging(0)) select(id);
   }
   ed::Suspend();
-  if (auto hl = ed::GetHoveredLink(); hl && bundle_text.contains(hl.Get())) ImGui::SetTooltip("%s", bundle_text[hl.Get()].c_str());
+  bool menu_open = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+  if (auto hl = ed::GetHoveredLink(); hl && bundle_text.contains(hl.Get()) && !menu_open) {
+    ImGui::SetTooltip("%s", bundle_text[hl.Get()].c_str());
+  }
   hover_pin_ = 0;
   if (auto hp = ed::GetHoveredPin(); hp && pin_of.contains(hp.Get())) {
     hover_pin_ = hp.Get();
     auto parts = core::split(pin_of[hp.Get()], ':', false);
-    if (parts.size() == 3 && ImGui::IsMouseDragging(0) == false) {
+    if (parts.size() == 3 && !ImGui::IsMouseDragging(0) && !menu_open) {
       if (parts[1].empty() && parts[2] == "in") {
         ImGui::SetTooltip("%s", tr("In: links from blocks that call or use this one. Drop a data output here to add an input."));
       } else if (parts[1].empty() && parts[2] == "out") {
@@ -901,11 +922,43 @@ void Ui::draw_graph(const Model& m) {
     }
   }
   ed::NodeId ctx;
+  ed::LinkId link_ctx;
   if (ed::ShowNodeContextMenu(&ctx) && node_of.contains(ctx.Get())) {
     target_ = node_of[ctx.Get()];
     ImGui::OpenPopup("node_menu");
+  } else if (ed::ShowLinkContextMenu(&link_ctx) && links_of.contains(link_ctx.Get())) {
+    menu_links_ = links_of[link_ctx.Get()];
+    ImGui::OpenPopup("link_menu");
   } else if (ed::ShowBackgroundContextMenu()) {
     ImGui::OpenPopup("bg_menu");
+  }
+  if (ImGui::BeginPopup("link_menu")) {
+    // Remove one link of the line, or all of them.
+    if (!menu_links_.empty()) {
+      const auto& f = menu_links_.front();
+      ImGui::TextDisabled("%s → %s · %s", f.src_block.c_str(), f.dst_block.c_str(), f.kind.c_str());
+      ImGui::Separator();
+      auto label = [](const LinkDesc& l) {
+        if (l.kind == "data" || l.kind == "event") return fmt::format("{}:{} → {}:{}", l.src_block, l.src_port, l.dst_block, l.dst_port);
+        if (l.kind == "call") return fmt::format("{}()", l.dst_port);
+        return l.kind + " " + l.dst_block;
+      };
+      ImGui::PushStyleColor(ImGuiCol_Text, rgb(241, 110, 110));
+      if (menu_links_.size() == 1) {
+        if (ImGui::MenuItem(with_icon(Icon::Close, tr("Remove the link")).c_str())) propose_unlink(menu_links_);
+      } else {
+        for (std::size_t i = 0; i < menu_links_.size() && i < 30; ++i) {
+          std::string item = with_icon(Icon::Close, fmt::format(fmt::runtime(tr("Remove {}")), label(menu_links_[i]))) + "##" + std::to_string(i);
+          if (ImGui::MenuItem(item.c_str())) propose_unlink({menu_links_[i]});
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem(with_icon(Icon::Close, fmt::format(fmt::runtime(tr("Remove all {} links")), menu_links_.size())).c_str())) {
+          propose_unlink(menu_links_);
+        }
+      }
+      ImGui::PopStyleColor();
+    }
+    ImGui::EndPopup();
   }
   bool reset_one = false;
   bool auto_layout = false;
