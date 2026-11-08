@@ -862,11 +862,19 @@ void Ui::draw_graph(const Model& m) {
   } else if (auto hp = ed::GetHoveredPin(); hp && pin_of.contains(hp.Get())) {
     hovered_now = core::split(pin_of[hp.Get()], ':', false).front();
   }
-  if (ed::IsBackgroundClicked() && !shift && header_hit.empty()) pinned_.clear();
+
   std::string collapse_now;
   if (!header_hit.empty() && ImGui::IsMouseClicked(0) && !shift) collapse_now = header_hit;
   hover_frame_ = header_frame;
   ed::End();
+  // The highlight is cleared only by a plain left click on the background. The editor reports
+  // a background "click" on the release of any button, also after a drag, and only in End():
+  // panning with the right button or drawing a selection rectangle must keep the highlight.
+  {
+    const auto& io = ImGui::GetIO();
+    bool plain = io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < io.MouseDragThreshold * io.MouseDragThreshold;
+    if (ed::GetBackgroundClickButtonIndex() == ImGuiMouseButton_Left && plain && !shift && header_hit.empty()) pinned_.clear();
+  }
   ed::SetCurrentEditor(nullptr);
   // Shift+click keeps a block's links lit (again: off); Shift+double-click opens a group in place.
   std::string expand_now;

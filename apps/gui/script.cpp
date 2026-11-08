@@ -49,6 +49,15 @@ std::optional<InputScript> InputScript::parse(std::string_view text, std::string
       float x = num(w[1]), y = num(w[2]), d = num(w[3]);
       f.emplace_back([x, y](ImGuiIO& io) { io.AddMousePosEvent(x, y); });
       f.emplace_back([d](ImGuiIO& io) { io.AddMouseWheelEvent(0, d); });
+    } else if (cmd == "rdrag" && w.size() == 5) {
+      float x1 = num(w[1]), y1 = num(w[2]), x2 = num(w[3]), y2 = num(w[4]);
+      f.emplace_back([x1, y1](ImGuiIO& io) { io.AddMousePosEvent(x1, y1); });
+      f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(1, true); });
+      for (int i = 1; i <= 10; ++i) {
+        float t = static_cast<float>(i) / 10.0f;
+        f.emplace_back([=](ImGuiIO& io) { io.AddMousePosEvent(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t); });
+      }
+      f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(1, false); });
     } else if (cmd == "wait" && w.size() == 2) {
       for (int i = 0; i < std::atoi(w[1].c_str()); ++i) f.emplace_back([](ImGuiIO&) {});
     } else if (cmd == "key" && w.size() == 2 && w[1] == "ctrl+o") {
