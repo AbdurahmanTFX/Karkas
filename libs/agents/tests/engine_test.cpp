@@ -19,11 +19,11 @@ struct Rig {
   test::ScriptedModel model;
   test::FakeTests tests;
   std::unique_ptr<agents::Engine> engine;
-  explicit Rig(bool fake_tests = true) {
+  explicit Rig(bool fake_tests = true, core::Config cfg = test::test_config()) {
     agents::EngineOptions o;
     o.providers = model.factory();
     if (fake_tests) o.tests = &tests;
-    auto e = agents::Engine::create(p.path(), test::test_config(), o);
+    auto e = agents::Engine::create(p.path(), cfg, o);
     REQUIRE_MESSAGE(e, (e ? "" : e.error().str()));
     engine = std::move(*e);
   }
@@ -140,6 +140,26 @@ TEST_CASE("engine: needs_contract_change becomes a pending @change and the ticke
   REQUIRE_MESSAGE(a, (a ? "" : a.error().str()));
   CHECK(core::contains(test::read(rig.p / "blocks/stream/ring/block.ksl"), "fn      reset() -> void"));
   CHECK(core::contains(rig.ticket_text("T-0001"), "note    C-0001 approved"));
+}
+
+TEST_CASE("engine: models pinned per level and per block override the roles (ADR 0011)") {
+  auto cfg = test::test_config();
+  cfg.levels = {{0, "medium"}, {2, "strong"}};
+  cfg.block_tiers = {{"stream.ring", "cheap"}};
+  Rig rig(true, cfg);
+  rig.model.tool("dispatch", dispatch("stream", "M", "x"));
+  rig.model.tool("ask", {{"block", "stream.pump"}, {"question", "rate?"}});
+  rig.model.tool("answer", {{"text", "48k"}});
+  rig.model.tool("dispatch", dispatch("stream.ring", "L", "ring"));
+  rig.model.tool("report", {{"status", "fixed"}, {"cause", "c"}, {"fix", "f"}});
+  auto r = rig.engine->debug("crackle", {});
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() >= 5);
+  CHECK(rig.model.calls[0].tier == "medium");  // orchestrator: level 0
+  CHECK(rig.model.calls[1].tier == "medium");  // navigator of stream: level 1 not pinned, role tier
+  CHECK(rig.model.calls[2].tier == "strong");  // ask stream.pump: level 2
+  CHECK(rig.model.calls[4].tier == "cheap");   // worker stream.ring: its block beats level 2 and routing (L)
+  CHECK(core::contains(rig.ticket_text("T-0001"), "model=cheap"));
 }
 
 TEST_CASE("engine: ask() runs a short agent of the child and appends only its answer (10.5)") {

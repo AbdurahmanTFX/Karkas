@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "kk/core/config.hpp"
 #include "picker.hpp"
 #include "settings.hpp"
 #include "ui_common.hpp"
@@ -44,7 +45,10 @@ class Ui {
   void open_settings() { show_settings_ = true; }
   // A project chosen in "Open project" (main switches to it); empty when none.
   std::optional<std::filesystem::path> take_open_request() { return std::exchange(open_request_, std::nullopt); }
-  void set_project_root(std::filesystem::path root) { root_ = std::move(root); }
+  void set_project_root(std::filesystem::path root) {
+    root_ = std::move(root);
+    reload_models();
+  }
 
  private:
   enum class SideView { Explorer, Search, Changes, Settings };
@@ -58,7 +62,17 @@ class Ui {
   void side_search(const Model& m);
   void side_changes(const Model& m);
   void draw_settings_window(const Model* m);
+  // models and APIs per level / block (ui_models.cpp, ADR 0011)
   void settings_models(const Model* m);
+  void reload_models();
+  void draw_model_chip(const Model& m);
+  void inspector_model(const Model& m, const std::string& block);
+  void start_api_edit(const std::string& tier);  // "+" = a new API
+  void draw_api_form();
+  bool tier_combo(const char* id, const std::string& current, const char* none_label, std::string* out);
+  void set_pin(const std::string& section, const std::string& key, const std::string& tier);  // "" = unpin
+  [[nodiscard]] std::string tier_label(const std::string& tier) const;
+  [[nodiscard]] std::string effective_model(const Model& m, const std::string& block) const;
   void draw_editor(const Model& m);
   void draw_schema_toolbar(const Model& m);
   void draw_file_tab(const Model& m, const std::string& file);
@@ -104,6 +118,15 @@ class Ui {
   SideView side_ = SideView::Explorer;
   bool show_settings_ = false;  // the settings window
   int settings_page_ = 0;
+  core::Config cfg_;  // karkas.toml of the project (models, levels, blocks, roles)
+  std::string cfg_error_;
+  std::string models_msg_;
+  std::string api_edit_;  // API being edited ("" none, "+" new)
+  char api_name_[32] = {};
+  char api_model_[96] = {};
+  char api_url_[160] = {};
+  char api_env_[64] = {};
+  int api_provider_ = 0;
   bool side_visible_ = true;
   char filter_[128] = {};
   char search_[128] = {};

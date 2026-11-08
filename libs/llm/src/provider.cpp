@@ -99,14 +99,15 @@ kk::Result<std::unique_ptr<IProvider>> make_provider(const core::ModelTier& tier
   if (tier.model.empty()) return kk::fail("config", "model tier has no model name (set [models.<tier>] model)");
   if (tier.provider == "anthropic") {
     AnthropicOptions o;
-    if (const char* key = std::getenv("ANTHROPIC_API_KEY")) o.api_key = key;
+    o.key_env = tier.key_env();
+    if (const char* key = std::getenv(o.key_env.c_str())) o.api_key = key;
     if (!tier.base_url.empty()) o.base_url = tier.base_url;
     o.timeout_s = cfg.request_timeout_s;
     return std::unique_ptr<IProvider>(std::make_unique<AnthropicProvider>(http, o));
   }
   if (tier.provider == "openai_compat") {
     OpenAIOptions o;
-    if (const char* key = std::getenv("OPENAI_API_KEY")) o.api_key = key;
+    if (const char* key = std::getenv(tier.key_env().c_str())) o.api_key = key;
     if (!tier.base_url.empty()) o.base_url = tier.base_url;
     o.timeout_s = cfg.request_timeout_s;
     return std::unique_ptr<IProvider>(std::make_unique<OpenAICompatProvider>(http, o));

@@ -558,13 +558,30 @@ void Ui::draw_settings_window(const Model* m) {
   const ImGuiViewport* vp = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Appearing,
                           ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 56, ImGui::GetFontSize() * 36), ImGuiCond_Appearing);
+  ImGui::SetNextWindowSize(ImVec2(std::min(vp->WorkSize.x * 0.9f, ImGui::GetFontSize() * 64), std::min(vp->WorkSize.y * 0.9f, ImGui::GetFontSize() * 44)), ImGuiCond_Appearing);
+  // A window of its own: a visible frame and title bar over the IDE.
   ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::col(theme::kSideBg));
+  ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(80, 80, 86, 255));
+  ImGui::PushStyleColor(ImGuiCol_TitleBg, IM_COL32(44, 44, 48, 255));
+  ImGui::PushStyleColor(ImGuiCol_TitleBgActive, IM_COL32(44, 44, 48, 255));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 8));
   bool open = ImGui::Begin((with_icon(Icon::Gear, tr("Settings")) + "###settings_window").c_str(), &show_settings_,
                            ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse);
-  ImGui::PopStyleVar();
-  ImGui::PopStyleColor();
+  ImGui::PopStyleVar(4);
+  ImGui::PopStyleColor(4);
+  if (open) {
+    // Soft shadow around the window.
+    auto* fg = ImGui::GetBackgroundDrawList(ImGui::GetWindowViewport());
+    ImVec2 a = ImGui::GetWindowPos();
+    ImVec2 b(a.x + ImGui::GetWindowWidth(), a.y + ImGui::GetWindowHeight());
+    for (int i = 1; i <= 8; ++i) {
+      float d = static_cast<float>(i) * 2.0f;
+      fg->AddRect(ImVec2(a.x - d, a.y - d + 4), ImVec2(b.x + d, b.y + d + 4), IM_COL32(0, 0, 0, 40 - i * 4), 6 + d, 0, 2.0f);
+    }
+  }
   if (!open) {
     ImGui::End();
     return;
@@ -679,11 +696,6 @@ void Ui::draw_settings_window(const Model* m) {
   ImGui::End();
 }
 
-void Ui::settings_models(const Model* m) {
-  (void)m;
-  ui::muted("%s", tr("indexing..."));
-}
-
 // --- editor -----------------------------------------------------------------------------------
 
 void Ui::open_file_tab(const std::string& file) {
@@ -775,6 +787,10 @@ void Ui::draw_schema_toolbar(const Model& m) {
     ImGui::SameLine(0, 4);
     if (ui::icon_button("tb_clear", Icon::Close, tr("Clear"))) pinned_.clear();
   }
+  ImGui::SameLine(0, 4);
+  ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+  ImGui::SameLine(0, 4);
+  draw_model_chip(m);
   if (!path_error_.empty()) {
     ImGui::SameLine(0, 12);
     ImGui::TextColored(rgb(241, 76, 76), "%s", path_error_.c_str());
@@ -900,6 +916,7 @@ void Ui::draw_inspector(const Model& m) {
   }
   ImGui::Spacing();
   ImGui::BeginChild("insp", ImVec2(0, 0), ImGuiChildFlags_None);
+  inspector_model(m, b->id);
   if (ui::section((std::string(tr("CARD (KSL)")) + "###card").c_str())) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::col(theme::kEditorBg));
     ImGui::BeginChild("cardtext", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);

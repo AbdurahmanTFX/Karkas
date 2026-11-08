@@ -118,6 +118,11 @@ struct Engine::Impl {
     std::string t = it == cfg.roles.end() ? fallback : it->second;
     return t == "auto" ? fallback : t;
   }
+  // A model pinned for the block ([blocks], [levels]; ADR 0011) beats the role's tier.
+  std::string tier_for(const std::string& role, const std::string& fallback, std::string_view block) {
+    if (auto p = cfg.pin(block); !p.tier.empty()) return p.tier;
+    return tier_for(role, fallback);
+  }
 
   void trail(const std::string& tid, const core::TrailEntry& e, const std::vector<std::string>& facts = {}) {
     if (tid.empty()) return;
@@ -288,6 +293,10 @@ struct Engine::Impl {
     }
     std::string tier = fixed_tier;
     std::string reason;
+    if (auto p = cfg.pin(block); tier.empty() && !p.tier.empty()) {
+      tier = p.tier;
+      reason = "pinned by " + p.by;
+    }
     if (tier.empty()) {
       std::lock_guard lk(mu);
       auto snap = idx->snapshot();
@@ -422,8 +431,10 @@ struct Engine::Impl {
       return out;
     }
     if (!integration) (void)code::write_mocks(*s, block);
-    std::string tier = integration ? tier_for("integration_tester", "medium")
-                                   : (b->est.value == "L" ? "medium" : tier_for("tester", "cheap"));
+    std::string tier = cfg.pin(block).tier;
+    if (tier.empty()) {
+      tier = integration ? tier_for("integration_tester", "medium") : (b->est.value == "L" ? "medium" : tier_for("tester", "cheap"));
+    }
     AgentSpec spec;
     spec.role = Role::Tester;
     spec.role_name = integration ? "integration_tester" : "tester";
@@ -468,7 +479,7 @@ struct Engine::Impl {
     spec.role_name = "ask";
     spec.block = block;
     spec.ticket = tid;
-    spec.tier = tier_for("ask", "cheap");
+    spec.tier = tier_for("ask", "cheap", block);
     spec.system_text = prompt("asked", {{"block", block}});
     spec.context_text = context_for(b->has_code() ? Role::Worker : Role::Navigator, block);
     spec.task_text = "Question: " + question;
@@ -603,7 +614,7 @@ kk::Result<std::string> Engine::design(const std::string& idea) {
   spec.role = Role::Architect;
   spec.role_name = "architect";
   spec.block = "root";
-  spec.tier = m.tier_for("architect", "strong");
+  spec.tier = m.tier_for("architect", "strong", "");
   spec.system_text = m.prompt("architect", {{"job", "design the top level of the project"}, {"target", "the project"}});
   spec.context_text = m.context_for(Role::Architect, "");
   spec.task_text = fmt::format(
@@ -643,7 +654,7 @@ kk::Result<std::string> Engine::expand(const std::string& block, bool all) {
     spec.role = Role::Architect;
     spec.role_name = "architect";
     spec.block = id;
-    spec.tier = m.tier_for("architect", "strong");
+    spec.tier = m.tier_for("architect", "strong", id);
     std::string job = group ? fmt::format("decompose group {} into 2-9 children (ids {}.<child>) and write api/ headers "
                                           "for every child that is a leaf",
                                           id, id)
@@ -911,7 +922,7 @@ kk::Result<std::string> Engine::implement(const std::string& target) {
     });
     if (!skeleton) continue;
     auto r = m.run_worker(b.id, "", "Write the composition root: create all leaves and wire them along the links.", "",
-                          "composer", m.tier_for("composer", "medium"));
+                          "composer", m.tier_for("composer", "medium", b.id));
     out += fmt::format("composer {}: {} ${:.4f}\n", b.id, r.status, r.cost);
   }
   // Phase 4: integration tests of groups (12.3).
@@ -988,8 +999,9 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id) {
     if (current == "root" || b->kind == core::BlockKind::Group) {
       bool orch = current == "root";
       std::string role = orch ? "orchestrator" : "navigator";
-      std::string tier = orch ? m.tier_for("orchestrator", "strong")
-                              : (m.navigator_tier.contains(current) ? m.navigator_tier[current] : m.tier_for("navigator", "medium"));
+      std::string tier = orch ? m.tier_for("orchestrator", "strong", "")
+                              : (m.navigator_tier.contains(current) ? m.navigator_tier[current]
+                                                                    : m.tier_for("navigator", "medium", current));
       AgentSpec spec;
       spec.role = orch ? Role::Orchestrator : Role::Navigator;
       spec.role_name = role;
@@ -1043,7 +1055,7 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id) {
         std::string up = b->parent.empty() ? "root" : b->parent;
         if (++not_here[up] >= 2) {
           // Twice not_here on one level: go one more level up with a stronger navigator (11.3).
-          auto nt = next_tier(m.navigator_tier.contains(up) ? m.navigator_tier[up] : m.tier_for("navigator", "medium"));
+          auto nt = next_tier(m.navigator_tier.contains(up) ? m.navigator_tier[up] : m.tier_for("navigator", "medium", up));
           if (!nt.empty()) m.navigator_tier[up] = nt;
           not_here[up] = 0;
           up = up == "root" ? "root" : (s->find(up) != nullptr && !s->find(up)->parent.empty() ? s->find(up)->parent : "root");

@@ -187,7 +187,7 @@ kk::Result<HttpResponse> AnthropicProvider::post(const std::string& path, const 
 }
 
 kk::Result<Response> AnthropicProvider::send(const Request& req) {
-  if (opts_.api_key.empty()) return kk::fail("llm", "ANTHROPIC_API_KEY is not set");
+  if (opts_.api_key.empty()) return kk::fail("llm", opts_.key_env + " is not set");
   auto body = request_json(req);
   int attempts = 0;
   auto r = with_retries(opts_.retry, [&] { return post("/v1/messages", body, !req.fallbacks.empty()); }, &attempts);
@@ -203,7 +203,7 @@ kk::Result<Response> AnthropicProvider::send(const Request& req) {
 }
 
 kk::Result<std::int64_t> AnthropicProvider::count_tokens(const Request& req) {
-  if (opts_.api_key.empty()) return kk::fail("llm", "ANTHROPIC_API_KEY is not set");
+  if (opts_.api_key.empty()) return kk::fail("llm", opts_.key_env + " is not set");
   auto body = request_json(req, true);
   auto r = with_retries(opts_.retry, [&] { return post("/v1/messages/count_tokens", body, false); });
   if (!r) return std::unexpected(r.error());

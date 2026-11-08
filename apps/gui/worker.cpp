@@ -116,6 +116,12 @@ void Worker::undo() {
   });
 }
 
+void Worker::reload_config() {
+  post([this] {
+    if (auto c = core::load_config(root_)) cfg_ = std::move(*c);
+  });
+}
+
 void Worker::approve_change(const std::string& id) {
   post([this, id] {
     auto e = agents::Engine::create(root_, cfg_);

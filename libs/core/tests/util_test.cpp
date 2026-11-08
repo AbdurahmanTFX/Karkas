@@ -102,6 +102,72 @@ TEST_CASE("config: syntax errors carry file and line") {
   CHECK_FALSE(bad);
 }
 
+TEST_CASE("config: models pinned per level and per block (ADR 0011)") {
+  Config cfg;
+  auto r = apply_config_text(cfg, R"([models.local]
+provider    = "openai_compat"
+model       = "qwen3-coder"
+base_url    = "http://localhost:11434/v1"
+api_key_env = "LOCAL_KEY"
+
+[levels]
+0 = "strong"
+2 = "cheap"
+
+[blocks]
+"game" = "local"
+"game.flow.timer" = "medium"
+)", "karkas.toml");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  CHECK(cfg.tier("local")->key_env() == "LOCAL_KEY");
+  CHECK(ModelTier{}.key_env() == "ANTHROPIC_API_KEY");
+  CHECK(block_level("") == 0);
+  CHECK(block_level("root") == 0);
+  CHECK(block_level("world.bird") == 2);
+  CHECK(cfg.pin("root").tier == "strong");
+  CHECK(cfg.pin("root").by == "level 0");
+  CHECK(cfg.pin("world").tier.empty());  // level 1: nothing pinned
+  CHECK(cfg.pin("world.bird").tier == "cheap");
+  CHECK(cfg.pin("game").by == "block game");
+  CHECK(cfg.pin("game.flow").tier == "local");  // inside game: the block beats the level
+  CHECK(cfg.pin("game.flow.timer").tier == "medium");  // the longest path wins
+  CHECK(cfg.pin("gamepad").tier.empty());  // a prefix of the name is not an ancestor
+  Config bad;
+  CHECK_FALSE(apply_config_text(bad, "[levels]\ntop = \"strong\"\n", "k.toml"));
+  CHECK_FALSE(apply_config_text(bad, "[blocks]\n\"Game\" = \"strong\"\n", "k.toml"));
+}
+
+TEST_CASE("config: set_config_value edits one key and keeps the rest") {
+  std::string text = "# my settings\n[models.strong]\nmodel = \"claude-opus-5-5\"  # best\n\n[roles]\nworker = \"auto\"\n";
+  auto a = set_config_value(text, "levels", "1", "strong");
+  REQUIRE(a);
+  CHECK(*a == text + "\n[levels]\n1 = \"strong\"\n");
+  auto b = set_config_value(*a, "blocks", "world.pickups", "cheap");
+  REQUIRE(b);
+  CHECK(contains(*b, "[blocks]\n\"world.pickups\" = \"cheap\"\n"));
+  auto c = set_config_value(*b, "roles", "tester", "medium");
+  REQUIRE(c);
+  CHECK(contains(*c, "[roles]\nworker = \"auto\"\ntester = \"medium\"\n"));
+  auto d = set_config_value(*c, "blocks", "world.pickups", "strong");
+  REQUIRE(d);
+  CHECK(contains(*d, "\"world.pickups\" = \"strong\""));
+  CHECK_FALSE(contains(*d, "cheap"));
+  auto e = set_config_value(*d, "blocks", "world.pickups", std::nullopt);
+  REQUIRE(e);
+  CHECK_FALSE(contains(*e, "world.pickups"));
+  CHECK(contains(*e, "# my settings\n"));
+  CHECK(contains(*e, "# best"));
+  auto f = set_config_value(*e, "models.local", "model", "say \"hi\"");
+  REQUIRE(f);
+  Config cfg;
+  REQUIRE(apply_config_text(cfg, *f, "k.toml"));
+  CHECK(cfg.tier("local")->model == "say \"hi\"");
+  auto g = remove_config_section(*f, "models.local");
+  CHECK_FALSE(contains(g, "local"));
+  CHECK(contains(g, "[roles]"));
+  CHECK_FALSE(set_config_value(text, "levels", "top", "strong"));  // invalid result is refused
+}
+
 TEST_CASE("text: to_ident makes KSL identifiers from C++ and file names") {
   CHECK(to_ident("ResolveCollision") == "resolve_collision");
   CHECK(to_ident("Update") == "update");

@@ -4,6 +4,7 @@
 // The API key is never read from files: only ANTHROPIC_API_KEY (6.5).
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,16 @@ struct ModelTier {
   std::string base_url;  // openai_compat; anthropic default https://api.anthropic.com
   std::string effort;    // output_config.effort ("" = model default)
   std::string fallbacks = "auto";  // "default" | "off" | "auto" (on where the model supports it)
+  // Environment variable holding this API's key ("" = ANTHROPIC_API_KEY or OPENAI_API_KEY by
+  // provider). Only the variable's name is stored, never the key (ADR 0011).
+  std::string api_key_env;
+  [[nodiscard]] std::string key_env() const;
+};
+
+// A model pinned for a part of the block tree (ADR 0011).
+struct Pin {
+  std::string tier;  // "" = nothing pinned: [roles] and routing decide
+  std::string by;    // "block game", "level 2" (for the journal and the GUI)
 };
 
 struct Price {
@@ -42,6 +53,11 @@ struct Config {
                                               {"navigator", "medium"},
                                               {"worker", "auto"},
                                               {"tester", "cheap"}};
+  // [levels]: tier per level of the block tree (0 = the project: orchestrator, architect of
+  // the top level; 1 = top-level blocks; 2 = their children; ...).
+  std::map<int, std::string> levels;
+  // [blocks]: tier per block, for the block and everything inside it (the longest path wins).
+  std::map<std::string, std::string> block_tiers;
   // [routing]
   int cheap_max = 3;
   int medium_max = 6;
@@ -80,7 +96,25 @@ struct Config {
   std::vector<std::string> sources;  // files that were loaded
 
   [[nodiscard]] const ModelTier* tier(std::string_view name) const;
+  // The model pinned for agents working on `block` ("" or "root" = the whole project):
+  // [blocks] (longest prefix) first, then [levels] by the depth of the block.
+  [[nodiscard]] Pin pin(std::string_view block) const;
 };
+
+// Level of a block in the tree: number of path segments ("" / "root" = 0, "game.flow" = 2).
+int block_level(std::string_view block);
+
+// Sets (value) or erases (nullopt) one string key of karkas.toml text, keeping everything
+// else (comments, order). Creates the section when missing. Keys that are not bare TOML keys
+// (block paths) are quoted. Fails if the result is not valid configuration.
+Result<std::string> set_config_value(std::string_view text, std::string_view section, std::string_view key,
+                                     const std::optional<std::string>& value);
+// Removes a whole section ("models.local") from karkas.toml text.
+std::string remove_config_section(std::string_view text, std::string_view section);
+// Applies set_config_value to <project>/karkas.toml (created when missing).
+VoidResult write_config_value(const std::filesystem::path& project_root, std::string_view section, std::string_view key,
+                              const std::optional<std::string>& value);
+VoidResult erase_config_section(const std::filesystem::path& project_root, std::string_view section);
 
 // Parses TOML text into `cfg` (overriding the fields present).
 VoidResult apply_config_text(Config& cfg, std::string_view toml_text, std::string_view file);

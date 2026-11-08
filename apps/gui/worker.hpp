@@ -87,6 +87,7 @@ class Worker {
   // The folder of a block: its card folder, or the folder of its code for imported blocks.
   void open_block_folder(const std::string& block);
   void reindex();
+  void reload_config();  // karkas.toml changed (models chosen in the GUI)
   [[nodiscard]] const fs::path& root() const { return root_; }
 
  private:

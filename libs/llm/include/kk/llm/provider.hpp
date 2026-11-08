@@ -22,7 +22,8 @@ struct RetryPolicy {
 };
 
 struct AnthropicOptions {
-  std::string api_key;  // from ANTHROPIC_API_KEY only (6.5)
+  std::string key_env = "ANTHROPIC_API_KEY";  // where api_key came from (for the error message)
+  std::string api_key;  // from the environment only (6.5): key_env
   std::string base_url = "https://api.anthropic.com";
   std::string api_version = "2026-10-21";
   int timeout_s = 300;

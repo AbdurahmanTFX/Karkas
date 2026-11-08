@@ -23,6 +23,21 @@ navigator    = "medium"
 worker       = "auto"
 tester       = "cheap"
 
+# Models per part of the block tree (ADR 0011). A block's own choice beats its level, a level
+# beats [roles]. Any [models.<name>] fits, also another API:
+# [models.local]
+# provider    = "openai_compat"
+# model       = "qwen3-coder"
+# base_url    = "http://localhost:11434/v1"
+# api_key_env = "OLLAMA_API_KEY"   # the variable's name only; keys never go into files
+#
+# [levels]
+# 0 = "strong"   # the project: orchestrator, architect of the top level
+# 2 = "cheap"    # blocks two levels down
+#
+# [blocks]
+# "world.pickups" = "local"   # this block and everything inside it
+
 [routing]
 cheap_max                  = 3
 medium_max                 = 6
