@@ -175,8 +175,15 @@ std::string bench_result_json(const BenchResult& r) {
             {"hidden_total", r.hidden_total},
             {"cost_by_model", r.cost_by_model},
             {"cost_by_role", r.cost_by_role},
+            {"tools", r.tools},
+            {"logs", r.logs},
             {"notes", r.notes},
             {"workdir", r.workdir}};
+  json tbm = json::object();
+  for (const auto& [m, t] : r.tokens_by_model) {
+    tbm[m] = {{"input", t.input}, {"output", t.output}, {"cache_read", t.cache_read}, {"cache_write", t.cache_write}};
+  }
+  j["tokens_by_model"] = tbm;
   return j.dump(2) + "\n";
 }
 
@@ -204,6 +211,14 @@ kk::Result<BenchResult> parse_bench_result(std::string_view text) {
     if (j.contains("cost_by_model")) r.cost_by_model = j["cost_by_model"].get<std::map<std::string, double>>();
     if (j.contains("cost_by_role")) r.cost_by_role = j["cost_by_role"].get<std::map<std::string, double>>();
     if (j.contains("notes")) r.notes = j["notes"].get<std::vector<std::string>>();
+    if (j.contains("tools")) r.tools = j["tools"].get<std::map<std::string, int>>();
+    if (j.contains("logs")) r.logs = j["logs"].get<std::vector<std::string>>();
+    if (j.contains("tokens_by_model")) {
+      for (const auto& [m, t] : j["tokens_by_model"].items()) {
+        r.tokens_by_model[m] = {t.value("input", std::int64_t{0}), t.value("output", std::int64_t{0}),
+                                t.value("cache_read", std::int64_t{0}), t.value("cache_write", std::int64_t{0})};
+      }
+    }
     r.workdir = j.value("workdir", "");
     return r;
   } catch (const json::exception& e) {
@@ -212,8 +227,17 @@ kk::Result<BenchResult> parse_bench_result(std::string_view text) {
 }
 
 void parse_claude_json(std::string_view text, BenchResult& r) {
-  // `claude -p --output-format json` prints one JSON object (the last line when more).
+  // stream-json: one event per line; tool calls come in "assistant" events (subagents too).
   auto lines = core::split(text, '\n');
+  for (const auto& l : lines) {
+    if (l.find("\"tool_use\"") == std::string::npos) continue;
+    auto ev = json::parse(l, nullptr, false);
+    if (ev.is_discarded() || ev.value("type", "") != "assistant" || !ev.contains("message")) continue;
+    for (const auto& c : ev["message"].value("content", json::array())) {
+      if (c.is_object() && c.value("type", "") == "tool_use") ++r.tools[c.value("name", std::string("?"))];
+    }
+  }
+  // The result event (the only object of plain json) is the last one with total_cost_usd.
   for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
     auto j = json::parse(*it, nullptr, false);
     if (j.is_discarded() || !j.is_object() || !j.contains("total_cost_usd")) continue;
@@ -228,7 +252,14 @@ void parse_claude_json(std::string_view text, BenchResult& r) {
     }
     // modelUsage covers helper models that `usage` omits (17.5).
     if (j.contains("modelUsage") && j["modelUsage"].is_object()) {
-      for (const auto& [model, mu] : j["modelUsage"].items()) r.cost_by_model[model] += mu.value("costUSD", 0.0);
+      for (const auto& [model, mu] : j["modelUsage"].items()) {
+        r.cost_by_model[model] += mu.value("costUSD", 0.0);
+        auto& t = r.tokens_by_model[model];
+        t.input += mu.value("inputTokens", std::int64_t{0});
+        t.output += mu.value("outputTokens", std::int64_t{0});
+        t.cache_read += mu.value("cacheReadInputTokens", std::int64_t{0});
+        t.cache_write += mu.value("cacheCreationInputTokens", std::int64_t{0});
+      }
     }
     if (j.value("is_error", false)) r.notes.push_back("claude reported an error: " + j.value("subtype", std::string("?")));
     return;
@@ -259,7 +290,7 @@ std::vector<std::string> bench_claude_argv(const BenchOptions& o, const core::Co
         "and go on.",
         o.karkas.string(), o.karkas.string(), o.karkas.string());
   }
-  std::vector<std::string> argv = {cfg.claude_command, "-p", text, "--output-format", "json", "--permission-mode",
+  std::vector<std::string> argv = {cfg.claude_command, "-p", text, "--output-format", "stream-json", "--verbose", "--permission-mode",
                                    "bypassPermissions", "--max-budget-usd", fmt::format("{:.2f}", cfg.bench_max_budget_usd),
                                    "--no-session-persistence"};
   if (api) {
@@ -315,6 +346,10 @@ kk::Result<std::vector<BenchResult>> bench_run(const BenchOptions& o, const core
     r.rep = rep;
     r.date = today();
     auto marker = random_hex();
+    // Result and session logs: results/<date>/<scenario>-<method>-<rep>[-k].json and .p<N>.jsonl
+    auto out_dir = o.results / r.date;
+    std::string stem = fmt::format("{}-{}-{}", r.scenario, r.method, rep);
+    for (int k = 2; fs::exists(out_dir / (stem + ".json")); ++k) stem = fmt::format("{}-{}-{}-{}", r.scenario, r.method, rep, k);
     auto dir = work / fmt::format("karkas-bench-{}-{}-{}-{}", o.scenario, o.method, rep, marker.substr(0, 8));
     r.workdir = dir.string();
     say(fmt::format("{} {} rep {}: {}", o.scenario, o.method, rep, dir.string()));
@@ -362,19 +397,24 @@ kk::Result<std::vector<BenchResult>> bench_run(const BenchOptions& o, const core
         if (auto prep = prepare_method_b(dir, o); !prep) return std::unexpected(prep.error());
         before = approval_mark(dir);
       }
-      for (const auto& p : prompts) {
+      for (std::size_t i = 0; i < prompts.size(); ++i) {
         // A unique marker at the start defeats prompt-cache reuse across runs (17.6).
         runner::RunOptions ro;
-        ro.argv = bench_claude_argv(o, cfg, dir, fmt::format("[bench {}] {}", marker, p));
+        ro.argv = bench_claude_argv(o, cfg, dir, fmt::format("[bench {}] {}", marker, prompts[i]));
         ro.cwd = dir;
         ro.timeout = std::chrono::hours(2);
-        ro.clean_env = false;  // Claude Code needs its own environment (login, API key)
+        ro.max_output = 64u << 20;  // the whole stream-json of a session
+        ro.clean_env = false;       // Claude Code needs its own environment (login, API key)
         if (r.auth == "subscription") ro.unset_env = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"};
+        // The same local doctest for every method: builds of the agents download nothing.
+        ro.env["KARKAS_DOCTEST_DIR"] = TestService::doctest_include();
         auto run = runner::run(ro);
         if (!run) {
           r.notes.push_back(run.error().message);
           continue;
         }
+        auto log = fmt::format("{}.p{}.jsonl", stem, i + 1);
+        if (core::write_file(out_dir / log, run->output)) r.logs.push_back(r.date + "/" + log);
         parse_claude_json(run->output, r);
         if (run->timed_out) r.notes.push_back("claude timed out");
       }
@@ -457,9 +497,7 @@ kk::Result<std::vector<BenchResult>> bench_run(const BenchOptions& o, const core
         }
       }
     }
-    auto out_dir = o.results / r.date;
-    auto file = out_dir / fmt::format("{}-{}-{}.json", r.scenario, r.method, rep);
-    for (int k = 2; fs::exists(file); ++k) file = out_dir / fmt::format("{}-{}-{}-{}.json", r.scenario, r.method, rep, k);
+    auto file = out_dir / (stem + ".json");
     if (auto w = core::write_file(file, bench_result_json(r)); !w) return std::unexpected(w.error());
     say(fmt::format("  cost ${:.4f}, hidden {}/{}, build {}, {:.0f} s -> {}", r.cost_usd, r.hidden_pass, r.hidden_total,
                     r.build_ok ? "ok" : "failed", r.seconds, file.string()));
@@ -494,6 +532,7 @@ kk::Result<std::string> bench_report(const fs::path& results_dir) {
       "<h1>Karkas benchmark</h1><table><tr><th>scenario<th>method<th>model<th>runs<th>usd median<th>min<th>max"
       "<th>input<th>output<th>cache read<th>seconds<th>hidden pass rate<th>interventions</tr>";
   std::map<std::string, double> roles;
+  std::vector<std::string> usage_lines;  // A/B: subagents, Karkas tools and models actually used
   for (const auto& [key, rs] : groups) {
     std::vector<double> cost, in, out, cr, sec, rate, hum;
     int builds = 0;
@@ -507,6 +546,23 @@ kk::Result<std::string> bench_report(const fs::path& results_dir) {
       hum.push_back(r.interventions);
       builds += r.build_ok ? 1 : 0;
       for (const auto& [role, c] : r.cost_by_role) roles[std::get<1>(key) + "/" + role] += c;
+    }
+    int subagents = 0;
+    int karkas = 0;
+    std::map<std::string, std::int64_t> out_by_model;
+    for (const auto& r : rs) {
+      for (const auto& [t, n] : r.tools) {
+        if (t == "Agent" || t == "Task") subagents += n;
+        if (t.starts_with("mcp__karkas__")) karkas += n;
+      }
+      for (const auto& [mdl, t] : r.tokens_by_model) out_by_model[mdl] += t.output;
+    }
+    if (!out_by_model.empty() || subagents + karkas > 0) {
+      std::vector<std::string> models;
+      for (const auto& [mdl, o] : out_by_model) models.push_back(fmt::format("{} {} out", mdl, o));
+      usage_lines.push_back(fmt::format("  {} {} {}: subagent calls {}, karkas tool calls {}; {}", std::get<0>(key),
+                                        std::get<1>(key), std::get<2>(key), subagents, karkas,
+                                        models.empty() ? std::string("models ?") : core::join(models, ", ")));
     }
     auto [mn, mx] = std::minmax_element(cost.begin(), cost.end());
     auto rmin = *std::min_element(rate.begin(), rate.end());
@@ -522,6 +578,16 @@ kk::Result<std::string> bench_report(const fs::path& results_dir) {
                         100.0 * median(rate), median(hum));
   }
   html += "</table>";
+  if (!usage_lines.empty()) {
+    // Did method B delegate and use Karkas? (sum over runs)
+    text += "\ntools and models (sum over runs):\n";
+    html += "<h2>Tools and models</h2><pre>";
+    for (const auto& l : usage_lines) {
+      text += l + "\n";
+      html += l + "\n";
+    }
+    html += "</pre>";
+  }
   if (!roles.empty()) {
     // Where the tokens are spent in method C (17.8).
     text += "\ncost by role (sum over runs):\n";

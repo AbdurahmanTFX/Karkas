@@ -10,6 +10,10 @@ enable_testing()
 
 # --- doctest (12.1): header from karkas, the system, or FetchContent -------------------
 set(KARKAS_DOCTEST_DIR "" CACHE PATH "directory that holds doctest/doctest.h (set by karkas)")
+# The environment may name it too (benchmarks, CI): no download when a local copy exists.
+if(NOT KARKAS_DOCTEST_DIR AND DEFINED ENV{KARKAS_DOCTEST_DIR})
+  set(KARKAS_DOCTEST_DIR "$ENV{KARKAS_DOCTEST_DIR}")
+endif()
 add_library(kk_doctest INTERFACE)
 if(KARKAS_DOCTEST_DIR)
   target_include_directories(kk_doctest SYSTEM INTERFACE "${KARKAS_DOCTEST_DIR}")

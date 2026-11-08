@@ -24,3 +24,9 @@ By default A and B use an API key (ANTHROPIC_API_KEY, `claude --bare`). `--auth 
 runs them on the claude.ai login instead (the key is removed from Claude Code's environment, the
 user's own settings, skills and MCP servers are left out); those costs are estimates and the
 report lists them apart. Method C always needs an API key.
+
+Every Claude Code session (methods A/B) runs with `--output-format stream-json --verbose`; its whole
+stream is saved next to the result (`<scenario>-<method>-<rep>.p<N>.jsonl`). The result records
+tokens per model (subagents included) and tool calls by name; `karkas bench report` lists, per
+group, the subagent calls, the Karkas tool calls and the models that actually worked. Agents'
+builds get `KARKAS_DOCTEST_DIR` (generated CMakeLists honour it), so no method downloads doctest.

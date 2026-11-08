@@ -169,3 +169,39 @@ TEST_CASE("bench: method B on S3 with a subscription prepares Karkas and hides t
   CHECK(test::read(dir / ".fake-key") == "0\n0\n0\n0\n0\n");
   CHECK(core::contains(test::read(work / "results" / res.date / "s3-B-1.json"), "\"auth\": \"subscription\""));
 }
+
+TEST_CASE("bench: stream-json — tool calls, tokens per model (subagents included), report of what was used") {
+  agents::BenchResult r;
+  std::string stream =
+      R"({"type":"system","subtype":"init","session_id":"s"})" "\n"
+      R"({"type":"assistant","message":{"id":"m1","model":"claude-sonnet-5-5","content":[{"type":"tool_use","name":"mcp__karkas__kk_view","input":{"block":"dsp"}},{"type":"tool_use","name":"Agent","input":{"subagent_type":"karkas-cheap"}}]}})" "\n"
+      R"({"type":"user","message":{"content":[{"type":"tool_result","content":"a tool_use mentioned in text"}]}})" "\n"
+      R"({"type":"assistant","parent_tool_use_id":"t1","message":{"id":"m2","model":"claude-haiku-5-5","content":[{"type":"tool_use","name":"Edit","input":{}}]}})" "\n"
+      R"({"type":"result","is_error":false,"num_turns":9,"total_cost_usd":0.5,"usage":{"input_tokens":10,"output_tokens":700},)"
+      R"("modelUsage":{"claude-sonnet-5-5":{"inputTokens":8,"outputTokens":500,"cacheReadInputTokens":9000,"cacheCreationInputTokens":300,"costUSD":0.45},)"
+      R"("claude-haiku-5-5":{"inputTokens":2,"outputTokens":200,"cacheReadInputTokens":1000,"cacheCreationInputTokens":50,"costUSD":0.05}}})" "\n";
+  agents::parse_claude_json(stream, r);
+  CHECK(r.cost_usd == doctest::Approx(0.5));
+  CHECK(r.model_calls == 9);
+  CHECK(r.tools["mcp__karkas__kk_view"] == 1);
+  CHECK(r.tools["Agent"] == 1);
+  CHECK(r.tools["Edit"] == 1);  // the subagent's own calls count too
+  CHECK(r.tools.size() == 3);
+  CHECK(r.tokens_by_model["claude-haiku-5-5"].output == 200);
+  CHECK(r.tokens_by_model["claude-sonnet-5-5"].cache_read == 9000);
+  // Round trip and report.
+  r.scenario = "s3";
+  r.method = "B";
+  r.model = "sonnet";
+  r.logs = {"2026-11-09/s3-B-1.p1.jsonl"};
+  auto back = agents::parse_bench_result(agents::bench_result_json(r));
+  REQUIRE(back);
+  CHECK(back->tools == r.tools);
+  CHECK(back->logs == r.logs);
+  CHECK(back->tokens_by_model["claude-haiku-5-5"].cache_write == 50);
+  test::TempDir d{"benchrep"};
+  test::write(d / "2026-11-09" / "s3-B-1.json", agents::bench_result_json(r));
+  auto rep = agents::bench_report(d.path());
+  REQUIRE(rep);
+  CHECK(core::contains(*rep, "s3 B sonnet: subagent calls 1, karkas tool calls 1; claude-haiku-5-5 200 out, claude-sonnet-5-5 500 out"));
+}

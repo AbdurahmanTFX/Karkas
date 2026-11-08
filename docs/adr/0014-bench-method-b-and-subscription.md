@@ -40,3 +40,13 @@ needed an API key, while the user works with Claude Code on a subscription.
 - Subscription runs cost no money but count against the plan's limits; a long series may stop on
   a limit (the run then fails with Claude Code's error in the notes).
 - Method C still needs an API key.
+
+## Amendment (2026-11-09): what the sessions did
+
+The wavkit pilot could not tell whether B used Karkas or subagents, nor why A took 38 minutes
+(its builds downloaded doctest through FetchContent). Now:
+- `--output-format stream-json --verbose`; each session's stream is saved beside the result.
+- Results carry `tokens_by_model` (from modelUsage, subagents included), `tools` (calls by name)
+  and `logs`; the report adds "tools and models" per group.
+- Claude Code gets `KARKAS_DOCTEST_DIR`; the CMake preamble reads it from the environment when
+  the cache variable is empty, so both methods build with the same local doctest.

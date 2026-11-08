@@ -29,6 +29,10 @@ struct BenchOptions {
   ProviderFactory providers;        // method C; default: real clients
 };
 
+struct ModelTokens {
+  std::int64_t input = 0, output = 0, cache_read = 0, cache_write = 0;
+};
+
 struct BenchResult {
   std::string scenario, method, model;
   std::string auth;  // A/B: api | subscription
@@ -43,6 +47,11 @@ struct BenchResult {
   int hidden_pass = 0, hidden_total = 0;
   std::map<std::string, double> cost_by_model;
   std::map<std::string, double> cost_by_role;  // method C: where the tokens go (17.8)
+  // A/B (Claude Code stream-json): tokens per model (subagents included) and tool calls by name
+  // (Agent = subagents, mcp__karkas__* = Karkas tools); session logs next to the result.
+  std::map<std::string, ModelTokens> tokens_by_model;
+  std::map<std::string, int> tools;
+  std::vector<std::string> logs;
   std::vector<std::string> notes;
   std::string workdir;
 };
@@ -67,7 +76,8 @@ kk::VoidResult apply_bug(const std::filesystem::path& project, const std::filesy
 std::vector<std::string> bench_claude_argv(const BenchOptions& o, const core::Config& cfg, const std::filesystem::path& dir,
                                            const std::string& prompt);
 
-// Parses `claude -p --output-format json` output into the result fields (17.5).
+// Parses `claude -p --output-format stream-json --verbose` (or plain json) output into the result
+// fields (17.5): the result event, tokens per model from modelUsage, tool calls of the session.
 void parse_claude_json(std::string_view text, BenchResult& r);
 
 }  // namespace kk::agents
