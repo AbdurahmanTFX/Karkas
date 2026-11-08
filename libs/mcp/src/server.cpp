@@ -6,8 +6,10 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 
+#include "kk/core/text.hpp"
 #include "kk/core/tickets.hpp"
 #include "kk/index/index.hpp"
+#include "kk/templates.hpp"
 
 namespace kk::mcp {
 
@@ -30,9 +32,15 @@ struct Tool {
 
 json str_prop(const char* desc) { return json{{"type", "string"}, {"description", desc}}; }
 
-std::vector<Tool> make_tools(bool with_run_tests) {
+std::string template_text(std::string_view path) { return std::string(templates::get(path).value_or("")); }
+
+std::vector<Tool> make_tools(const ServerOptions& o) {
   json block = str_prop("block id, e.g. stream.ring");
+  json none = {{"type", "object"}, {"properties", json::object()}};
   std::vector<Tool> t = {
+      {"kk_guide", "How to work in this Karkas project: the order of work and the rules. Read it once before changing anything.",
+       none},
+      {"kk_ksl_reference", "Syntax of cards (block.ksl), links and change diffs, with examples.", none},
       {"kk_overview", "Project overview (L0 view): top-level blocks with status and lifted links. Start here.",
        {{"type", "object"},
         {"properties", {{"use", {{"type", "boolean"}, {"description", "include shared blocks and use links"}}}}}}},
@@ -81,7 +89,26 @@ std::vector<Tool> make_tools(bool with_run_tests) {
           {"line", str_prop("KSL trail line, e.g. 'fact probe x min=0' or 'L1 navigator at=stream pick=stream.ring why=\"...\"'")}}},
         {"required", {"id", "line"}}}},
   };
-  if (with_run_tests) {
+  if (o.check) {
+    t.push_back({"kk_check", "Check the schema and the code against it now: KSL errors/warnings (E, W) and drift (D01-D09).", none});
+  }
+  if (o.propose_change) {
+    t.push_back({"kk_propose_change",
+                 "Propose a schema change (new blocks, links, ports, functions, inv lines) as a KSL diff. It is checked first; "
+                 "if it passes it is stored as C-NNNN for the user to approve (never applied by itself). Returns the card diff, "
+                 "or the problems to fix.",
+                 {{"type", "object"},
+                  {"properties",
+                   {{"reason", str_prop("one line: why the schema changes")},
+                    {"diff", str_prop("lines: '+ @block <id>' starts a new card from the following '+' lines; '~ @block <id>' "
+                                      "selects a card, then '+ <ksl line>' adds and '- <ksl line>' removes a line")}}},
+                  {"required", {"reason", "diff"}}}});
+  }
+  if (o.changes) {
+    t.push_back({"kk_changes", "Schema changes: all of them with status (no id), or one with the card diff it makes.",
+                 {{"type", "object"}, {"properties", {{"id", str_prop("change id, e.g. C-0003; empty = list")}}}}});
+  }
+  if (o.run_tests) {
     t.push_back({"kk_run_tests", "Build and run the tests of a block subtree (no model involved); returns a compact summary.",
                  {{"type", "object"}, {"properties", {{"block", str_prop("block id; empty = all")}}}}});
   }
@@ -117,7 +144,7 @@ Server::Server(index::Index& idx, ServerOptions opts) : idx_(idx), opts_(std::mo
 
 std::string Server::tools_json() const {
   json tools = json::array();
-  for (const auto& t : make_tools(static_cast<bool>(opts_.run_tests))) {
+  for (const auto& t : make_tools(opts_)) {
     tools.push_back(json{{"name", t.name}, {"description", t.description}, {"inputSchema", t.schema}});
   }
   return json{{"tools", tools}}.dump();
@@ -163,9 +190,7 @@ std::optional<std::string> Server::handle(std::string_view line) {
           {"protocolVersion", version},
           {"capabilities", {{"tools", {{"listChanged", false}}}}},
           {"serverInfo", {{"name", "karkas"}, {"version", opts_.version}}},
-          {"instructions",
-           "Karkas keeps this project as a hierarchical schema of blocks. Start with kk_overview, then kk_view(block) "
-           "to descend; answers are compact KSL text. Blocks map to folders blocks/<path>/ with api/, impl/, tests/."}};
+          {"instructions", std::string(core::trim(template_text("prompts/mcp_instructions.txt")))}};
       return response(id, result);
     }
     if (method == "ping") return response(id, json::object());
@@ -173,9 +198,15 @@ std::optional<std::string> Server::handle(std::string_view line) {
     if (method == "tools/call") {
       std::string name = params.value("name", "");
       json args = params.value("arguments", json::object());
-      auto tools = make_tools(static_cast<bool>(opts_.run_tests));
+      auto tools = make_tools(opts_);
       if (std::none_of(tools.begin(), tools.end(), [&](const Tool& t) { return t.name == name; })) {
         return error(id, kInvalidParams, "unknown tool: " + name);
+      }
+      if (name == "kk_guide") return response(id, text_result(template_text("target/karkas_guide.md"), false));
+      if (name == "kk_ksl_reference") {
+        return response(id, text_result(template_text("prompts/ksl_reference.txt") + "\n" +
+                                            template_text("prompts/ksl_change_example.txt"),
+                                        false));
       }
       if (auto st = idx_.update({false, opts_.analyzer}); !st) {
         return response(id, text_result("index update failed: " + st.error().str(), true));
@@ -221,6 +252,9 @@ std::optional<std::string> Server::handle(std::string_view line) {
         return response(id, text_result(at.empty() ? core::write_ticket(*t) : core::path_view(*t, at), false));
       }
       if (name == "kk_run_tests") return response(id, text_result(opts_.run_tests(sarg(args, "block")), false));
+      if (name == "kk_check") return response(id, text_result(opts_.check(), false));
+      if (name == "kk_propose_change") return out(opts_.propose_change(sarg(args, "reason"), sarg(args, "diff")));
+      if (name == "kk_changes") return out(opts_.changes(sarg(args, "id")));
     }
   } catch (const std::exception& e) {
     return error(id, kInternalError, e.what());

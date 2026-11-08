@@ -40,6 +40,11 @@ kk::Result<ApplyResult> apply_diff(const std::filesystem::path& root, const std:
 // cards that applying would write.
 kk::Result<ApplyResult> check_diff(const std::filesystem::path& root, const std::vector<core::DiffLine>& diff);
 
+// Parses an agent's diff, runs check_diff and stores it as a pending change C-NNNN. Refused
+// (error listing the problems) when it breaks the schema checks or changes nothing.
+kk::Result<core::Change> propose_change(const std::filesystem::path& root, std::string from, std::string reason,
+                                        std::string_view diff_text);
+
 // A unified-diff-like text of the card changes, for showing before confirmation (14.6).
 std::string preview_diff(const std::filesystem::path& root, const std::vector<core::DiffLine>& diff);
 

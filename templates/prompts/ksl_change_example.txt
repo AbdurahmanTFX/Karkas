@@ -1,0 +1,25 @@
+Example: a new feature (one new leaf, a call to it from an existing block).
++ @block world.pickups
++ purpose flying items the bird collects for a timed power
++ kind    leaf
++ thread  main
++ fn      spawn(float, Power) -> void
++ fn      collect(Rectangle) -> optional<Power>
++ use     config
++ inv     touching an item collects it once and tells its power
+~ @block game.flow
++ call    world.pickups:collect
+Example: the start of a new project (groups have only purpose and kind; every group gets
+2-9 children in the same change; exactly one entry block).
++ @block app
++ purpose composition root that creates the blocks and runs the main loop
++ kind    entry
++ thread  main
++ @block menu
++ purpose start screen and pause menu
++ kind    group
++ @block menu.ui
++ purpose buttons and labels of the menu screens
++ kind    leaf
++ thread  main
++ inv     a click outside every button changes nothing

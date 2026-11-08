@@ -244,6 +244,26 @@ kk::Result<ApplyResult> check_diff(const fs::path& root, const std::vector<core:
   return apply_or_check(root, diff, {}, false);
 }
 
+kk::Result<core::Change> propose_change(const fs::path& root, std::string from, std::string reason,
+                                        std::string_view diff_text) {
+  reason = std::string(core::trim(reason));
+  if (reason.empty() || reason.find('\n') != std::string::npos) return kk::fail("change", "reason: one line saying why");
+  auto lines = parse_diff(diff_text);
+  if (!lines) return std::unexpected(lines.error());
+  if (std::none_of(lines->begin(), lines->end(), [](const core::DiffLine& d) { return d.op != '~'; })) {
+    return kk::fail("change", "the diff changes no card (only '~' selections)");
+  }
+  auto r = check_diff(root, *lines);
+  if (!r) return std::unexpected(r.error());
+  if (!r->issues.empty()) {
+    std::string text = "the change breaks the schema checks:";
+    for (const auto& i : r->issues) text += "\n  " + i.str();
+    return kk::fail("change", text);
+  }
+  if (r->files.empty()) return kk::fail("change", "the diff changes no card");
+  return ChangeStore(root).create(std::move(from), std::move(reason), std::move(*lines));
+}
+
 std::string preview_diff(const fs::path& root, const std::vector<core::DiffLine>& diff) {
   auto schema = core::load_schema(root);
   if (!schema) return schema.error().str() + "\n";

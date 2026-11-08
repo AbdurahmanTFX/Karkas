@@ -207,6 +207,16 @@
   `code::init_project` is shared with `karkas init`; tests.
 - `karkas approve api` also clears needs_review of blocks without an api/ (the entry).
 
+## Addition — guide for coding agents, MCP write side (docs/adr/0012)
+- templates/target/karkas_guide.md: the Karkas method for an agent; written into CLAUDE.md by
+  `karkas init` / GUI New project, refreshed by `karkas gen guide` (managed block, the user's
+  text is kept); MCP instructions point to it; tool kk_guide returns it.
+- MCP tools kk_ksl_reference, kk_check, kk_propose_change (checked, stored as C-NNNN for the
+  user to approve; never applied), kk_changes. `agents::check_diff`, `agents::propose_change`.
+- Tests: guide block idempotence and user text kept, check_diff writes nothing, propose_change
+  refuses broken or empty diffs, MCP tools and golden session; end-to-end `karkas mcp` on a copy
+  of Flappy-Birds (proposal stored, broken one refused, stdout only protocol lines).
+
 ## Stage 10 — benchmarks (harness)
 - bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
   (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip

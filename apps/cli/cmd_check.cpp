@@ -10,6 +10,37 @@
 #endif
 
 namespace kk::cli {
+
+std::string check_text(const fs::path& root, bool drift, int* errors_out, bool quiet) {
+  auto schema = core::load_schema(root);
+  if (!schema) {
+    if (errors_out != nullptr) *errors_out = 1;
+    return schema.error().str() + "\n";
+  }
+  auto issues = core::check_schema(*schema);
+#ifdef KK_HAVE_CODE
+  if (drift) {
+    auto d = code::check_drift(*schema);
+    issues.insert(issues.end(), d.begin(), d.end());
+  }
+#else
+  (void)drift;
+#endif
+  int errors = 0;
+  int warnings = 0;
+  std::string out;
+  for (const auto& i : issues) {
+    (i.severity == 'E' ? errors : warnings)++;
+    if (quiet && i.severity != 'E') continue;
+    out += i.str() + "\n";
+  }
+  out += fmt::format("check: {} blocks, {} errors, {} warnings\n", schema->blocks.size(), errors, warnings);
+  if (errors_out != nullptr) *errors_out = errors;
+  return out;
+}
+
+std::string check_text(const fs::path& root, bool drift, int* errors) { return check_text(root, drift, errors, false); }
+
 namespace {
 
 AutoRegister reg([](CLI::App& cli, App& app) {
@@ -21,23 +52,8 @@ AutoRegister reg([](CLI::App& cli, App& app) {
   cmd->callback([&app] {
     auto root = app.root();
     setup_logging(app, root, false);
-    auto schema = core::load_schema(root);
-    if (!schema) die(schema.error().str());
-    auto issues = core::check_schema(*schema);
-#ifdef KK_HAVE_CODE
-    if (!no_drift) {
-      auto drift = code::check_drift(*schema);
-      issues.insert(issues.end(), drift.begin(), drift.end());
-    }
-#endif
     int errors = 0;
-    int warnings = 0;
-    for (const auto& i : issues) {
-      (i.severity == 'E' ? errors : warnings)++;
-      if (quiet && i.severity != 'E') continue;
-      std::cout << i.str() << "\n";
-    }
-    std::cout << fmt::format("check: {} blocks, {} errors, {} warnings\n", schema->blocks.size(), errors, warnings);
+    std::cout << check_text(root, !no_drift, &errors, quiet);
     if (errors > 0) std::exit(1);
   });
 });

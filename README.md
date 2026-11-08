@@ -38,6 +38,16 @@ C++23, CMake + Ninja. Состояние по этапам — docs/progress.md,
 Код не переносится: карточки лежат в blocks/, а в них строка `files` указывает на
 существующие файлы (docs/adr/0009). Свой CMakeLists.txt остаётся как был.
 
+## Claude Code по подписке (MCP)
+
+    karkas gen guide                   # CLAUDE.md с методом Karkas (init делает это сам)
+    claude mcp add karkas -- karkas mcp --project "$PWD"
+
+Claude Code при старте читает CLAUDE.md, а MCP-сервер даёт ему схему (kk_overview, kk_view…),
+метод (kk_guide), синтаксис карточек (kk_ksl_reference), проверки (kk_check, kk_run_tests) и
+предложения изменений схемы (kk_propose_change → C-NNNN). Утверждает изменения всегда
+человек: вкладка «Изменения» в GUI или `karkas approve C-NNNN` (docs/adr/0012).
+
 ## Работа с проектом
 
     karkas task "добавить эффект reverb"

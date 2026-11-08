@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include "kk/core/error.hpp"
+
 namespace kk::index {
 class Index;
 class ICodeAnalyzer;
@@ -20,6 +22,12 @@ struct ServerOptions {
   // kk_run_tests(block) → compact result text. Not set → the tool is not offered.
   std::function<std::string(const std::string& block)> run_tests;
   index::ICodeAnalyzer* analyzer = nullptr;  // used for index updates before each call
+  // Write side, wired by `karkas mcp` (this library does not depend on kk_agents). A tool is
+  // offered only when its function is set.
+  std::function<std::string()> check;  // kk_check: KSL checks + drift, as `karkas check`
+  // kk_propose_change: checks a KSL diff and stores it as C-NNNN for the user to approve.
+  std::function<kk::Result<std::string>(const std::string& reason, const std::string& diff)> propose_change;
+  std::function<kk::Result<std::string>(const std::string& id)> changes;  // kk_changes: "" = list
 };
 
 class Server {

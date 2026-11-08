@@ -63,6 +63,23 @@ TEST_CASE("changes: check_diff runs the checks and writes nothing") {
   CHECK(test::read(p / "blocks/dsp/chain/block.ksl") == before);
 }
 
+TEST_CASE("changes: propose_change stores only changes that pass the checks") {
+  test::FixtureCopy p("wavkit");
+  auto ok = agents::propose_change(p.path(), "mcp", "reverb requested",
+                                   "+ @block dsp.reverb\n+ purpose apply reverb to frames\n+ kind leaf\n+ thread main\n"
+                                   "+ fn process(Frame[]) -> void\n+ inv zero mix leaves samples unchanged\n");
+  REQUIRE_MESSAGE(ok, (ok ? "" : ok.error().str()));
+  CHECK(ok->id == "C-0001");
+  CHECK(ok->status.value == "pending");
+  CHECK_FALSE(std::filesystem::exists(p / "blocks/dsp/reverb/block.ksl"));  // the user approves it
+  auto broken = agents::propose_change(p.path(), "mcp", "x", "~ @block dsp.chain\n+ call    nowhere.block:run\n");
+  REQUIRE_FALSE(broken);
+  CHECK(core::contains(broken.error().message, "breaks the schema checks"));
+  CHECK_FALSE(agents::propose_change(p.path(), "mcp", "", "~ @block dsp.chain\n"));  // no reason
+  CHECK_FALSE(agents::propose_change(p.path(), "mcp", "nothing", "~ @block dsp.chain\n"));  // changes nothing
+  CHECK(agents::ChangeStore(p.path()).list()->size() == 1);
+}
+
 TEST_CASE("changes: removals, errors and schema checks before writing") {
   test::FixtureCopy p("wavkit");
   auto rm = agents::parse_diff("~ @block dsp.chain\n- call dsp.echo:process");
