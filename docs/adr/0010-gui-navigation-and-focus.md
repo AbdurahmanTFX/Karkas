@@ -16,8 +16,14 @@ Additions to section 14 on request; one deviation.
   a frame among the closed blocks of the level (kk_layout::layout_nested), so it shows which
   inner blocks talk to which whole blocks. The frame's top edge is a path bar; a click on a
   part closes that group. The view is temporary: positions are not saved there.
-- Pins flow left to right like the layout: inputs on the left (in, fn, "used"), outputs on
-  the right (out, "calls"), so call lines no longer cross the blocks.
+- Connection points on the block's border, flowing left to right like the layout: on the
+  title row the block's own "in" (▷, links from blocks that call or use it) and "out" (▷ in
+  the block's color, what it calls or uses); below, in ports and fn ports on the left edge,
+  out ports on the right edge. Lines attach exactly at these points (pin pivots), so they
+  never end inside a block. Calls/uses between two blocks run out → in (one line per pair,
+  the tooltip names the functions); data runs port to port. Filled points have links,
+  hollow ones are free. Drag from a block's "out" to a function of another block to add a
+  call; from an out port to an in port (or to a block's "in" for a new in port) for data.
 - Address bar "project / group / group" instead of breadcrumb buttons; the empty part turns
   into a text field for a typed path.
 - Projects: "Open project…" (Ctrl+O, a folder browser that marks folders with project.ksl,

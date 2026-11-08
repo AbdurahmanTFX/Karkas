@@ -261,12 +261,12 @@ void Worker::loop() {
       m->snap = snap;
       float cw = req.char_w;
       float lh = req.line_h;
-      auto used = used_blocks(*snap);
+
       // Default size of a block (scaled by the settings); the GUI computes the same base.
       double scale = std::clamp(static_cast<double>(req.block_scale), static_cast<double>(kMinBlockScale),
                                 static_cast<double>(kMaxBlockScale));
       layout::Measure measure = [&](const index::BlockRow& b) {
-        auto [left, right] = pin_rows(*snap, b, used);
+        auto [left, right] = pin_rows(*snap, b);
         auto [w, h] = base_block_size(b.id, b.kind, b.purpose, left, right, cw, lh);
         return std::make_pair(std::max(w * scale, static_cast<double>(kMinBlockW)), std::max(h * scale, static_cast<double>(kMinBlockH)));
       };

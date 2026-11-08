@@ -204,6 +204,13 @@ const std::unordered_map<std::string_view, const char*>& ru() {
       {"status", "статус"},
       {"PROJECT", "ПРОЕКТ"},
       {"STATUSES", "СТАТУСЫ"},
+      {"Drop it on a function of the other block to add a call", "Отпустите на функции другого блока, чтобы добавить вызов"},
+      {"These two points cannot be linked", "Эти две точки нельзя соединить"},
+      {"In: links from blocks that call or use this one. Drop a data output here to add an input.",
+       "Вход: связи от блоков, которые вызывают или используют этот. Отпустите здесь выход данных, чтобы добавить вход."},
+      {"Out: what this block calls or uses. Drag from here to a function of another block to add a call.",
+       "Выход: что этот блок вызывает или использует. Тяните отсюда к функции другого блока, чтобы добавить вызов."},
+      {"Function {}(): drop a block's out point here to add a call", "Функция {}(): отпустите здесь выход блока, чтобы добавить вызов"},
       // empty schema
       {"No blocks on this level.", "На этом уровне нет блоков."},
       {"Right click → Add block, or the \"Add block\" button above.",

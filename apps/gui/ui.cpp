@@ -138,11 +138,7 @@ std::pair<float, float> Ui::base_size(const Model& m, const std::string& id) con
   int out = 0;
   (void)in;
   (void)out;
-  if (used_serial_ != m.serial) {
-    used_ = used_blocks(*m.snap);
-    used_serial_ = m.serial;
-  }
-  auto [left, right] = pin_rows(*m.snap, *b, used_);
+  auto [left, right] = pin_rows(*m.snap, *b);
   auto [w, h] = base_block_size(b->id, b->kind, b->purpose, left, right, req_.char_w, req_.line_h);
   return {static_cast<float>(w), static_cast<float>(h)};
 }
@@ -325,6 +321,30 @@ void Ui::draw_graph(const Model& m) {
     lit_nodes.insert(b);
   }
   bool dimming = !focus.empty();
+  // Which connection points have links (drawn filled; free ones are hollow).
+  std::set<std::string> in_used, out_used, port_used;  // blocks; "block:port"
+  for (const auto& l : snap.links) {
+    if (l.kind == "use" && !req_.show_use) continue;
+    auto a = unit_of(l.src_block);
+    auto b = unit_of(l.dst_block);
+    if (a.empty() || b.empty() || a == b) continue;
+    if (l.kind == "data" || l.kind == "event") {
+      if (a == l.src_block) {
+        port_used.insert(a + ":" + l.src_port);
+      } else {
+        out_used.insert(a);
+      }
+      if (b == l.dst_block) {
+        port_used.insert(b + ":" + l.dst_port);
+      } else {
+        in_used.insert(b);
+      }
+    } else {
+      out_used.insert(a);
+      in_used.insert(b);
+      if (l.kind == "call" && b == l.dst_block) port_used.insert(b + ":" + l.dst_port);
+    }
+  }
   bool apply_positions = applied_layout_ != m.layout_key;
   if (relayout_ && m.serial > relayout_serial_) {
     apply_positions = true;  // the model after "auto layout" has no manual positions
@@ -502,63 +522,118 @@ void Ui::draw_graph(const Model& m) {
     ImVec2 o = ImGui::GetCursorScreenPos();
     float lh = ImGui::GetTextLineHeightWithSpacing();
     float y = o.y;
+    // Connection points sit on the block's border: on the left what comes in (the block's
+    // "in" point, in ports, functions others call), on the right what goes out (the block's
+    // "out" point, out ports). Lines attach exactly there, never inside the block.
+    float text_h = ImGui::GetTextLineHeight();
+    float sock_r = std::max(3.0f, text_h * 0.24f);
+    float left_x = o.x - kPadX;
+    float right_x = o.x + inner_w + kPadX;
+    auto socket = [&](const std::string& key, ImVec2 c, bool input, bool used, ImVec4 col, bool arrow) {
+      auto* dl = ImGui::GetWindowDrawList();
+      bool hot = hid(key) == hover_pin_;
+      float r = hot ? sock_r * 1.45f : sock_r;
+      if (dim) col.w *= 0.35f;
+      ImU32 c32 = ImGui::GetColorU32(col);
+      ImU32 halo = ImGui::GetColorU32(ImVec4(0.09f, 0.09f, 0.09f, dim ? 0.4f : 1.0f));
+      if (arrow) {
+        // A triangle pointing right: into the block on the left, out of it on the right.
+        float th = r * 1.25f;
+        ImVec2 p1(c.x - th * 0.7f, c.y - th), p2(c.x + th, c.y), p3(c.x - th * 0.7f, c.y + th);
+        dl->AddTriangleFilled(ImVec2(p1.x - 1.5f, p1.y - 1.5f), ImVec2(p2.x + 2.0f, p2.y), ImVec2(p3.x - 1.5f, p3.y + 1.5f), halo);
+        if (used) {
+          dl->AddTriangleFilled(p1, p2, p3, c32);
+        } else {
+          dl->AddTriangle(p1, p2, p3, c32, 1.6f);
+        }
+      } else {
+        dl->AddCircleFilled(c, r + 1.5f, halo);
+        if (used) {
+          dl->AddCircleFilled(c, r, c32);
+        } else {
+          dl->AddCircle(c, r, c32, 0, 1.6f);
+        }
+      }
+      (void)input;
+    };
+    // A pin: label inside the block, socket on the border; the socket is where lines attach.
+    auto pin = [&](const std::string& key, const std::string& label, float py, bool input, float width, bool used, ImVec4 col) {
+      auto pid = hid(key);
+      shown_pins.insert(key);
+      std::string text = fit(label, width);
+      float tw = ImGui::CalcTextSize(text.c_str()).x;
+      float tx = input ? o.x + sock_r * 0.6f : o.x + inner_w - tw - sock_r * 0.6f;
+      ImVec2 c(input ? left_x : right_x, py + text_h * 0.5f);
+      ImGui::SetCursorScreenPos(ImVec2(tx, py));
+      ed::BeginPin(pid, input ? ed::PinKind::Input : ed::PinKind::Output);
+      ImGui::TextUnformatted(text.c_str());
+      ImVec2 a = input ? ImVec2(c.x - sock_r * 2, py) : ImVec2(tx, py);
+      ImVec2 z = input ? ImVec2(tx + tw, py + text_h) : ImVec2(c.x + sock_r * 2, py + text_h);
+      ed::PinRect(a, z);
+      ed::PinPivotRect(c, c);
+      ed::EndPin();
+      socket(key, c, input, used, col, false);
+      return pid;
+    };
+    // The block's own in/out points, on the title band.
+    auto block_point = [&](bool input, bool used, ImVec4 col) {
+      std::string key = pin_key(n.id, "", input ? "in" : "out");
+      auto pid = hid(key);
+      shown_pins.insert(key);
+      ImVec2 c(input ? left_x : right_x, o.y + text_h * 0.5f);
+      ImGui::SetCursorScreenPos(ImVec2(input ? o.x : o.x + inner_w - 1, o.y));
+      ed::BeginPin(pid, input ? ed::PinKind::Input : ed::PinKind::Output);
+      ImGui::Dummy(ImVec2(1, text_h));
+      ed::PinRect(ImVec2(c.x - sock_r * 2.2f, c.y - sock_r * 2.2f), ImVec2(c.x + sock_r * 2.2f, c.y + sock_r * 2.2f));
+      ed::PinPivotRect(c, c);
+      ed::EndPin();
+      socket(key, c, input, used, col, true);
+      pin_of[pid] = n.id + "::" + (input ? "in" : "out");
+    };
     // Line 1 (on a band of the block's color): kind icon, name, status dot on the right.
     Icon kind_icon = b->kind == "group" ? Icon::Folder : b->kind == "entry" ? Icon::Play : b->kind == "shared" ? Icon::Library : Icon::Cube;
     float dot_w = ImGui::CalcTextSize(icon(Icon::Dot)).x;
     float icon_w = ImGui::CalcTextSize(icon(kind_icon)).x + ImGui::GetStyle().ItemSpacing.x * 0.6f;
-    ImGui::SetCursorScreenPos(ImVec2(o.x, y));
+    float title_x = o.x + sock_r * 0.8f;
+    ImGui::SetCursorScreenPos(ImVec2(title_x, y));
     ImGui::TextColored(with_alpha(ImVec4(1, 1, 1, 1), dim ? 0.3f : 0.9f), "%s", icon(kind_icon));
-    text_at(o.x + icon_w, y, core::last_segment(n.id), inner_w - icon_w - dot_w - 4);
-    ImGui::SetCursorScreenPos(ImVec2(o.x + inner_w - dot_w, y));
+    text_at(title_x + icon_w, y, core::last_segment(n.id), inner_w - icon_w - dot_w - sock_r * 2.5f);
+    ImGui::SetCursorScreenPos(ImVec2(o.x + inner_w - dot_w - sock_r * 0.8f, y));
     ImGui::TextColored(with_alpha(active ? rgb(240, 200, 30) : status_color(b->status), dim ? 0.3f : 1.0f), "%s", icon(Icon::Dot));
+    const ImVec4 in_col = rgb(205, 205, 205);
+    if (b->kind != "entry" || in_used.contains(n.id)) block_point(true, in_used.contains(n.id), in_col);
+    if (b->kind != "shared" || out_used.contains(n.id)) block_point(false, out_used.contains(n.id), with_alpha(tint, 1.0f));
     float band_h = lh + kPadY * 0.5f;
     y += lh + ImGui::GetStyle().ItemSpacing.y * 0.5f;
     // Line 2: purpose.
     if (y + lh <= o.y + inner_h) {
       std::string purpose = b->purpose;
       if (b->kind == "group") purpose += fmt::format(" ({})", b->children.size());
-      text_at(o.x, y, purpose, inner_w);
+      text_at(o.x + sock_r * 0.6f, y, purpose, inner_w - sock_r * 1.2f);
       y += lh;
     }
-    // Pins. Ports that do not fit fold into "+N" pins; links to them attach there.
-    auto pin = [&](const std::string& key, const std::string& label, float px, float py, bool input, float width) {
-      auto pid = hid(key);
-      shown_pins.insert(key);
-      std::string text = fit(label, width);
-      if (text.empty()) text = "●";
-      ImGui::SetCursorScreenPos(ImVec2(px, py));
-      ed::BeginPin(pid, input ? ed::PinKind::Input : ed::PinKind::Output);
-      ImGui::TextUnformatted(text.c_str());
-      ed::EndPin();
-      return pid;
-    };
-    float half = inner_w / 2 - 4;
+    // Ports. Ports that do not fit fold into "+N" pins; links to them attach there.
+    float half = inner_w / 2 - sock_r * 1.5f;
     int rows_fit = std::max(1, static_cast<int>((o.y + inner_h - y) / lh));
-    if (b->kind == "group") {
-      auto in = pin(pin_key(n.id, "", "in"), "▶", o.x, y, true, half);
-      auto out_label = std::string("▶");
-      float tw = ImGui::CalcTextSize(out_label.c_str()).x;
-      auto out = pin(pin_key(n.id, "", "out"), out_label, o.x + inner_w - tw, y, false, half);
-      pin_of[in] = n.id + "::in";
-      pin_of[out] = n.id + "::out";
-    } else {
-      // Left: inputs (in, fn, "used"); right: outputs (out, "calls") — links run left to right.
-      if (used_serial_ != m.serial) {
-        used_ = used_blocks(snap);
-        used_serial_ = m.serial;
-      }
-      std::vector<std::pair<std::string, std::string>> left, right;  // key, label
+    if (b->kind != "group") {
+      struct Row {
+        std::string key, label;
+        bool used;
+        ImVec4 col;
+      };
+      std::vector<Row> left, right;
+      const ImVec4 fn_col = rgb(197, 134, 192);
       for (const auto* p : snap.ports_of(n.id)) {
-        if (p->dir == "in") left.emplace_back(pin_key(n.id, p->name, "in"), "● " + p->name);
+        if (p->dir == "in") left.push_back({pin_key(n.id, p->name, "in"), p->name, port_used.contains(n.id + ":" + p->name), in_col});
       }
       for (const auto* p : snap.ports_of(n.id)) {
-        if (p->dir == "fn") left.emplace_back(pin_key(n.id, p->name, "fn"), "▸ " + p->name + "()");
+        if (p->dir == "fn") left.push_back({pin_key(n.id, p->name, "fn"), p->name + "()", port_used.contains(n.id + ":" + p->name), fn_col});
       }
-      if (used_.contains(n.id)) left.emplace_back(pin_key(n.id, "", "use"), std::string("○ ") + tr("used"));
       for (const auto* p : snap.ports_of(n.id)) {
-        if (p->dir == "out") right.emplace_back(pin_key(n.id, p->name, "out"), p->name + " ●");
+        if (p->dir == "out") {
+          right.push_back({pin_key(n.id, p->name, "out"), p->name, port_used.contains(n.id + ":" + p->name), with_alpha(tint, 1.0f)});
+        }
       }
-      if (b->kind != "shared") right.emplace_back(pin_key(n.id, "", "calls"), std::string(tr("calls")) + " ○");
       auto side_of = [](const std::string& key) { return core::split(key, ':', false)[3]; };
       auto port_of = [](const std::string& key) { return core::split(key, ':', false)[2]; };
       int need = static_cast<int>(std::max(left.size(), right.size()));
@@ -566,16 +641,14 @@ void Ui::draw_graph(const Model& m) {
       for (int i = 0; i < shown; ++i) {
         float ry = y + static_cast<float>(i) * lh;
         if (i < static_cast<int>(left.size())) {
-          const auto& [key, label] = left[static_cast<std::size_t>(i)];
-          auto pid = pin(key, label, o.x, ry, true, half);
-          pin_of[pid] = n.id + ":" + port_of(key) + ":" + side_of(key);
+          const auto& r = left[static_cast<std::size_t>(i)];
+          auto pid = pin(r.key, r.label, ry, true, half, r.used, r.col);
+          pin_of[pid] = n.id + ":" + port_of(r.key) + ":" + side_of(r.key);
         }
         if (i < static_cast<int>(right.size())) {
-          const auto& [key, label] = right[static_cast<std::size_t>(i)];
-          std::string t = fit(label, half);
-          float tw = ImGui::CalcTextSize(t.c_str()).x;
-          auto pid = pin(key, label, o.x + inner_w - tw, ry, false, half);
-          pin_of[pid] = n.id + ":" + port_of(key) + ":" + side_of(key);
+          const auto& r = right[static_cast<std::size_t>(i)];
+          auto pid = pin(r.key, r.label, ry, false, half, r.used, r.col);
+          pin_of[pid] = n.id + ":" + port_of(r.key) + ":" + side_of(r.key);
         }
       }
       if (shown < need) {
@@ -583,13 +656,15 @@ void Ui::draw_graph(const Model& m) {
         int hidden_l = std::max(0, static_cast<int>(left.size()) - shown);
         int hidden_r = std::max(0, static_cast<int>(right.size()) - shown);
         if (hidden_l > 0) {
-          auto pid = pin(pin_key(n.id, "+", "in"), fmt::format("+{}", hidden_l), o.x, ry, true, half);
+          bool used = false;
+          for (std::size_t k = static_cast<std::size_t>(shown); k < left.size(); ++k) used = used || left[k].used;
+          auto pid = pin(pin_key(n.id, "+", "in"), fmt::format("+{}", hidden_l), ry, true, half, used, in_col);
           pin_of[pid] = n.id + ":+:in";
         }
         if (hidden_r > 0) {
-          std::string label = fmt::format("+{}", hidden_r);
-          float tw = ImGui::CalcTextSize(label.c_str()).x;
-          auto pid = pin(pin_key(n.id, "+", "out"), label, o.x + inner_w - tw, ry, false, half);
+          bool used = false;
+          for (std::size_t k = static_cast<std::size_t>(shown); k < right.size(); ++k) used = used || right[k].used;
+          auto pid = pin(pin_key(n.id, "+", "out"), fmt::format("+{}", hidden_r), ry, false, half, used, with_alpha(tint, 1.0f));
           pin_of[pid] = n.id + ":+:out";
         }
       }
@@ -647,14 +722,15 @@ void Ui::draw_graph(const Model& m) {
   applied_layout_ = m.layout_key;
 
   // Links: port to port between leaves, otherwise lifted to group pins (3.6).
-  // A pin of a block: the port's own pin, else its "+N" pin, else the group pin of that side.
+  // A port's point, else its "+N" point, else the block's own in/out point.
+  auto block_point = [&](const std::string& block, bool input) { return hid(pin_key(block, "", input ? "in" : "out")); };
   auto endpoint = [&](const std::string& block, const std::string& port, const std::string& side) {
     auto key = pin_key(block, port, side);
     if (shown_pins.contains(key)) return hid(key);
-    bool input = side == "in" || side == "fn" || side == "use";
+    bool input = side == "in" || side == "fn";
     auto folded = pin_key(block, "+", input ? "in" : "out");
     if (shown_pins.contains(folded)) return hid(folded);
-    return hid(pin_key(block, "", input ? "in" : "out"));
+    return block_point(block, input);
   };
   std::map<std::uintptr_t, const index::LinkRow*> link_of;
   // call/use/state links between the same two blocks are drawn as one line (thicker with
@@ -693,18 +769,14 @@ void Ui::draw_graph(const Model& m) {
     std::uintptr_t from = 0;
     std::uintptr_t to = 0;
     if (l.kind == "data" || l.kind == "event") {
-      from = leaf_a ? endpoint(a, l.src_port, "out") : hid(pin_key(a, "", "out"));
-      to = leaf_b ? endpoint(b, l.dst_port, "in") : hid(pin_key(b, "", "in"));
+      // Data flows port to port (lifted to the block's points for closed groups).
+      from = leaf_a ? endpoint(a, l.src_port, "out") : block_point(a, false);
+      to = leaf_b ? endpoint(b, l.dst_port, "in") : block_point(b, true);
     } else {
-      // call/use/state: from the caller's "calls" pin to the called fn (or "used" pin).
-      from = leaf_a ? endpoint(a, "", "calls") : hid(pin_key(a, "", "out"));
-      if (!leaf_b) {
-        to = hid(pin_key(b, "", "in"));
-      } else if (l.kind == "call" && !l.dst_port.empty()) {
-        to = endpoint(b, l.dst_port, "fn");
-      } else {
-        to = endpoint(b, "", "use");
-      }
+      // call/use/state: from the user's "out" point into the used block's "in" point; the
+      // tooltip of the line names the functions.
+      from = block_point(a, false);
+      to = block_point(b, true);
       auto& bundle = bundles[{a, b, l.kind}];
       if (bundle.links.empty()) bundle = Bundle{from, to, l.kind, a, b, {}};
       bundle.links.push_back(&l);
@@ -747,13 +819,21 @@ void Ui::draw_graph(const Model& m) {
     if (ed::QueryNewLink(&a, &b) && a && b) {
       auto pa = core::split(pin_of[a.Get()], ':', false);
       auto pb = core::split(pin_of[b.Get()], ':', false);
-      // Provider: an out port or a fn; consumer: an in port, or the caller's "calls"/"used" pin.
+      // Provider: an out port or a fn. Consumer: an in port; a block's "out" point (it calls the
+      // fn); a block's "in" point (it gets a new in port for the data).
       auto provider = [](const std::vector<std::string>& p) { return p.size() == 3 && !p[1].empty() && p[1] != "+" && (p[2] == "out" || p[2] == "fn"); };
-      auto consumer = [](const std::vector<std::string>& p) {
-        return p.size() == 3 && p[1] != "+" && ((p[2] == "in" && !p[1].empty()) || p[2] == "calls" || p[2] == "use");
-      };
+      auto consumer = [](const std::vector<std::string>& p) { return p.size() == 3 && p[1] != "+" && (p[2] == "in" || (p[1].empty() && p[2] == "out")); };
       if (!provider(pa)) std::swap(pa, pb);
-      bool ok = provider(pa) && consumer(pb) && pa[0] != pb[0] && !(pa[2] == "fn" && pb[2] == "in");
+      bool call = provider(pa) && pa[2] == "fn" && consumer(pb) && pb[1].empty() && pb[2] == "out";
+      bool data = provider(pa) && pa[2] == "out" && consumer(pb) && pb[2] == "in";
+      bool ok = (call || data) && pa[0] != pb[0];
+      if (!ok) {
+        bool block_to_block = pa.size() == 3 && pb.size() == 3 && pa[1].empty() && pb[1].empty();
+        ed::Suspend();
+        ImGui::SetTooltip("%s", block_to_block ? tr("Drop it on a function of the other block to add a call")
+                                               : tr("These two points cannot be linked"));
+        ed::Resume();
+      }
       if (ok && ed::AcceptNewItem(rgb(120, 255, 120), 3.0f)) {
         std::string fa = pa[0], fp = pa[1], tb = pb[0], tp = pb[2] == "in" ? pb[1] : "";
         w_.propose([=](const core::Schema& s) { return agents::op_connect(s, fa, fp, tb, tp); });
@@ -806,6 +886,20 @@ void Ui::draw_graph(const Model& m) {
   }
   ed::Suspend();
   if (auto hl = ed::GetHoveredLink(); hl && bundle_text.contains(hl.Get())) ImGui::SetTooltip("%s", bundle_text[hl.Get()].c_str());
+  hover_pin_ = 0;
+  if (auto hp = ed::GetHoveredPin(); hp && pin_of.contains(hp.Get())) {
+    hover_pin_ = hp.Get();
+    auto parts = core::split(pin_of[hp.Get()], ':', false);
+    if (parts.size() == 3 && ImGui::IsMouseDragging(0) == false) {
+      if (parts[1].empty() && parts[2] == "in") {
+        ImGui::SetTooltip("%s", tr("In: links from blocks that call or use this one. Drop a data output here to add an input."));
+      } else if (parts[1].empty() && parts[2] == "out") {
+        ImGui::SetTooltip("%s", tr("Out: what this block calls or uses. Drag from here to a function of another block to add a call."));
+      } else if (parts[2] == "fn") {
+        ImGui::SetTooltip("%s", fmt::format(fmt::runtime(tr("Function {}(): drop a block's out point here to add a call")), parts[1]).c_str());
+      }
+    }
+  }
   ed::NodeId ctx;
   if (ed::ShowNodeContextMenu(&ctx) && node_of.contains(ctx.Get())) {
     target_ = node_of[ctx.Get()];
