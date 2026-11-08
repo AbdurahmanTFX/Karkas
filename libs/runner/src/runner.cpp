@@ -69,6 +69,18 @@ kk::Result<RunResult> run(const RunOptions& opts) {
   if (opts.clean_env) {
     o.env.behavior = reproc::env::empty;
     for (const auto& [k, v] : clean_environment(opts.env)) env.emplace_back(k, v);
+  } else if (!opts.unset_env.empty()) {
+    // The inherited environment without the named variables.
+    o.env.behavior = reproc::env::empty;
+    std::set<std::string> drop(opts.unset_env.begin(), opts.unset_env.end());
+    for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
+      std::string_view kv(*e);
+      auto eq = kv.find('=');
+      if (eq == std::string_view::npos) continue;
+      std::string k(kv.substr(0, eq));
+      if (!drop.contains(k) && !opts.env.contains(k)) env.emplace_back(k, std::string(kv.substr(eq + 1)));
+    }
+    for (const auto& [k, v] : opts.env) env.emplace_back(k, v);
   } else {
     o.env.behavior = reproc::env::extend;
     for (const auto& [k, v] : opts.env) env.emplace_back(k, v);

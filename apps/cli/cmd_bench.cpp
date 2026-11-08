@@ -25,6 +25,8 @@ AutoRegister reg([](CLI::App& cli, App& app) {
   run->add_option("--scenario", o.scenario, "s1 | s2 | s3")->required()->check(CLI::IsMember({"s1", "s2", "s3"}));
   run->add_option("--method", o.method, "A | B | C")->required()->check(CLI::IsMember({"A", "B", "C"}));
   run->add_option("--model", o.model, "model for A/B (C uses the tiers of the config)");
+  run->add_option("--auth", o.auth, "A/B: api (claude --bare, ANTHROPIC_API_KEY) | subscription (claude.ai login)")
+      ->check(CLI::IsMember({"api", "subscription"}));
   run->add_option("--reps", o.reps, "repetitions (>= 3 for the report, 17.6)");
   run->add_option("--bench-dir", bench_dir, "bench/wavkit");
   run->add_option("--reference", reference, "reference project for S2/S3 (default tests/fixtures/wavkit)");

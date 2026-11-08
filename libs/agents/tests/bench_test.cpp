@@ -1,5 +1,9 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <cstdlib>
+#include <nlohmann/json.hpp>
+
 #include "kk/agents/bench.hpp"
 #include "kk/core/text.hpp"
 #include "kk/test/support.hpp"
@@ -83,4 +87,85 @@ TEST_CASE("bench: method C on S3 runs the pipeline, builds and runs the hidden t
   CHECK(res.hidden_total == 11);
   CHECK(res.hidden_pass < 11);  // the injected bugs were not fixed
   CHECK(res.interventions == 0);
+}
+
+TEST_CASE("bench: Claude Code command lines of methods A and B, API key or subscription (ADR 0014)") {
+  core::Config cfg;
+  agents::BenchOptions o;
+  o.scenario = "s3";
+  o.model = "sonnet";
+  o.karkas = "/opt/karkas";
+  std::filesystem::path dir = "/w/run";
+  auto has = [](const std::vector<std::string>& v, const std::string& a) { return std::ranges::find(v, a) != v.end(); };
+  o.method = "A";
+  auto a = agents::bench_claude_argv(o, cfg, dir, "fix it");
+  CHECK(a[2] == "fix it");
+  CHECK(has(a, "--bare"));
+  CHECK(has(a, "--strict-mcp-config"));  // no MCP servers at all
+  CHECK_FALSE(has(a, "--mcp-config"));
+  CHECK_FALSE(has(a, "--agents"));
+  o.method = "B";
+  auto b = agents::bench_claude_argv(o, cfg, dir, "fix it");
+  CHECK(has(b, "/w/run/.bench-mcp.json"));
+  CHECK(has(b, "/w/run/.bench-agents.json"));
+  CHECK(has(b, "--append-system-prompt-file"));  // --bare reads no CLAUDE.md
+  CHECK(has(b, "/w/run/CLAUDE.md"));
+  CHECK(core::contains(b[2], "/opt/karkas approve C-NNNN"));
+  o.auth = "subscription";
+  auto s = agents::bench_claude_argv(o, cfg, dir, "fix it");
+  CHECK_FALSE(has(s, "--bare"));
+  CHECK(has(s, "--setting-sources"));
+  CHECK(has(s, "project,local"));
+  CHECK(has(s, "--disable-slash-commands"));
+  CHECK_FALSE(has(s, "--append-system-prompt-file"));  // CLAUDE.md is discovered
+  CHECK(has(s, "--agents"));
+}
+
+TEST_CASE("bench: method B on S3 with a subscription prepares Karkas and hides the API key (fake claude)") {
+  test::TempDir work{"benchb"};
+  auto fake = work / "claude";
+  test::write(fake,
+              "#!/bin/sh\n"
+              "printf '%s\\n' \"$@\" >> \"$PWD/.fake-args\"\n"
+              "env | grep -c '^ANTHROPIC_API_KEY=' >> \"$PWD/.fake-key\"\n"
+              "echo '{\"type\":\"result\",\"is_error\":false,\"num_turns\":3,\"total_cost_usd\":0.02,"
+              "\"usage\":{\"input_tokens\":100,\"output_tokens\":10}}'\n");
+  std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
+  ::setenv("ANTHROPIC_API_KEY", "sk-test-not-for-subscription", 1);
+  auto cfg = test::test_config();
+  cfg.claude_command = fake.string();
+  cfg.bench_hidden_tests = (test::source_dir() / "bench/wavkit/hidden_tests.example").string();
+  agents::BenchOptions o;
+  o.scenario = "s3";
+  o.method = "B";
+  o.model = "sonnet";
+  o.auth = "subscription";
+  o.reps = 1;
+  o.bench_dir = test::source_dir() / "bench/wavkit";
+  o.reference = test::fixture("wavkit");
+  o.results = work / "results";
+  o.work = work.path();
+  auto r = agents::bench_run(o, cfg, nullptr);
+  ::unsetenv("ANTHROPIC_API_KEY");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().message));
+  REQUIRE(r->size() == 1);
+  const auto& res = (*r)[0];
+  std::filesystem::path dir = res.workdir;
+  CHECK(res.auth == "subscription");
+  CHECK(res.model_calls == 15);  // five bug reports, three turns each
+  CHECK(res.cost_usd == doctest::Approx(0.10));
+  CHECK(res.interventions == 0);
+  CHECK(res.build_ok);
+  CHECK(res.hidden_total == 11);
+  // The Karkas frame of method B: guide, subagents, MCP config.
+  CHECK(core::contains(test::read(dir / "CLAUDE.md"), "kk_model_for"));
+  auto agents = nlohmann::json::parse(test::read(dir / ".bench-agents.json"));
+  CHECK(agents.contains("karkas-cheap"));
+  CHECK(std::filesystem::exists(dir / ".bench-mcp.json"));
+  auto args = test::read(dir / ".fake-args");
+  CHECK(core::contains(args, ".bench-agents.json"));
+  CHECK_FALSE(core::contains(args, "--bare"));
+  // The API key never reached Claude Code: five runs, zero matches each.
+  CHECK(test::read(dir / ".fake-key") == "0\n0\n0\n0\n0\n");
+  CHECK(core::contains(test::read(work / "results" / res.date / "s3-B-1.json"), "\"auth\": \"subscription\""));
 }

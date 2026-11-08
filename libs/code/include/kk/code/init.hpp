@@ -38,6 +38,10 @@ kk::Result<std::string> write_agent_guide(const std::filesystem::path& root);
 // are rewritten and the stale ones removed; a file without the marker belongs to the user.
 kk::Result<GenResult> write_claude_agents(const std::filesystem::path& root, const core::Config& cfg);
 
+// The same subagents as a JSON object for `claude --agents` ({"karkas-cheap": {"description",
+// "prompt", "model"}}), for sessions that do not read .claude/agents/ (claude --bare).
+kk::Result<std::string> claude_agents_json(const core::Config& cfg);
+
 // Creates the frame in `root` (the folder is created when missing). Fails when the folder
 // already holds a project.ksl or its name gives no project id.
 kk::Result<InitResult> init_project(const std::filesystem::path& root, std::string_view idea = "");

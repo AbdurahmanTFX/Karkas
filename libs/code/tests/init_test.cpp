@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <nlohmann/json.hpp>
 
 #include "kk/code/init.hpp"
 #include "kk/core/config.hpp"
@@ -118,4 +119,24 @@ TEST_CASE("init: Claude Code subagents follow the model tiers (ADR 0013)") {
   CHECK(core::contains(test::read(root / ".claude/agents/karkas-cheap.md"), "model: claude-sonnet-5-5"));
   CHECK(test::read(root / ".claude/agents/karkas-strong.md").ends_with("mine\n"));
   CHECK(core::subagent_name("Fast_One") == "karkas-fast-one");
+}
+
+TEST_CASE("init: the subagents as JSON for claude --agents") {
+  core::Config cfg;
+  core::ModelTier t;
+  t.model = "claude-haiku-5-5";
+  cfg.models["cheap"] = t;
+  t.provider = "openai_compat";
+  t.model = "qwen3-coder";
+  cfg.models["local"] = t;
+  auto j = code::claude_agents_json(cfg);
+  REQUIRE_MESSAGE(j, (j ? "" : j.error().str()));
+  auto v = nlohmann::json::parse(*j);
+  CHECK(v.size() == 1);
+  CHECK(v["karkas-cheap"]["model"] == "claude-haiku-5-5");
+  CHECK(v["karkas-cheap"]["description"].get<std::string>().starts_with("Karkas agent on model tier cheap"));
+  auto prompt = v["karkas-cheap"]["prompt"].get<std::string>();
+  CHECK(prompt.starts_with("You are a Karkas agent"));
+  CHECK_FALSE(core::contains(prompt, "karkas:generated"));
+  CHECK_FALSE(core::contains(prompt, "---"));
 }

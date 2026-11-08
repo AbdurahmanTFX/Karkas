@@ -4,13 +4,17 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <ctime>
 #include <nlohmann/json.hpp>
 #include <random>
 #include <regex>
 #include <set>
 
+#include "kk/agents/changes.hpp"
 #include "kk/agents/engine.hpp"
+#include "kk/code/init.hpp"
+#include "kk/index/state.hpp"
 #include "kk/agents/testing.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
@@ -99,6 +103,54 @@ double median(std::vector<double> v) {
   return n % 2 == 1 ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2.0;
 }
 
+// Approvals in a project of method B: approved changes, the approved top level and frozen api/.
+struct ApprovalMark {
+  int changes = 0;
+  std::string l0;
+  std::map<std::string, std::string> api;
+};
+
+ApprovalMark approval_mark(const fs::path& dir) {
+  ApprovalMark m;
+  if (auto all = ChangeStore(dir).list()) {
+    for (const auto& c : *all) m.changes += c.status.value == "approved" ? 1 : 0;
+  }
+  if (auto st = index::StateStore(dir).load()) {
+    m.l0 = st->l0_hash;
+    m.api = st->frozen_api;
+  }
+  return m;
+}
+
+// The agent approving its own proposals stands for a person doing it (17.6): every approved
+// change, a newly approved top level and a newly frozen set of api/ headers count once.
+int approvals_between(const ApprovalMark& a, const ApprovalMark& b) {
+  int n = std::max(0, b.changes - a.changes);
+  if (b.l0 != a.l0 && !b.l0.empty()) ++n;
+  if (b.api != a.api && !b.api.empty()) ++n;
+  return n;
+}
+
+// Method B: the Karkas frame, the guide, the subagents of the tiers and the MCP config.
+kk::VoidResult prepare_method_b(const fs::path& dir, const BenchOptions& o) {
+  if (o.scenario == "s1") {
+    auto init = code::init_project(dir, "CLI audio pipeline wavkit exactly as specified in spec.md");
+    if (!init) return std::unexpected(init.error());
+  } else if (auto g = code::write_agent_guide(dir); !g) {
+    return std::unexpected(g.error());
+  }
+  auto pcfg = core::load_config(dir);
+  if (!pcfg) return std::unexpected(pcfg.error());
+  auto agents = code::claude_agents_json(*pcfg);
+  if (!agents) return std::unexpected(agents.error());
+  if (auto w = core::write_file(dir / ".bench-agents.json", *agents); !w) return w;
+  json mcp = {{"mcpServers", {{"karkas", {{"command", o.karkas.string()}, {"args", {"mcp", "--project", dir.string()}}}}}}};
+  if (auto w = core::write_file(dir / ".bench-mcp.json", mcp.dump(2)); !w) return w;
+  // The schema must be indexed before the agent asks for it.
+  (void)runner::run({{o.karkas.string(), "index", "--project", dir.string()}, dir, std::chrono::minutes(5), {}, false});
+  return {};
+}
+
 }  // namespace
 
 // --- JSON ------------------------------------------------------------------------------------
@@ -107,6 +159,7 @@ std::string bench_result_json(const BenchResult& r) {
   json j = {{"scenario", r.scenario},
             {"method", r.method},
             {"model", r.model},
+            {"auth", r.auth},
             {"rep", r.rep},
             {"date", r.date},
             {"cost_usd", r.cost_usd},
@@ -134,6 +187,7 @@ kk::Result<BenchResult> parse_bench_result(std::string_view text) {
     r.scenario = j.value("scenario", "");
     r.method = j.value("method", "");
     r.model = j.value("model", "");
+    r.auth = j.value("auth", "");
     r.rep = j.value("rep", 0);
     r.date = j.value("date", "");
     r.cost_usd = j.value("cost_usd", 0.0);
@@ -194,6 +248,44 @@ kk::VoidResult apply_bug(const fs::path& project, const fs::path& bug_json) {
   return core::write_file(p, *text);
 }
 
+std::vector<std::string> bench_claude_argv(const BenchOptions& o, const core::Config& cfg, const fs::path& dir,
+                                           const std::string& prompt) {
+  const bool api = o.auth != "subscription";
+  std::string text = prompt;
+  if (o.method == "B") {
+    text += fmt::format(
+        "\n\nThis is an unattended run: nobody will review or approve anything. Where the Karkas method says to stop "
+        "for the user's approval, approve it yourself in the shell (`{} approve C-NNNN`, `{} approve L0`, `{} approve api`) "
+        "and go on.",
+        o.karkas.string(), o.karkas.string(), o.karkas.string());
+  }
+  std::vector<std::string> argv = {cfg.claude_command, "-p", text, "--output-format", "json", "--permission-mode",
+                                   "bypassPermissions", "--max-budget-usd", fmt::format("{:.2f}", cfg.bench_max_budget_usd),
+                                   "--no-session-persistence"};
+  if (api) {
+    argv.push_back("--bare");  // ANTHROPIC_API_KEY only; no user settings, hooks, CLAUDE.md discovery
+  } else {
+    // The claude.ai login, without the user's own settings, hooks, plugins and skills.
+    for (const char* a : {"--setting-sources", "project,local", "--disable-slash-commands"}) argv.emplace_back(a);
+  }
+  if (!o.model.empty()) {
+    argv.push_back("--model");
+    argv.push_back(o.model);
+  }
+  if (o.method == "B") {
+    for (const auto& a : {std::string("--mcp-config"), (dir / ".bench-mcp.json").string(), std::string("--agents"),
+                          (dir / ".bench-agents.json").string()}) {
+      argv.push_back(a);
+    }
+    if (api) {
+      argv.push_back("--append-system-prompt-file");
+      argv.push_back((dir / "CLAUDE.md").string());
+    }
+  }
+  argv.push_back("--strict-mcp-config");  // A: no MCP servers at all; B: only Karkas
+  return argv;
+}
+
 // --- run ---------------------------------------------------------------------------------------
 
 kk::Result<std::vector<BenchResult>> bench_run(const BenchOptions& o, const core::Config& cfg,
@@ -209,6 +301,10 @@ kk::Result<std::vector<BenchResult>> bench_run(const BenchOptions& o, const core
       if (auto p = metrics::check_price(cfg, t.provider, t.model); !p) return std::unexpected(p.error());
     }
   }
+  if ((o.method == "A" || o.method == "B") && o.auth != "subscription" && std::getenv("ANTHROPIC_API_KEY") == nullptr) {
+    return kk::fail("bench", "auth api needs ANTHROPIC_API_KEY (or use --auth subscription)");
+  }
+  if (o.auth != "api" && o.auth != "subscription") return kk::fail("bench", "--auth api|subscription");
   std::vector<BenchResult> all;
   auto work = o.work.empty() ? fs::temp_directory_path() : o.work;
   for (int rep = 1; rep <= o.reps; ++rep) {
@@ -260,33 +356,20 @@ kk::Result<std::vector<BenchResult>> bench_run(const BenchOptions& o, const core
     }
     auto t0 = std::chrono::steady_clock::now();
     if (o.method == "A" || o.method == "B") {
-      fs::path mcp;
+      r.auth = o.auth == "subscription" ? "subscription" : "api";
+      ApprovalMark before;
       if (o.method == "B") {
-        mcp = dir / ".bench-mcp.json";
-        json cfgj = {{"mcpServers", {{"karkas", {{"command", o.karkas.string()}, {"args", {"mcp", "--project", dir.string()}}}}}}};
-        (void)core::write_file(mcp, cfgj.dump(2));
-        // The schema must be indexed before the agent asks for it.
-        (void)runner::run({{o.karkas.string(), "index", "--project", dir.string()}, dir, std::chrono::minutes(5), {}, false});
+        if (auto prep = prepare_method_b(dir, o); !prep) return std::unexpected(prep.error());
+        before = approval_mark(dir);
       }
       for (const auto& p : prompts) {
         // A unique marker at the start defeats prompt-cache reuse across runs (17.6).
-        std::vector<std::string> argv = {cfg.claude_command, "-p", fmt::format("[bench {}] {}", marker, p), "--output-format",
-                                         "json", "--bare", "--permission-mode", "bypassPermissions", "--max-budget-usd",
-                                         fmt::format("{:.2f}", cfg.bench_max_budget_usd)};
-        if (!o.model.empty()) {
-          argv.push_back("--model");
-          argv.push_back(o.model);
-        }
-        if (!mcp.empty()) {
-          argv.push_back("--mcp-config");
-          argv.push_back(mcp.string());
-          argv.push_back("--strict-mcp-config");
-        }
         runner::RunOptions ro;
-        ro.argv = argv;
+        ro.argv = bench_claude_argv(o, cfg, dir, fmt::format("[bench {}] {}", marker, p));
         ro.cwd = dir;
         ro.timeout = std::chrono::hours(2);
-        ro.clean_env = false;  // Claude Code needs its own environment (API key)
+        ro.clean_env = false;  // Claude Code needs its own environment (login, API key)
+        if (r.auth == "subscription") ro.unset_env = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"};
         auto run = runner::run(ro);
         if (!run) {
           r.notes.push_back(run.error().message);
@@ -295,6 +378,8 @@ kk::Result<std::vector<BenchResult>> bench_run(const BenchOptions& o, const core
         parse_claude_json(run->output, r);
         if (run->timed_out) r.notes.push_back("claude timed out");
       }
+      if (o.method == "B") r.interventions = approvals_between(before, approval_mark(dir));
+      if (r.auth == "subscription") r.notes.push_back("subscription: costs are Claude Code's estimates");
     } else {
       EngineOptions eo;
       eo.providers = o.providers;
@@ -393,7 +478,9 @@ kk::Result<std::string> bench_report(const fs::path& results_dir) {
     if (it->path().extension() != ".json") continue;
     auto r = parse_bench_result(core::read_file(it->path()).value_or(""));
     if (!r) continue;
-    groups[{r->scenario, r->method, r->model}].push_back(*r);
+    // Subscription runs are reported apart: their costs are estimates.
+    auto label = r->auth == "subscription" ? r->model + " (sub)" : r->model;
+    groups[{r->scenario, r->method, label}].push_back(*r);
   }
   if (groups.empty()) return kk::fail("bench", "no results in " + results_dir.string());
   std::string csv =

@@ -19,6 +19,9 @@ struct RunOptions {
   std::chrono::milliseconds timeout{300'000};
   std::map<std::string, std::string> env;  // added on top of the cleaned environment
   bool clean_env = true;
+  // With clean_env = false: variables removed from the inherited environment (e.g. an API key
+  // that would take precedence over a subscription login).
+  std::vector<std::string> unset_env;
   std::size_t max_output = 8u << 20;  // bytes kept (stdout + stderr merged)
 };
 

@@ -16,6 +16,10 @@ struct BenchOptions {
   std::string scenario;  // s1 | s2 | s3
   std::string method;    // A | B | C
   std::string model;     // A/B: --model; C: informational (tiers come from the config)
+  // A/B: how Claude Code signs in. "api": `claude --bare`, ANTHROPIC_API_KEY, exact costs.
+  // "subscription": the claude.ai login (the API key is removed from its environment), user
+  // settings, skills and MCP servers left out; costs are Claude Code's estimates (ADR 0014).
+  std::string auth = "api";
   int reps = 3;
   std::filesystem::path bench_dir;  // bench/wavkit
   std::filesystem::path reference;  // reference project for S2/S3 (tests/fixtures/wavkit)
@@ -27,6 +31,7 @@ struct BenchOptions {
 
 struct BenchResult {
   std::string scenario, method, model;
+  std::string auth;  // A/B: api | subscription
   int rep = 0;
   std::string date;
   double cost_usd = 0;
@@ -54,6 +59,13 @@ kk::Result<std::string> bench_report(const std::filesystem::path& results_dir);
 
 // Applies a bug patch of bench/wavkit/bugs (exact old → new text).
 kk::VoidResult apply_bug(const std::filesystem::path& project, const std::filesystem::path& bug_json);
+
+// The Claude Code command line of one request of method A or B in the copy `dir` (ADR 0014).
+// Method B reads dir/.bench-mcp.json (the Karkas MCP server) and dir/.bench-agents.json (the
+// subagents of the model tiers); with auth "api" (--bare, no CLAUDE.md discovery) the guide comes
+// from dir/CLAUDE.md through --append-system-prompt-file.
+std::vector<std::string> bench_claude_argv(const BenchOptions& o, const core::Config& cfg, const std::filesystem::path& dir,
+                                           const std::string& prompt);
 
 // Parses `claude -p --output-format json` output into the result fields (17.5).
 void parse_claude_json(std::string_view text, BenchResult& r);

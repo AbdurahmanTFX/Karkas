@@ -98,3 +98,22 @@ test 3
   auto text = runner::summarize(blocks);
   CHECK(core::contains(text, "tests stream.ring contract 2/3 unit 4/4"));
 }
+
+TEST_CASE("runner: an inherited environment can drop named variables") {
+  ::setenv("KK_TEST_DROP", "drop-me", 1);
+  ::setenv("KK_TEST_KEEP", "keep-me", 1);
+  runner::RunOptions o;
+  o.argv = {"env"};
+  o.timeout = 10s;
+  o.clean_env = false;
+  o.unset_env = {"KK_TEST_DROP"};
+  o.env = {{"KK_TEST_KEEP", "override"}};
+  auto r = runner::run(o);
+  REQUIRE(r);
+  CHECK_FALSE(core::contains(r->output, "drop-me"));
+  CHECK(core::contains(r->output, "KK_TEST_KEEP=override"));
+  CHECK_FALSE(core::contains(r->output, "keep-me"));
+  CHECK(core::contains(r->output, "PATH="));
+  ::unsetenv("KK_TEST_DROP");
+  ::unsetenv("KK_TEST_KEEP");
+}

@@ -6,6 +6,8 @@
 #include <regex>
 #include <set>
 
+#include <nlohmann/json.hpp>
+
 #include "kk/code/gen.hpp"
 #include "kk/core/config.hpp"
 #include "kk/core/paths.hpp"
@@ -114,6 +116,34 @@ kk::Result<GenResult> write_claude_agents(const fs::path& root, const core::Conf
   }
   std::ranges::sort(out.removed);
   return out;
+}
+
+kk::Result<std::string> claude_agents_json(const core::Config& cfg) {
+  nlohmann::json out = nlohmann::json::object();
+  for (const auto& [tier, t] : cfg.models) {
+    if (t.claude_model().empty()) continue;
+    auto name = core::subagent_name(tier);
+    auto text = target_template("claude_agent.md", {{"name", name}, {"tier", tier}, {"model", t.claude_model()}});
+    if (!text) return std::unexpected(text.error());
+    // Front matter between the first two "---" lines; the rest is the prompt.
+    auto end = text->find("\n---\n", 4);
+    if (!text->starts_with("---\n") || end == std::string::npos) return kk::fail("templates", "claude_agent.md: no front matter");
+    std::string description;
+    for (const auto& line : core::split(text->substr(4, end - 4), '\n')) {
+      if (!line.starts_with("description:")) continue;
+      description = std::string(core::trim(line.substr(12)));
+      if (description.size() >= 2 && description.front() == '"' && description.back() == '"') {
+        description = description.substr(1, description.size() - 2);
+      }
+    }
+    std::string prompt;
+    for (const auto& line : core::split(text->substr(end + 5), '\n')) {
+      if (core::contains(line, kGeneratedMarker)) continue;  // the note for people editing the file
+      prompt += line + "\n";
+    }
+    out[name] = {{"description", description}, {"prompt", std::string(core::trim(prompt)) + "\n"}, {"model", t.claude_model()}};
+  }
+  return out.dump(2);
 }
 
 kk::Result<InitResult> init_project(const fs::path& root_in, std::string_view idea) {
