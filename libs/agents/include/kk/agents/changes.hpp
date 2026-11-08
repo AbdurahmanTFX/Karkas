@@ -36,6 +36,10 @@ struct ApplyResult {
 kk::Result<ApplyResult> apply_diff(const std::filesystem::path& root, const std::vector<core::DiffLine>& diff,
                                    const std::vector<std::string>& tolerate = {});
 
+// The same checks as apply_diff without writing anything: the issues, and in `files` the
+// cards that applying would write.
+kk::Result<ApplyResult> check_diff(const std::filesystem::path& root, const std::vector<core::DiffLine>& diff);
+
 // A unified-diff-like text of the card changes, for showing before confirmation (14.6).
 std::string preview_diff(const std::filesystem::path& root, const std::vector<core::DiffLine>& diff);
 

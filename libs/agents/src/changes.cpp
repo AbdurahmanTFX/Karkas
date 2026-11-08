@@ -177,8 +177,10 @@ kk::Result<std::map<std::string, std::string>> compute(const fs::path& root, con
 
 }  // namespace
 
-kk::Result<ApplyResult> apply_diff(const fs::path& root, const std::vector<core::DiffLine>& diff,
-                                   const std::vector<std::string>& tolerate) {
+namespace {
+
+kk::Result<ApplyResult> apply_or_check(const fs::path& root, const std::vector<core::DiffLine>& diff,
+                                       const std::vector<std::string>& tolerate, bool write) {
   auto schema = core::load_schema(root);
   if (!schema) return std::unexpected(schema.error());
   auto cards = compute(root, diff, *schema);
@@ -216,6 +218,10 @@ kk::Result<ApplyResult> apply_diff(const fs::path& root, const std::vector<core:
   if (!out.issues.empty()) return out;
   for (const auto& [id, text] : *cards) {
     auto path = next.block_dir(id) / "block.ksl";
+    if (!write) {
+      out.files.push_back(core::rel_str(root, path));
+      continue;
+    }
     if (text.empty()) {
       std::error_code ec;
       fs::remove(path, ec);
@@ -225,6 +231,17 @@ kk::Result<ApplyResult> apply_diff(const fs::path& root, const std::vector<core:
     out.files.push_back(core::rel_str(root, path));
   }
   return out;
+}
+
+}  // namespace
+
+kk::Result<ApplyResult> apply_diff(const fs::path& root, const std::vector<core::DiffLine>& diff,
+                                   const std::vector<std::string>& tolerate) {
+  return apply_or_check(root, diff, tolerate, true);
+}
+
+kk::Result<ApplyResult> check_diff(const fs::path& root, const std::vector<core::DiffLine>& diff) {
+  return apply_or_check(root, diff, {}, false);
 }
 
 std::string preview_diff(const fs::path& root, const std::vector<core::DiffLine>& diff) {
