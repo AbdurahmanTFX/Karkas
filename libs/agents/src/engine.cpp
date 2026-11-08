@@ -720,10 +720,12 @@ kk::Result<std::string> Engine::approve(const std::string& what, const std::stri
     for (const auto& b : s->blocks) {
       if (!b.has_code()) continue;
       if (!block.empty() && !core::Schema::is_under(block, b.id)) continue;
+      // Approving the contracts also confirms blocks marked needs_review, including blocks
+      // without an api/ of their own (the entry), which have nothing to freeze.
+      (void)store.clear_review(b.id);
       auto h = index::block_api_hash(files, b.id);
       if (h.empty()) continue;
       if (auto r = store.freeze_api(b.id, h); !r) return std::unexpected(r.error());
-      (void)store.clear_review(b.id);
       ++n;
     }
     out += fmt::format("api frozen for {} blocks\n", n);

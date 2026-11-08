@@ -5,6 +5,7 @@
 #include "kk/code/import.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/tickets.hpp"
+#include "kk/index/state.hpp"
 #include "kk/test/support.hpp"
 #include "scripted.hpp"
 
@@ -271,4 +272,17 @@ TEST_CASE("engine: approving an import writes the cards, and agents leave import
   CHECK(w.status == "failed");
   CHECK(core::contains(w.cause, "imported"));
   CHECK(model.calls.empty());  // no model call was spent on it
+}
+
+TEST_CASE("engine: approving the api confirms blocks marked needs_review, also the entry without an api") {
+  Rig rig;
+  index::StateStore store(rig.p.path());
+  REQUIRE(store.mark_review("app", "contract of stream.ring changed"));
+  REQUIRE(store.mark_review("stream.pump", "contract of stream.ring changed"));
+  auto r = rig.engine->approve("api");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  auto st = store.load();
+  REQUIRE(st);
+  CHECK_FALSE(st->review.contains("app"));
+  CHECK_FALSE(st->review.contains("stream.pump"));
 }
