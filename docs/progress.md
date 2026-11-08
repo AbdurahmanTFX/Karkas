@@ -261,6 +261,19 @@
   configured, CMakeLists never written), approve api with an own CMakeLists, op_move/op_set_purpose,
   model line in kk_view, stream-json parsing and report.
 
+## Addition — cheaper Karkas sessions (docs/adr/0017)
+- Measured on the Blobby logs: B paid +53% cached tokens on small fixes (heavy start ~50%, large
+  kk_view/kk_check answers ~28%, orientation turns ~22%).
+- Short guide in CLAUDE.md (path by task size) + full method in kk_guide; shorter MCP instructions.
+- kk_locate / `karkas query locate`: ranked blocks with files and symbols for the words of a
+  symptom (IDF, strict morphology, general synonyms, top-3 words decide).
+- Views group repeated calls (L1 external, L2 callees/callers); kk_check summarises warnings.
+- Delegation only for larger work; wait for subagents instead of polling.
+- Tests: locate on wavkit and on imported code with symbols, kk_locate over MCP, issues_summary,
+  card order of L2 neighbours kept (wavkit golden views unchanged).
+- Experiments (outside the repository, karkas-bench/blobby2): bug hunt with 5 injected bugs and
+  hidden tests — Sonnet: A 5/5 $0.28, B 5/5 $0.45; Haiku: A 5/5 $0.085, B 4/5 $0.086.
+
 ## Stage 10 — benchmarks (harness)
 - bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
   (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip

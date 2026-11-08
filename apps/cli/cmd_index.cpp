@@ -95,7 +95,7 @@ AutoRegister reg_view([](CLI::App& cli, App& app) {
 
 AutoRegister reg_query([](CLI::App& cli, App& app) {
   auto* cmd = cli.add_subcommand(
-      "query", "schema queries: children neighbors dependents path writers readers by_thread search history status probes drift");
+      "query", "schema queries: children neighbors dependents path writers readers by_thread search locate history status probes drift");
   static std::string name;
   static std::vector<std::string> args;
   static std::string kind;
@@ -120,10 +120,10 @@ AutoRegister reg_query([](CLI::App& cli, App& app) {
     if (name == "writers") return print(idx->writers(arg(0)));
     if (name == "readers") return print(idx->readers(arg(0)));
     if (name == "by_thread") return print(idx->by_thread(arg(0)));
-    if (name == "search") {
+    if (name == "search" || name == "locate") {
       std::string q;
       for (const auto& a : args) q += (q.empty() ? "" : " ") + a;
-      std::cout << idx->search(q);
+      std::cout << (name == "search" ? idx->search(q) : idx->locate(q));
       return;
     }
     if (name == "history") return print(idx->history(arg(0), args.size() > 1 ? std::stoi(args[1]) : 10));

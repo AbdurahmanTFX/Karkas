@@ -158,7 +158,7 @@ TEST_CASE("bench: method B on S3 with a subscription prepares Karkas and hides t
   CHECK(res.build_ok);
   CHECK(res.hidden_total == 11);
   // The Karkas frame of method B: guide, subagents, MCP config.
-  CHECK(core::contains(test::read(dir / "CLAUDE.md"), "kk_model_for"));
+  CHECK(core::contains(test::read(dir / "CLAUDE.md"), "kk_locate"));
   auto agents = nlohmann::json::parse(test::read(dir / ".bench-agents.json"));
   CHECK(agents.contains("karkas-cheap"));
   CHECK(std::filesystem::exists(dir / ".bench-mcp.json"));

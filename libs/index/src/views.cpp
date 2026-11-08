@@ -1,6 +1,11 @@
 // Views for models (4.7) and schema queries (7.3), rendered from the index.
 #include <fmt/format.h>
 
+#include <filesystem>
+
+#include <cctype>
+#include <cmath>
+
 #include <algorithm>
 #include <deque>
 #include <map>
@@ -214,6 +219,18 @@ std::string Index::overview(const ViewOptions& o) {
 
 // --- L1 / L2 ---------------------------------------------------------------------------------------
 
+namespace {
+
+// "a, b, c +5": the first `n` names of a list.
+std::string first_names(const std::vector<std::string>& names, std::size_t n) {
+  std::vector<std::string> head(names.begin(), names.begin() + static_cast<long>(std::min(n, names.size())));
+  std::string out = core::join(head, ", ");
+  if (names.size() > n) out += fmt::format(" +{}", names.size() - n);
+  return out;
+}
+
+}  // namespace
+
 kk::Result<std::string> Index::view(std::string_view block, int level, const ViewOptions& o) {
   if (block.empty() || block == "root" || level == 0) {
     if (level != 0 && !block.empty() && block != "root") return kk::fail("query", "level 0 is the project view");
@@ -234,6 +251,10 @@ kk::Result<std::string> Index::view(std::string_view block, int level, const Vie
     std::string out = fmt::format("@view {} level=2 status={}\n", b.id, b.status);
     out += nl == std::string::npos ? "" : text.substr(nl + 1);
     std::vector<std::vector<std::string>> rows;
+    // Calls are grouped per neighbour: imported blocks have dozens of them (docs/adr/0017).
+    std::map<std::string, std::vector<std::string>> callees;  // block -> signatures we call
+    std::map<std::string, std::vector<std::string>> callers;  // block -> our functions it calls
+    std::vector<std::string> callee_order, caller_order;      // as the links come (card order)
     auto thread_of = [&](const std::string& id) {
       const auto* x = s.block(id);
       return x != nullptr && !x->thread.empty() ? "thr=" + x->thread : std::string();
@@ -245,14 +266,21 @@ kk::Result<std::string> Index::view(std::string_view block, int level, const Vie
       } else if (l.src_block == b.id && (l.kind == "data" || l.kind == "event")) {
         rows.push_back({l.dst_block, "in", l.dst_port, port_type(s, l.dst_block, l.dst_port), thread_of(l.dst_block)});
       } else if (l.src_block == b.id && l.kind == "call") {
-        rows.push_back({l.dst_block, "fn", port_type(s, l.dst_block, l.dst_port), "", thread_of(l.dst_block)});
+        if (!callees.contains(l.dst_block)) callee_order.push_back(l.dst_block);
+        callees[l.dst_block].push_back(port_type(s, l.dst_block, l.dst_port));
       } else if (l.dst_block == b.id && l.kind == "call") {
-        rows.push_back({l.src_block, "call", l.dst_port, "", thread_of(l.src_block)});
+        if (!callers.contains(l.src_block)) caller_order.push_back(l.src_block);
+        callers[l.src_block].push_back(l.dst_port);
       } else if (l.kind == "state" && (l.src_block == b.id || l.dst_block == b.id)) {
         auto other = l.src_block == b.id ? l.dst_block : l.src_block;
         rows.push_back({other, "state", l.src_port, "", thread_of(other)});
       }
     }
+    for (const auto& id : callee_order) {
+      const auto& sigs = callees[id];
+      rows.push_back({id, "fn", sigs.size() == 1 ? sigs[0] : first_names(sigs, 6), "", thread_of(id)});
+    }
+    for (const auto& id : caller_order) rows.push_back({id, "call", first_names(callers[id], 4), "", thread_of(id)});
     // Suppliers first, then consumers, callees, callers, state partners.
     auto rank = [](const std::string& d) {
       static const std::vector<std::string> order = {"out", "in", "fn", "call", "state"};
@@ -304,13 +332,32 @@ kk::Result<std::string> Index::view(std::string_view block, int level, const Vie
     out += "--- links\n" + table(internal) + table(lifted_rows);
   }
   std::vector<std::vector<std::string>> ext;
+  // Calls between the same two blocks share one line, where the first of them was: "-call-> b:f, g, h +9"
+  // (docs/adr/0017); single links look as before.
+  std::map<std::string, std::pair<std::size_t, std::vector<std::string>>> calls;  // key -> (row, fns)
   for (const auto& l : s.links) {
     if (l.kind == "use" && !o.show_use) continue;
     bool src_in = Snapshot::under(b.id, l.src_block);
     bool dst_in = Snapshot::under(b.id, l.dst_block);
     if (src_in == dst_in) continue;
+    auto attrs = link_attrs(l, true, true);
+    if (l.kind == "call" && attrs.empty()) {
+      auto key = std::string(dst_in ? "in" : "out") + "|" + l.src_block + "|" + l.dst_block;
+      auto [it, fresh] = calls.try_emplace(key);
+      if (fresh) {
+        it->second.first = ext.size();
+        ext.push_back({dst_in ? "in" : "out", l.src_block, arrow(l.kind), l.dst_block, ""});
+      }
+      it->second.second.push_back(l.dst_port);
+      continue;
+    }
     ext.push_back({dst_in ? "in" : "out", end_ref(l.src_block, l.src_port), arrow(l.kind),
-                   end_ref(l.dst_block, l.dst_port), link_attrs(l, true, true)});
+                   end_ref(l.dst_block, l.dst_port), attrs});
+  }
+  for (auto& [key, rf] : calls) {
+    auto& row = ext[rf.first];
+    row[1] = end_ref(row[1], "");
+    row[3] = end_ref(row[3], rf.second.size() == 1 ? rf.second[0] : first_names(rf.second, 3));
   }
   std::stable_sort(ext.begin(), ext.end(), [](const auto& x, const auto& y) { return x[0] < y[0]; });
   if (!ext.empty()) out += "--- external\n" + table(ext);
@@ -533,6 +580,215 @@ std::string Index::search(std::string_view text, int limit) {
   }
   if (rows.empty()) return "(no matches)\n";
   return table(rows);
+}
+
+namespace {
+
+// Lowercase words of an identifier or a sentence: "getBallPosition" -> get ball position,
+// "NET_RADIUS" -> net radius, "src/PhysicWorld.cpp" -> src physic world cpp.
+std::vector<std::string> words_of(std::string_view text) {
+  std::vector<std::string> out;
+  std::string cur;
+  auto flush = [&] {
+    if (!cur.empty()) out.push_back(core::to_lower(cur));
+    cur.clear();
+  };
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    char c = text[i];
+    bool alnum = std::isalnum(static_cast<unsigned char>(c)) != 0;
+    if (!alnum) {
+      flush();
+      continue;
+    }
+    bool upper = std::isupper(static_cast<unsigned char>(c)) != 0;
+    if (upper && !cur.empty()) {
+      bool prev_lower = std::islower(static_cast<unsigned char>(cur.back())) != 0;
+      bool next_lower = i + 1 < text.size() && std::islower(static_cast<unsigned char>(text[i + 1])) != 0;
+      if (prev_lower || (next_lower && std::isupper(static_cast<unsigned char>(cur.back())) != 0)) flush();
+    }
+    cur += c;
+  }
+  flush();
+  return out;
+}
+
+std::string stem(std::string w) {
+  auto cut = [&](std::string_view suf, std::size_t min) {
+    if (w.size() >= min + suf.size() && w.ends_with(suf)) {
+      w.resize(w.size() - suf.size());
+      return true;
+    }
+    return false;
+  };
+  if (cut("ies", 3)) return w + "y";
+  if (!cut("ing", 3) && !cut("ed", 3) && !cut("es", 4)) cut("s", 3);
+  return w;
+}
+
+// Same word up to an inflection or a derivation ("walk" ~ "walkable", "replay" ~ "replays");
+// never a plain prefix ("serve" is not "server", "net" is not "network").
+bool same_word(const std::string& a, const std::string& b) {
+  if (a == b) return true;
+  const auto& s = a.size() < b.size() ? a : b;
+  const auto& l = a.size() < b.size() ? b : a;
+  if (s.size() < 4 || !l.starts_with(s)) return false;
+  static const std::vector<std::string> tails = {"e", "er", "s", "es", "ed", "d", "ing", "able", "ible", "ion", "ation", "ment", "ity"};
+  auto rest = l.substr(s.size());
+  return std::find(tails.begin(), tails.end(), rest) != tails.end() && !(rest == "er" && s.size() < 6);
+}
+
+// General software synonyms (deterministic): a word of a symptom also looks for these.
+const std::map<std::string, std::vector<std::string>>& synonyms() {
+  static const std::map<std::string, std::vector<std::string>> m = [] {
+    std::vector<std::vector<std::string>> groups = {
+        {"setting", "option", "config", "configuration", "preference"},
+        {"online", "network", "multiplayer", "remote"},
+        {"save", "write", "store", "persist"},
+        {"load", "read", "restore", "parse"},
+        {"record", "recorder", "recording"},
+        {"crash", "abort", "exception"},
+        {"sound", "audio"},
+        {"key", "keyboard", "input"},
+        {"screen", "display", "render", "draw"},
+        {"restart", "startup", "init"},
+    };
+    std::map<std::string, std::vector<std::string>> out;
+    for (const auto& g : groups) {
+      for (const auto& w : g) {
+        for (const auto& o : g) {
+          if (o != w) out[w].push_back(o);
+        }
+      }
+    }
+    return out;
+  }();
+  return m;
+}
+
+const std::set<std::string>& stop_words() {
+  static const std::set<std::string> s = {
+      "the", "and", "for", "but", "not", "are", "was", "with", "when", "what", "that", "this", "then", "than",
+      "from", "into", "onto", "over", "only", "just", "also", "very", "some", "every", "each", "after", "before",
+      "while", "does", "did", "doe", "has", "have", "had", "its", "they", "them", "their", "there", "here",
+      "should", "would", "could", "will", "can", "cannot", "dont", "doesnt", "didnt", "isnt", "wont", "you",
+      "your", "our", "his", "her", "him", "she", "one", "all", "any", "sometime", "always", "never", "again",
+      "still", "even", "like", "look", "seem", "happen", "thing", "way", "fine", "bug", "report", "other",
+      "other", "same", "much", "more", "most", "less", "both", "either", "about", "around", "because"};
+  return s;
+}
+
+}  // namespace
+
+std::string Index::locate(std::string_view text, int limit) {
+  std::vector<std::string> query;
+  for (auto& w : words_of(text)) {
+    auto s = stem(w);
+    if (s.size() < 3 || stop_words().contains(w) || stop_words().contains(s)) continue;
+    if (std::find(query.begin(), query.end(), s) == query.end()) query.push_back(s);
+  }
+  if (query.empty()) return "(no words to look for)\n";
+  // Each query word with its synonyms.
+  std::vector<std::vector<std::string>> forms;
+  for (const auto& q : query) {
+    std::vector<std::string> f = {q};
+    if (auto it = synonyms().find(q); it != synonyms().end()) {
+      for (const auto& o : it->second) f.push_back(stem(o));
+    }
+    forms.push_back(f);
+  }
+  struct Cand {
+    std::string id, purpose;
+    std::vector<int> field;  // per query word: best field weight (id 4, file 3, symbol 3, purpose 2)
+    std::vector<std::string> files;
+    std::vector<std::pair<int, std::string>> symbols;
+    double score = 0;
+  };
+  std::map<std::string, Cand> cands;
+  auto mark = [&](Cand& c, const std::string& word, int weight) -> int {
+    auto s = stem(word);
+    int n = 0;
+    for (std::size_t i = 0; i < forms.size(); ++i) {
+      for (const auto& f : forms[i]) {
+        if (same_word(f, s)) {
+          c.field[i] = std::max(c.field[i], weight);
+          ++n;
+          break;
+        }
+      }
+    }
+    return n;
+  };
+  auto snap = snapshot();
+  for (const auto& b : snap.blocks) {
+    if (b.kind == "group") continue;
+    auto& c = cands[b.id];
+    c.id = b.id;
+    c.purpose = b.purpose;
+    c.field.assign(query.size(), 0);
+    auto last = b.id.substr(b.id.rfind('.') == std::string::npos ? 0 : b.id.rfind('.') + 1);
+    for (const auto& w : words_of(last)) mark(c, w, 4);
+    for (const auto& w : words_of(b.purpose)) mark(c, w, 2);
+  }
+  {
+    auto q = db_.q("SELECT path, block FROM files WHERE block IS NOT NULL ORDER BY path");
+    while (q.step()) {
+      auto it = cands.find(q.text(1));
+      if (it == cands.end()) continue;
+      std::string path = q.text(0);
+      it->second.files.push_back(path);
+      for (const auto& w : words_of(std::filesystem::path(path).stem().string())) mark(it->second, w, 3);
+    }
+  }
+  {
+    auto q = db_.q("SELECT block, name, file, line FROM symbols WHERE block IS NOT NULL");
+    while (q.step()) {
+      auto it = cands.find(q.text(0));
+      if (it == cands.end()) continue;
+      int n = 0;
+      for (const auto& w : words_of(q.text(1))) n += mark(it->second, w, 3);
+      if (n > 0) it->second.symbols.emplace_back(n, fmt::format("{} ({}:{})", q.text(1), q.text(2), q.i64(3)));
+    }
+  }
+  // A word found in few blocks says more than one found everywhere (inverse document frequency).
+  const double total = static_cast<double>(std::max<std::size_t>(cands.size(), 1));
+  std::vector<double> idf(query.size(), 0.0);
+  for (std::size_t i = 0; i < query.size(); ++i) {
+    int df = 0;
+    for (const auto& [id, c] : cands) df += c.field[i] > 0 ? 1 : 0;
+    idf[i] = df == 0 ? 0.0 : std::log(1.0 + total / df);
+  }
+  std::vector<Cand*> ranked;
+  for (auto& [id, c] : cands) {
+    // The three strongest words decide: two rare exact words beat six common weak ones.
+    std::vector<double> parts;
+    for (std::size_t i = 0; i < query.size(); ++i) {
+      if (c.field[i] > 0) parts.push_back(idf[i] * c.field[i]);
+    }
+    if (parts.empty()) continue;
+    std::sort(parts.rbegin(), parts.rend());
+    for (std::size_t k = 0; k < parts.size() && k < 3; ++k) c.score += parts[k];
+    ranked.push_back(&c);
+  }
+  if (ranked.empty()) return fmt::format("(no block matches: {})\n", core::join(query, " "));
+  std::stable_sort(ranked.begin(), ranked.end(), [](const Cand* a, const Cand* b) { return a->score > b->score; });
+  std::string out = fmt::format("@locate {}\n", core::join(query, " "));
+  for (int i = 0; i < limit && i < static_cast<int>(ranked.size()); ++i) {
+    auto& c = *ranked[static_cast<std::size_t>(i)];
+    std::vector<std::string> hit;
+    for (std::size_t k = 0; k < query.size(); ++k) {
+      if (c.field[k] > 0) hit.push_back(query[k]);
+    }
+    out += fmt::format("{}. {}  score {:.0f}  ({})\n   {}\n", i + 1, c.id, 10.0 * c.score, core::join(hit, " "), c.purpose);
+    if (!c.files.empty()) {
+      std::vector<std::string> f(c.files.begin(), c.files.begin() + static_cast<long>(std::min<std::size_t>(c.files.size(), 4)));
+      out += "   files " + core::join(f, " ") + (c.files.size() > 4 ? fmt::format(" (+{})", c.files.size() - 4) : "") + "\n";
+    }
+    std::stable_sort(c.symbols.begin(), c.symbols.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::vector<std::string> sy;
+    for (std::size_t k = 0; k < c.symbols.size() && k < 5; ++k) sy.push_back(c.symbols[k].second);
+    if (!sy.empty()) out += "   symbols " + core::join(sy, ", ") + "\n";
+  }
+  return out;
 }
 
 kk::Result<std::string> Index::history(std::string_view block, int n) {

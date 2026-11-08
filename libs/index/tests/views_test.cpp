@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
+
 #include "kk/core/text.hpp"
 #include "kk/index/index.hpp"
 #include "kk/test/support.hpp"
@@ -108,4 +110,18 @@ TEST_CASE("views: status, children and group of a leaf") {
   auto kids = f.idx->children("dsp");
   REQUIRE(kids);
   CHECK(kids->starts_with("dsp.chain"));
+}
+
+TEST_CASE("views: locate ranks the blocks of a symptom by ids, purposes and file names") {
+  ViewFixture f;
+  auto text = f.idx->locate("crackle after a few seconds: the ring buffer wraps around badly");
+  INFO(text);
+  CHECK(text.starts_with("@locate "));
+  auto first = text.find("1. ");
+  REQUIRE(first != std::string::npos);
+  CHECK(text.substr(first, 16) == "1. stream.ring  ");
+  CHECK(core::contains(text, "files "));
+  CHECK(core::contains(f.idx->locate("the the and"), "(no words to look for)"));
+  CHECK(core::contains(f.idx->locate("zzzz qqqq"), "(no block matches"));
+  CHECK(std::count(text.begin(), text.end(), '\n') <= 1 + 5 * 4);  // compact: at most 5 blocks
 }

@@ -21,6 +21,10 @@ struct Issue {
   [[nodiscard]] std::string str() const;
 };
 bool has_errors(const std::vector<Issue>& issues);
+// Compact text of issues for a model: every error in full; warnings counted per code, with up to
+// `examples` lines of each code (issues of the blocks in `focus` are always shown in full).
+std::string issues_summary(const std::vector<Issue>& issues, std::size_t examples = 2,
+                           const std::vector<std::string>& focus = {});
 
 // A link between two blocks, resolved from the consumer's card (3.5).
 //   data/event: src = supplier (out port), dst = consumer (in port)

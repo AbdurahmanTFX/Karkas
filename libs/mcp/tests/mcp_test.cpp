@@ -59,7 +59,7 @@ TEST_CASE("mcp: protocol details") {
   CHECK_FALSE(server.handle(R"({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}})"));
   // tools/list uses inputSchema (MCP), not input_schema (Claude API).
   auto list = json::parse(*server.handle(R"({"jsonrpc":"2.0","id":2,"method":"tools/list"})"));
-  CHECK(list["result"]["tools"].size() == 15);
+  CHECK(list["result"]["tools"].size() == 16);
   // The instructions tell a fresh agent the method and where to read it.
   CHECK(j["result"]["instructions"].get<std::string>().find("kk_guide") != std::string::npos);
   for (const auto& t : list["result"]["tools"]) {
@@ -78,7 +78,7 @@ TEST_CASE("mcp: kk_run_tests is offered only with a runner") {
   o.run_tests = [](const std::string& b) { return "tests " + b + " contract 3/3\n"; };
   mcp::Server server(*f.idx, o);
   auto list = json::parse(*server.handle(R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})"));
-  CHECK(list["result"]["tools"].size() == 16);
+  CHECK(list["result"]["tools"].size() == 17);
   auto r = json::parse(*server.handle(
       R"({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"kk_run_tests","arguments":{"block":"dsp"}}})"));
   CHECK(r["result"]["content"][0]["text"] == "tests dsp contract 3/3\n");
@@ -103,7 +103,7 @@ TEST_CASE("mcp: the guide, the KSL reference and the write side") {
     return json::parse(*server.handle(req.dump()))["result"];
   };
   auto list = json::parse(*server.handle(R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})"));
-  CHECK(list["result"]["tools"].size() == 18);
+  CHECK(list["result"]["tools"].size() == 19);
   auto guide = call("kk_guide", json::object());
   CHECK(guide["content"][0]["text"].get<std::string>().find("Schema first") != std::string::npos);
   auto ref = call("kk_ksl_reference", json::object());
@@ -132,7 +132,7 @@ TEST_CASE("mcp: kk_model_for is offered when wired and passes block and role") {
   };
   mcp::Server server(*f.idx, o);
   auto list = json::parse(*server.handle(R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})"));
-  CHECK(list["result"]["tools"].size() == 16);
+  CHECK(list["result"]["tools"].size() == 17);
   auto call = [&](const json& args) {
     json req = {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "tools/call"}, {"params", {{"name", "kk_model_for"}, {"arguments", args}}}};
     return json::parse(*server.handle(req.dump()))["result"];
@@ -156,4 +156,13 @@ TEST_CASE("mcp: kk_view carries the model line of the block when wired") {
   auto text = r["result"]["content"][0]["text"].get<std::string>();
   CHECK(text.ends_with("model: tier cheap -> subagent karkas-cheap for stream.ring\n"));
   CHECK(core::contains(text, "stream.ring"));
+}
+
+TEST_CASE("mcp: kk_locate answers with ranked blocks") {
+  McpFixture f;
+  mcp::Server server(*f.idx, {});
+  auto r = json::parse(*server.handle(
+      R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"kk_locate","arguments":{"text":"ring buffer drops frames"}}})"));
+  CHECK(r["result"]["isError"] == false);
+  CHECK(core::contains(r["result"]["content"][0]["text"].get<std::string>(), "1. stream.ring"));
 }

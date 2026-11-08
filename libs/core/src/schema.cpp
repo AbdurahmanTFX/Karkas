@@ -30,6 +30,30 @@ bool has_errors(const std::vector<Issue>& issues) {
   return std::any_of(issues.begin(), issues.end(), [](const Issue& i) { return i.severity == 'E'; });
 }
 
+std::string issues_summary(const std::vector<Issue>& issues, std::size_t examples, const std::vector<std::string>& focus) {
+  auto focused = [&](const Issue& i) {
+    return std::any_of(focus.begin(), focus.end(), [&](const std::string& f) { return Schema::is_under(f, i.block); });
+  };
+  std::string out;
+  std::map<std::string, std::vector<const Issue*>> warn;
+  for (const auto& i : issues) {
+    if (i.severity == 'E' || focused(i)) {
+      out += i.str() + "\n";
+    } else {
+      warn[i.code].push_back(&i);
+    }
+  }
+  if (!warn.empty()) {
+    std::vector<std::string> counts;
+    for (const auto& [code, list] : warn) counts.push_back(fmt::format("{} x{}", code, list.size()));
+    out += "warnings by code: " + join(counts, ", ") + "\n";
+    for (const auto& [code, list] : warn) {
+      for (std::size_t k = 0; k < list.size() && k < examples; ++k) out += "  e.g. " + list[k]->str() + "\n";
+    }
+  }
+  return out;
+}
+
 bool LinkInfo::crosses_threads() const {
   return !thread_src.empty() && !thread_dst.empty() && thread_src != thread_dst &&
          thread_src != "any" && thread_dst != "any";

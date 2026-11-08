@@ -1,6 +1,8 @@
 // karkas check — KSL checks (4.6) and, when kk_code is available, drift checks (8.2).
 #include <fmt/format.h>
 
+#include <algorithm>
+
 #include <iostream>
 
 #include "app.hpp"
@@ -40,6 +42,22 @@ std::string check_text(const fs::path& root, bool drift, int* errors_out, bool q
 }
 
 std::string check_text(const fs::path& root, bool drift, int* errors) { return check_text(root, drift, errors, false); }
+
+// kk_check: every error in full, warnings counted per code with two examples (a model rarely
+// needs 140 heuristic warnings of an imported project; `karkas check` prints them all).
+std::string check_summary(const fs::path& root) {
+  auto schema = core::load_schema(root);
+  if (!schema) return schema.error().str() + "\n";
+  auto issues = core::check_schema(*schema);
+#ifdef KK_HAVE_CODE
+  auto d = code::check_drift(*schema);
+  issues.insert(issues.end(), d.begin(), d.end());
+#endif
+  int errors = static_cast<int>(std::count_if(issues.begin(), issues.end(), [](const core::Issue& i) { return i.severity == 'E'; }));
+  return core::issues_summary(issues) + fmt::format("check: {} blocks, {} errors, {} warnings{}\n", schema->blocks.size(), errors,
+                                                     issues.size() - static_cast<std::size_t>(errors),
+                                                     issues.size() > static_cast<std::size_t>(errors) ? " (all of them: karkas check)" : "");
+}
 
 namespace {
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <map>
 
+#include "kk/core/text.hpp"
 #include "kk/core/validate.hpp"
 #include "kk/test/support.hpp"
 
@@ -269,4 +270,30 @@ TEST_CASE("validate: files is not allowed in a group, paths must be project-rela
   REQUIRE(!bad);
   CHECK(bad.error().code == "S04");
   CHECK(!parse_block_text("@block x\npurpose p\nkind leaf\nfiles /abs/a.cpp\n", "x.ksl"));
+}
+
+TEST_CASE("validate: issues_summary keeps errors and counts warnings per code") {
+  std::vector<Issue> issues;
+  auto add = [&](const char* code, char sev, const char* block, int n) {
+    for (int k = 0; k < n; ++k) {
+      Issue i;
+      i.code = code;
+      i.severity = sev;
+      i.block = block;
+      i.message = std::string("m") + std::to_string(k);
+      issues.push_back(i);
+    }
+  };
+  add("E03", 'E', "a", 1);
+  add("D09", 'W', "x.y", 40);
+  add("W05", 'W', "z", 3);
+  add("W04", 'W', "game.ball", 2);
+  auto s = issues_summary(issues);
+  CHECK(kk::core::contains(s, "E E03 a: m0"));
+  CHECK(kk::core::contains(s, "warnings by code: D09 x40, W04 x2, W05 x3"));
+  CHECK(std::count(s.begin(), s.end(), '\n') == 1 + 1 + 2 + 2 + 2);  // error, counts, 2 examples per code
+  // Issues of the block in focus are shown in full.
+  auto f = issues_summary(issues, 0, {"game"});
+  CHECK(kk::core::contains(f, "W W04 game.ball: m1"));
+  CHECK_FALSE(kk::core::contains(f, "e.g."));
 }

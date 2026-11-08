@@ -154,6 +154,10 @@ class Index {
   kk::Result<std::string> readers(std::string_view portref);
   std::string by_thread(std::string_view thread);
   std::string search(std::string_view text, int limit = 10);
+  // Blocks that probably hold a symptom, ranked by its words found in block ids, purposes, file
+  // names and code symbols (camelCase/snake_case split, light stemming); with files and the
+  // matching symbols at file:line. One call instead of overview + view chains (docs/adr/0017).
+  std::string locate(std::string_view text, int limit = 5);
   kk::Result<std::string> history(std::string_view block, int n = 10);
   kk::Result<std::string> status(std::string_view block = "");
   std::string probes(std::string_view target = "");

@@ -19,6 +19,7 @@ std::string run_tests_text(const fs::path& root, const std::string& block);
 bool have_test_pipeline();
 // Provided by cmd_check.cpp: the text `karkas check` prints.
 std::string check_text(const fs::path& root, bool drift, int* errors);
+std::string check_summary(const fs::path& root);
 
 namespace {
 
@@ -34,7 +35,7 @@ AutoRegister reg([](CLI::App& cli, App& app) {
     if (have_test_pipeline()) {
       o.run_tests = [root](const std::string& block) { return run_tests_text(root, block); };
     }
-    o.check = [root] { return check_text(root, true, nullptr); };
+    o.check = [root] { return check_summary(root); };
     o.propose_change = [root](const std::string& reason, const std::string& diff) -> kk::Result<std::string> {
       auto c = agents::propose_change(root, "mcp", reason, diff);
       if (!c) return std::unexpected(c.error());

@@ -39,7 +39,8 @@ std::vector<Tool> make_tools(const ServerOptions& o) {
   json block = str_prop("block id, e.g. stream.ring");
   json none = {{"type", "object"}, {"properties", json::object()}};
   std::vector<Tool> t = {
-      {"kk_guide", "How to work in this Karkas project: the order of work and the rules. Read it once before changing anything.",
+      {"kk_guide", "The full Karkas method (order of work, schema changes, delegation). Read it once before a feature or a "
+                   "schema change; a bug or a small fix needs only kk_locate.",
        none},
       {"kk_ksl_reference", "Syntax of cards (block.ksl), links and change diffs, with examples.", none},
       {"kk_overview", "Project overview (L0 view): top-level blocks with status and lifted links. Start here.",
@@ -67,6 +68,11 @@ std::vector<Tool> make_tools(const ServerOptions& o) {
        {{"type", "object"},
         {"properties", {{"from", str_prop("start block")}, {"to", str_prop("end block")}}},
         {"required", {"from", "to"}}}},
+      {"kk_locate",
+       "Where is it? Give the words of a symptom or a feature (\"ball passes through the net top\"): the blocks that "
+       "probably hold it, ranked, with their files and the matching functions at file:line. Start a bug or a small change "
+       "here instead of walking the levels.",
+       {{"type", "object"}, {"properties", {{"text", str_prop("words of the symptom or the feature")}}}, {"required", {"text"}}}},
       {"kk_search", "Full-text search over block purposes, invariants and history.",
        {{"type", "object"}, {"properties", {{"text", str_prop("words to search")}}}, {"required", {"text"}}}},
       {"kk_history", "Recent bug/fix history of a block (and its descendants).",
@@ -216,7 +222,7 @@ std::optional<std::string> Server::handle(std::string_view line) {
         if (std::none_of(tools.begin(), tools.end(), [&](const Tool& t) { return t.name == name; })) {
           return error(id, kInvalidParams, "unknown tool: " + name);
         }
-        if (name == "kk_guide") return response(id, text_result(template_text("target/karkas_guide.md"), false));
+        if (name == "kk_guide") return response(id, text_result(template_text("target/karkas_guide_full.md"), false));
         if (name == "kk_ksl_reference") {
           return response(id, text_result(template_text("prompts/ksl_reference.txt") + "\n" +
                                               template_text("prompts/ksl_change_example.txt"),
@@ -250,6 +256,7 @@ std::optional<std::string> Server::handle(std::string_view line) {
         if (name == "kk_dependents") return out(idx_.dependents(sarg(args, "block")));
         if (name == "kk_path") return out(idx_.path(sarg(args, "from"), sarg(args, "to")));
         if (name == "kk_search") return out(idx_.search(sarg(args, "text")));
+        if (name == "kk_locate") return out(idx_.locate(sarg(args, "text")));
         if (name == "kk_history") return out(idx_.history(sarg(args, "block"), args.value("n", 10)));
         if (name == "kk_status") return out(idx_.status(sarg(args, "block")));
         if (name == "kk_probes") return out(idx_.probes(sarg(args, "target")));

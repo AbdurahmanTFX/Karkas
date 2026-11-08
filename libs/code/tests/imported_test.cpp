@@ -101,3 +101,18 @@ TEST_CASE("imported blocks: a missing link is still drift, generation leaves the
   REQUIRE(m);
   CHECK(m->written.empty());
 }
+
+TEST_CASE("imported blocks: locate finds the block and the functions of a symptom (code symbols)") {
+  Imported p;
+  auto idx = index::Index::open(p.path());
+  REQUIRE(idx);
+  auto an = std::make_unique<code::CppAnalyzer>();
+  REQUIRE((*idx)->update({false, an.get()}));
+  auto text = (*idx)->locate("I cannot walk onto some tiles of the island");
+  INFO(text);
+  auto first = text.find("1. ");
+  REQUIRE(first != std::string::npos);
+  CHECK(text.substr(first, 14) == "1. game.world ");
+  CHECK(core::contains(text, "symbols "));
+  CHECK(core::contains(text, "src/game/"));
+}
