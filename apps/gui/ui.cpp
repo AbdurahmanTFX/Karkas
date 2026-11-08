@@ -64,7 +64,7 @@ std::uintptr_t hid(std::string_view s) {
   return h == 0 ? 1 : h;
 }
 
-std::string pin_key(const std::string& block, const std::string& port, const char* side) {
+std::string pin_key(const std::string& block, const std::string& port, std::string_view side) {
   return fmt::format("pin:{}:{}:{}", block, port, side);
 }
 
@@ -155,8 +155,14 @@ std::pair<float, float> Ui::base_size(const Model& m, const std::string& id) con
   if (b == nullptr) return {kMinBlockW, kMinBlockH};
   int in = 0;
   int out = 0;
-  for (const auto* p : m.snap->ports_of(id)) (p->dir == "in" ? in : out)++;
-  auto [w, h] = base_block_size(b->id, b->kind, b->purpose, in, out, req_.char_w, req_.line_h);
+  (void)in;
+  (void)out;
+  if (used_serial_ != m.serial) {
+    used_ = used_blocks(*m.snap);
+    used_serial_ = m.serial;
+  }
+  auto [left, right] = pin_rows(*m.snap, *b, used_);
+  auto [w, h] = base_block_size(b->id, b->kind, b->purpose, left, right, req_.char_w, req_.line_h);
   return {static_cast<float>(w), static_cast<float>(h)};
 }
 
@@ -713,30 +719,40 @@ void Ui::draw_graph(const Model& m) {
       pin_of[in] = n.id + "::in";
       pin_of[out] = n.id + "::out";
     } else {
-      std::vector<const index::PortRow*> ins, outs;
-      for (const auto* p : snap.ports_of(n.id)) (p->dir == "in" ? ins : outs).push_back(p);
-      // Left column: in ports, then the implicit "links" pin (calls, uses).
-      std::vector<std::pair<std::string, std::string>> left;  // key, label
-      for (const auto* p : ins) left.emplace_back(pin_key(n.id, p->name, "in"), "● " + p->name);
-      left.emplace_back(pin_key(n.id, "", "calls"), std::string("○ ") + tr("links"));
-      std::vector<std::pair<std::string, std::string>> right;
-      for (const auto* p : outs) right.emplace_back(pin_key(n.id, p->name, "out"), (p->dir == "fn" ? "fn " : "") + p->name + " ●");
+      // Left: inputs (in, fn, "used"); right: outputs (out, "calls") — links run left to right.
+      if (used_serial_ != m.serial) {
+        used_ = used_blocks(snap);
+        used_serial_ = m.serial;
+      }
+      std::vector<std::pair<std::string, std::string>> left, right;  // key, label
+      for (const auto* p : snap.ports_of(n.id)) {
+        if (p->dir == "in") left.emplace_back(pin_key(n.id, p->name, "in"), "● " + p->name);
+      }
+      for (const auto* p : snap.ports_of(n.id)) {
+        if (p->dir == "fn") left.emplace_back(pin_key(n.id, p->name, "fn"), "▸ " + p->name + "()");
+      }
+      if (used_.contains(n.id)) left.emplace_back(pin_key(n.id, "", "use"), std::string("○ ") + tr("used"));
+      for (const auto* p : snap.ports_of(n.id)) {
+        if (p->dir == "out") right.emplace_back(pin_key(n.id, p->name, "out"), p->name + " ●");
+      }
+      if (b->kind != "shared") right.emplace_back(pin_key(n.id, "", "calls"), std::string(tr("calls")) + " ○");
+      auto side_of = [](const std::string& key) { return core::split(key, ':', false)[3]; };
+      auto port_of = [](const std::string& key) { return core::split(key, ':', false)[2]; };
       int need = static_cast<int>(std::max(left.size(), right.size()));
       int shown = need <= rows_fit ? need : std::max(0, rows_fit - 1);
       for (int i = 0; i < shown; ++i) {
         float ry = y + static_cast<float>(i) * lh;
         if (i < static_cast<int>(left.size())) {
-          auto pid = pin(left[static_cast<std::size_t>(i)].first, left[static_cast<std::size_t>(i)].second, o.x, ry, true, half);
-          auto parts = core::split(left[static_cast<std::size_t>(i)].first, ':', false);
-          pin_of[pid] = n.id + ":" + parts[2] + ":" + (parts[3] == "calls" ? "calls" : "in");
+          const auto& [key, label] = left[static_cast<std::size_t>(i)];
+          auto pid = pin(key, label, o.x, ry, true, half);
+          pin_of[pid] = n.id + ":" + port_of(key) + ":" + side_of(key);
         }
         if (i < static_cast<int>(right.size())) {
           const auto& [key, label] = right[static_cast<std::size_t>(i)];
           std::string t = fit(label, half);
           float tw = ImGui::CalcTextSize(t.c_str()).x;
           auto pid = pin(key, label, o.x + inner_w - tw, ry, false, half);
-          auto parts = core::split(key, ':', false);
-          pin_of[pid] = n.id + ":" + parts[2] + ":out";
+          pin_of[pid] = n.id + ":" + port_of(key) + ":" + side_of(key);
         }
       }
       if (shown < need) {
@@ -800,12 +816,14 @@ void Ui::draw_graph(const Model& m) {
   applied_layout_ = m.layout_key;
 
   // Links: port to port between leaves, otherwise lifted to group pins (3.6).
-  auto endpoint = [&](const std::string& block, const std::string& port, const char* side) {
+  // A pin of a block: the port's own pin, else its "+N" pin, else the group pin of that side.
+  auto endpoint = [&](const std::string& block, const std::string& port, const std::string& side) {
     auto key = pin_key(block, port, side);
     if (shown_pins.contains(key)) return hid(key);
-    auto folded = pin_key(block, "+", std::string(side) == "calls" ? "in" : side);
+    bool input = side == "in" || side == "fn" || side == "use";
+    auto folded = pin_key(block, "+", input ? "in" : "out");
     if (shown_pins.contains(folded)) return hid(folded);
-    return hid(pin_key(block, "", side));
+    return hid(pin_key(block, "", input ? "in" : "out"));
   };
   std::map<std::uintptr_t, const index::LinkRow*> link_of;
   // call/use/state links between the same two blocks are drawn as one line (thicker with
@@ -851,15 +869,15 @@ void Ui::draw_graph(const Model& m) {
       from = leaf_a ? endpoint(a, l.src_port, "out") : hid(pin_key(a, "", "out"));
       to = leaf_b ? endpoint(b, l.dst_port, "in") : hid(pin_key(b, "", "in"));
     } else {
-      // call/use/state: provider (callee, shared) → user, into its "links" pin.
-      if (bb->kind == "group") {
-        from = hid(pin_key(b, "", "out"));
-      } else if (leaf_b && !l.dst_port.empty()) {
-        from = endpoint(b, l.dst_port, "out");
+      // call/use/state: from the caller's "calls" pin to the called fn (or "used" pin).
+      from = leaf_a ? endpoint(a, "", "calls") : hid(pin_key(a, "", "out"));
+      if (!leaf_b) {
+        to = hid(pin_key(b, "", "in"));
+      } else if (l.kind == "call" && !l.dst_port.empty()) {
+        to = endpoint(b, l.dst_port, "fn");
       } else {
-        from = endpoint(b, "", "calls");
+        to = endpoint(b, "", "use");
       }
-      to = leaf_a ? endpoint(a, "", "calls") : hid(pin_key(a, "", "in"));
       auto& bundle = bundles[{a, b, l.kind}];
       if (bundle.links.empty()) bundle = Bundle{from, to, l.kind, a, b, {}};
       bundle.links.push_back(&l);
@@ -900,18 +918,17 @@ void Ui::draw_graph(const Model& m) {
     ed::PinId a;
     ed::PinId b;
     if (ed::QueryNewLink(&a, &b) && a && b) {
-      auto parts_a = core::split(pin_of[a.Get()], ':', false);
-      auto parts_b = core::split(pin_of[b.Get()], ':', false);
-      bool ok = parts_a.size() == 3 && parts_b.size() == 3 && parts_a[0] != parts_b[0] && parts_a[1] != "+" &&
-                parts_b[1] != "+" && (!parts_a[1].empty() || !parts_b[1].empty());
+      auto pa = core::split(pin_of[a.Get()], ':', false);
+      auto pb = core::split(pin_of[b.Get()], ':', false);
+      // Provider: an out port or a fn; consumer: an in port, or the caller's "calls"/"used" pin.
+      auto provider = [](const std::vector<std::string>& p) { return p.size() == 3 && !p[1].empty() && p[1] != "+" && (p[2] == "out" || p[2] == "fn"); };
+      auto consumer = [](const std::vector<std::string>& p) {
+        return p.size() == 3 && p[1] != "+" && ((p[2] == "in" && !p[1].empty()) || p[2] == "calls" || p[2] == "use");
+      };
+      if (!provider(pa)) std::swap(pa, pb);
+      bool ok = provider(pa) && consumer(pb) && pa[0] != pb[0] && !(pa[2] == "fn" && pb[2] == "in");
       if (ok && ed::AcceptNewItem(rgb(120, 255, 120), 3.0f)) {
-        std::string fa = parts_a[0], fp = parts_a[1], tb = parts_b[0], tp = parts_b[2] == "in" ? parts_b[1] : "";
-        if (parts_a[2] == "in" || parts_a[1].empty()) {
-          fa = parts_b[0];
-          fp = parts_b[1];
-          tb = parts_a[0];
-          tp = parts_a[2] == "in" ? parts_a[1] : "";
-        }
+        std::string fa = pa[0], fp = pa[1], tb = pb[0], tp = pb[2] == "in" ? pb[1] : "";
         w_.propose([=](const core::Schema& s) { return agents::op_connect(s, fa, fp, tb, tp); });
         preview_open_ = true;
       } else if (!ok) {

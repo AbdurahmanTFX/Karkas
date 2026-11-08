@@ -45,6 +45,8 @@ const std::unordered_map<std::string_view, const char*>& ru() {
       {"Reset size", "Сбросить размер"},
       {"Auto layout (reset positions and sizes)", "Авто-раскладка (сбросить позиции и размеры)"},
       {"links", "связи"},
+      {"used", "исп."},
+      {"calls", "вызовы"},
       // inspector and code
       {"Select a block in the tree or on the schema.", "Выберите блок в дереве или на схеме."},
       {"Enter", "Войти"},

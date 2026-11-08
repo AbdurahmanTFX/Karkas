@@ -84,6 +84,8 @@ class Ui {
   std::pair<float, float> live_size_{0, 0};
   std::map<std::string, std::pair<float, float>> sizes_;  // saved, not in the model yet; {0,0} = auto
   std::uint64_t sizes_serial_ = 0;
+  mutable std::set<std::string> used_;  // blocks with incoming use/state links (cached per model)
+  mutable std::uint64_t used_serial_ = 0;
   bool relayout_ = false;  // "auto layout": re-apply positions from the next model
   std::uint64_t relayout_serial_ = 0;
   // dialogs
