@@ -1114,8 +1114,21 @@ void Ui::draw_empty(const Model& m) {
       for (std::size_t i = 0; i < shown; ++i) ImGui::BulletText("%s", orphans[i].c_str());
       if (orphans.size() > shown) ImGui::TextDisabled(tr("... and %zu more"), orphans.size() - shown);
       ImGui::Spacing();
-      ImGui::TextWrapped("%s", tr("Existing code becomes blocks without moving files: run karkas import, then "
-                                  "approve the proposed change in the Changes tab."));
+      // A proposed import (karkas import, "New project" with import): point at it.
+      const core::Change* pending = nullptr;
+      for (const auto& c : m.changes) {
+        if (c.status.value == "pending" && c.from.value == "import") pending = &c;
+      }
+      if (pending != nullptr) {
+        ImGui::TextWrapped(tr("The import is proposed as %s: review the blocks and approve it."), pending->id.c_str());
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Button, theme::accent(0.9f));
+        if (ImGui::Button(with_icon(Icon::Changes, tr("Open schema changes")).c_str())) side_ = SideView::Changes;
+        ImGui::PopStyleColor();
+      } else {
+        ImGui::TextWrapped("%s", tr("Existing code becomes blocks without moving files: run karkas import, then "
+                                    "approve the proposed change in the Changes tab."));
+      }
     }
   }
   ImGui::PopTextWrapPos();

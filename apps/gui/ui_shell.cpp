@@ -157,13 +157,15 @@ void Ui::go_to(const Model& m, const std::string& id) {
 
 // --- menu ----------------------------------------------------------------------------------
 
-void Ui::show_picker() {
-  picker_ = std::make_unique<ProjectPicker>(root_.empty() ? std::filesystem::path() : root_.parent_path(), settings_.recent);
+void Ui::show_picker(bool create) {
+  picker_ = std::make_unique<ProjectPicker>(root_.empty() ? std::filesystem::path() : root_.parent_path(), settings_.recent,
+                                            create ? PickerMode::Create : PickerMode::Open);
   picker_open_ = true;
 }
 
 void Ui::draw_menu() {
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) show_picker();
+  if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_N)) show_picker(true);
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Comma)) show_settings_ = !show_settings_;
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_F)) {
     side_ = SideView::Search;
@@ -184,6 +186,7 @@ void Ui::draw_menu() {
   }
   ImGui::PopStyleVar();
   if (ImGui::BeginMenu("Karkas")) {
+    if (ImGui::MenuItem(with_icon(Icon::Plus, tr("New project...")).c_str(), "Ctrl+N")) show_picker(true);
     if (ImGui::MenuItem(with_icon(Icon::FolderOpen, tr("Open project...")).c_str(), "Ctrl+O")) show_picker();
     if (ImGui::BeginMenu(with_icon(Icon::Files, tr("Recent projects")).c_str(), !settings_.recent.empty())) {
       for (const auto& r : settings_.recent) {

@@ -79,7 +79,7 @@ class Ui {
   void open_file_tab(const std::string& file);
   void draw_inspector(const Model& m);
   void draw_bottom(const Model& m);
-  void show_picker();
+  void show_picker(bool create = false);
   void go_to(const Model& m, const std::string& id);  // open the level of a block and select it
   ImVec4 color_of(const Model& m, const std::string& id) { return colors_.get(*m.snap, m.serial, id); }
   // schema (ui.cpp)
