@@ -6,6 +6,7 @@ est     L
 fn      check_drift(Schema) -> Issue[]
 fn      gen_cmake(Schema) -> string
 fn      write_mocks(Schema, block) -> Result<GenResult>
+fn      init_project(path, idea) -> Result<InitResult>
 call    libs.index:update
 call    libs.runner:build
 use     libs.core
