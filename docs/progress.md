@@ -217,6 +217,20 @@
   refuses broken or empty diffs, MCP tools and golden session; end-to-end `karkas mcp` on a copy
   of Flappy-Birds (proposal stored, broken one refused, stdout only protocol lines).
 
+## Addition — models of karkas.toml for external agents (docs/adr/0013)
+- `agents::model_for` / `route_block`: the model of a block as Karkas's own agents pick it
+  ([blocks] → [levels] → [roles] / routing); the engine uses the same `route_block`.
+- MCP tool kk_model_for(block?, role?): tier, model, reason, and the Claude Code subagent to
+  delegate to (or "not a Claude model").
+- `.claude/agents/karkas-<tier>.md` with `model:` from [models.<tier>] for every Anthropic tier:
+  `karkas gen agents`, `karkas init`, GUI New project; the GUI rewrites them when an API is saved
+  or removed. Hand-written files (no karkas:generated) are kept, stale generated ones removed.
+- Guide section Models and MCP instructions: call kk_model_for, delegate to the subagent.
+- Tests: resolution order and reasons, non-Claude and undefined tiers, unknown block/role, MCP
+  tool wiring, subagent files (rewrite, keep, remove, names); end-to-end `karkas mcp` on a copy
+  of wavkit with [levels]/[blocks].
+- Not verified here: Claude Code actually delegating to the generated subagents (manual).
+
 ## Stage 10 — benchmarks (harness)
 - bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
   (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip
