@@ -10,6 +10,7 @@ struct GuiSettings {
   Lang lang = Lang::En;
   float block_scale = 1.0f;  // default size of blocks on the schema
   float ui_scale = 1.0f;     // text size of the interface (io.FontGlobalScale)
+  bool links_by_block = true;  // link color: of the block it starts at (else: by link kind, 14.5)
 };
 
 // Limits of block sizes (canvas units): a block never shrinks to a dot.

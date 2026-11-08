@@ -46,6 +46,15 @@ ImVec4 link_color(const std::string& kind) {
   return rgb(120, 120, 120, 0.6f);  // use
 }
 
+// The i-th color of a sequence of well-separated hues (golden ratio steps).
+ImVec4 palette_color(std::size_t i, float alpha = 1.0f) {
+  double h = 0.08 + static_cast<double>(i) * 0.6180339887;
+  h -= static_cast<double>(static_cast<long>(h));
+  float r = 0, g = 0, b = 0;
+  ImGui::ColorConvertHSVtoRGB(static_cast<float>(h), i % 2 == 0 ? 0.72f : 0.55f, 1.0f, r, g, b);
+  return ImVec4(r, g, b, alpha);
+}
+
 std::uintptr_t hid(std::string_view s) {
   auto h = static_cast<std::uintptr_t>(core::fnv1a64(s) & 0x7fffffffffffULL);
   return h == 0 ? 1 : h;
@@ -55,16 +64,6 @@ std::string pin_key(const std::string& block, const std::string& port, const cha
   return fmt::format("pin:{}:{}:{}", block, port, side);
 }
 
-std::string child_of(const std::string& scope, const std::string& id) {
-  if (!index::Snapshot::under(scope, id)) return {};
-  std::string rest = id;
-  if (!scope.empty()) {
-    if (id.size() == scope.size()) return {};
-    rest = id.substr(scope.size() + 1);
-  }
-  auto head = rest.substr(0, rest.find('.'));
-  return scope.empty() ? head : scope + "." + head;
-}
 
 void status_dot(const std::string& status, bool active, double pulse) {
   auto* dl = ImGui::GetWindowDrawList();
@@ -134,6 +133,7 @@ Ui::~Ui() { ed::DestroyEditor(ed_); }
 void Ui::enter(const std::string& scope) {
   req_.scope = scope == "root" ? "" : scope;
   applied_layout_.clear();
+  pinned_.clear();
 }
 
 void Ui::select(const std::string& id) { req_.selected = id; }
@@ -284,7 +284,20 @@ void Ui::draw_settings(const Model* m) {
   }
   changed |= ImGui::SliderFloat(tr("Default block size"), &settings_.block_scale, kMinBlockScale, kMaxBlockScale, "%.2f");
   changed |= ImGui::SliderFloat(tr("Interface text size"), &settings_.ui_scale, 0.8f, 1.6f, "%.2f");
+  ImGui::TextUnformatted(tr("Link colors"));
+  ImGui::SameLine();
+  if (ImGui::RadioButton(tr("by block"), settings_.links_by_block)) {
+    settings_.links_by_block = true;
+    changed = true;
+  }
+  ImGui::SameLine();
+  if (ImGui::RadioButton(tr("by link kind"), !settings_.links_by_block)) {
+    settings_.links_by_block = false;
+    changed = true;
+  }
   ImGui::TextWrapped("%s", tr("Drag the corner of a block to resize it; the text follows the size."));
+  ImGui::TextWrapped("%s", tr("Hover a block to see only its links. Shift+click keeps a block's links lit (several "
+                              "blocks can be lit); Shift+double-click opens a group in place."));
   if (m != nullptr && m->snap && ImGui::Button(tr("Reset block sizes in this view"))) save_view(*m, true);
   if (m != nullptr) ImGui::TextDisabled(tr("Layout engine: %s"), m->engine.c_str());
   ImGui::TextDisabled(tr("Settings are saved to %s"), settings_path().string().c_str());
@@ -322,6 +335,12 @@ void Ui::draw_toolbar(const Model& m) {
     dialog_ = "add_block";
     target_ = req_.scope;
   }
+  if (!pinned_.empty()) {
+    ImGui::SameLine();
+    ImGui::TextColored(rgb(255, 230, 120), tr("Highlighted: %zu"), pinned_.size());
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("Clear"))) pinned_.clear();
+  }
   ImGui::SameLine();
   std::string status = m.engine + " · " + fmt::format(fmt::runtime(tr("index {:.0f} ms")), m.index_ms);
   if (!m.message.empty()) status += " · " + m.message;
@@ -331,6 +350,7 @@ void Ui::draw_toolbar(const Model& m) {
 // --- tree ---------------------------------------------------------------------------------------
 
 void Ui::draw_tree(const Model& m) {
+  tree_hover_.clear();
   ImGui::Begin(title("Blocks").c_str());
   std::function<void(const std::string&)> node = [&](const std::string& id) {
     const auto* b = m.snap->block(id);
@@ -346,6 +366,7 @@ void Ui::draw_tree(const Model& m) {
     if (ImGui::IsItemClicked()) select(id);
     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && !leaf) enter(id);
     if (ImGui::IsItemHovered()) {
+      tree_hover_ = id;
       ImGui::SetTooltip("%s [%s] %s\n%s", id.c_str(), tr_kind(b->kind), tr_status(b->status), b->purpose.c_str());
     }
     if (open && !leaf) {
@@ -367,6 +388,34 @@ void Ui::draw_graph(const Model& m) {
   std::map<std::uintptr_t, std::string> node_of, pin_of;  // id → block / "block:port:side"
   std::set<std::string> shown_pins;                         // pin keys drawn this frame
   std::string view = scope.empty() ? "root" : scope;
+  // Visible blocks ("units") and the unit that shows a given block (itself or an ancestor).
+  std::set<std::string> units;
+  for (const auto& n : m.graph.nodes) units.insert(n.id);
+  auto unit_of = [&](const std::string& id) -> std::string {
+    for (std::string x = id; !x.empty(); x = core::parent_id(x)) {
+      if (units.contains(x)) return x;
+    }
+    return {};
+  };
+  // Highlight: the hovered block (schema or tree) and the Shift+clicked ones keep their links
+  // and partners lit; everything else is dimmed.
+  std::set<std::string> focus;
+  for (const auto& p : pinned_) {
+    if (units.contains(p)) focus.insert(p);
+  }
+  if (!hover_unit_.empty() && units.contains(hover_unit_)) focus.insert(hover_unit_);
+  if (auto t = unit_of(tree_hover_); !t.empty()) focus.insert(t);
+  std::set<std::string> lit_nodes = focus;
+  auto lit_pair = [&](const std::string& a, const std::string& b) { return focus.contains(a) || focus.contains(b); };
+  for (const auto& l : snap.links) {
+    if (l.kind == "use" && !req_.show_use) continue;
+    auto a = unit_of(l.src_block);
+    auto b = unit_of(l.dst_block);
+    if (a.empty() || b.empty() || a == b || !lit_pair(a, b)) continue;
+    lit_nodes.insert(a);
+    lit_nodes.insert(b);
+  }
+  bool dimming = !focus.empty();
   bool apply_positions = applied_layout_ != m.layout_key;
   if (relayout_ && m.serial > relayout_serial_) {
     apply_positions = true;  // the model after "auto layout" has no manual positions
@@ -397,11 +446,32 @@ void Ui::draw_graph(const Model& m) {
     fill.w = 0.35f;
     ImVec4 border = active ? rgb(240, 200, 30, static_cast<float>(0.6 + 0.4 * std::sin(pulse_ * 5.0))) : status_color(b->status);
     if (b->status == "needs_review") border = rgb(255, 140, 0);
+    float border_w = active || b->status == "needs_review" ? 3.0f : 1.5f;
+    bool dim = dimming && !lit_nodes.contains(n.id);
+    if (pinned_.contains(n.id)) {
+      border = rgb(255, 230, 120);
+      border_w = 3.0f;
+    } else if (dimming && focus.contains(n.id)) {
+      border = rgb(255, 255, 255, 0.9f);
+      border_w = 2.5f;
+    }
+    if (dim) {
+      fill.w = 0.08f;
+      border.w = 0.2f;
+    }
     ed::PushStyleColor(ed::StyleColor_NodeBg, fill);
     ed::PushStyleColor(ed::StyleColor_NodeBorder, border);
-    ed::PushStyleVar(ed::StyleVar_NodeBorderWidth, active || b->status == "needs_review" ? 3.0f : 1.5f);
+    ed::PushStyleVar(ed::StyleVar_NodeBorderWidth, border_w);
     ed::PushStyleVar(ed::StyleVar_NodePadding, ImVec4(kPadX, kPadY, kPadX, kPadY));
     ed::BeginNode(nid);
+    ImVec4 text_col = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+    ImVec4 text_dis = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+    if (dim) {
+      text_col.w = 0.25f;
+      text_dis.w = 0.18f;
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, text_col);
+    ImGui::PushStyleColor(ImGuiCol_TextDisabled, text_dis);
     // Text, line spacing and gaps all follow the block size.
     ImGui::SetWindowFontScale(font);
     ImVec2 spacing = ImGui::GetStyle().ItemSpacing;
@@ -523,6 +593,7 @@ void Ui::draw_graph(const Model& m) {
       float d = grip * 0.27f * static_cast<float>(k);
       dl->AddLine(ImVec2(c.x - d, c.y), ImVec2(c.x, c.y - d), gc, 1.2f * grip / kGrip);
     }
+    ImGui::PopStyleColor(2);
     ed::EndNode();
     ed::PopStyleVar(2);
     ed::PopStyleColor(2);
@@ -546,10 +617,29 @@ void Ui::draw_graph(const Model& m) {
     std::vector<const index::LinkRow*> links;
   };
   std::map<std::tuple<std::string, std::string, std::string>, Bundle> bundles;
+  // Color: of the block the line starts at (data source, called/used block) or of the kind;
+  // dimmed when another block is in focus, brighter and thicker when it belongs to the focus.
+  auto style = [&](const std::string& kind, const std::string& start, const std::string& a, const std::string& b,
+                   float thick) {
+    ImVec4 c = link_color(kind);
+    if (settings_.links_by_block) {
+      auto idx = static_cast<std::size_t>(std::distance(units.begin(), units.find(start)));
+      c = palette_color(idx, kind == "use" ? 0.6f : 0.9f);
+    }
+    if (dimming) {
+      if (lit_pair(a, b)) {
+        c.w = 1.0f;
+        thick += 1.0f;
+      } else {
+        c.w = 0.07f;
+      }
+    }
+    return std::make_pair(c, thick);
+  };
   for (const auto& l : snap.links) {
     if (l.kind == "use" && !req_.show_use) continue;
-    auto a = child_of(scope, l.src_block);
-    auto b = child_of(scope, l.dst_block);
+    auto a = unit_of(l.src_block);
+    auto b = unit_of(l.dst_block);
     if (a.empty() || b.empty() || a == b) continue;
     if (!node_of.contains(hid("node:" + a)) || !node_of.contains(hid("node:" + b))) continue;
     const auto* ba = snap.block(a);
@@ -578,7 +668,8 @@ void Ui::draw_graph(const Model& m) {
     }
     auto lid = hid(fmt::format("link:{}", l.id));
     link_of[lid] = &l;
-    ed::Link(lid, from, to, link_color(l.kind), 2.0f);
+    auto [c, thick] = style(l.kind, a, a, b, 2.0f);
+    ed::Link(lid, from, to, c, thick);
   }
   std::map<std::uintptr_t, std::string> bundle_text;
   for (const auto& [key, bd] : bundles) {
@@ -601,7 +692,8 @@ void Ui::draw_graph(const Model& m) {
                                      core::last_segment(bd.b), n, bd.kind) +
                          "\n" + core::join(names, ", ");
     }
-    ed::Link(lid, bd.from, bd.to, link_color(bd.kind), thick);
+    auto [c, t] = style(bd.kind, bd.b, bd.a, bd.b, thick);
+    ed::Link(lid, bd.from, bd.to, c, t);
   }
 
   // Draw a link from an out port or fn to a consumer (14.6).
@@ -653,7 +745,8 @@ void Ui::draw_graph(const Model& m) {
   // Double click: group → enter, leaf → code (14.3).
   auto dbl = ed::GetDoubleClickedNode();
   std::string go_into;
-  if (dbl && node_of.contains(dbl.Get())) {
+  bool shift = ImGui::GetIO().KeyShift;
+  if (dbl && node_of.contains(dbl.Get()) && !shift) {
     const auto* b = snap.block(node_of[dbl.Get()]);
     if (b->kind == "group") {
       go_into = b->id;
@@ -712,8 +805,24 @@ void Ui::draw_graph(const Model& m) {
     navigate_ = 3;
   }
   if (navigate_ > 0 && --navigate_ == 0) ed::NavigateToContent(0.0f);
+  // The block under the mouse (or under a hovered pin) is the hover focus of the next frame.
+  std::string hovered_now;
+  if (auto hn = ed::GetHoveredNode(); hn && node_of.contains(hn.Get())) {
+    hovered_now = node_of[hn.Get()];
+  } else if (auto hp = ed::GetHoveredPin(); hp && pin_of.contains(hp.Get())) {
+    hovered_now = core::split(pin_of[hp.Get()], ':', false).front();
+  }
+  if (ed::IsBackgroundClicked() && !shift) pinned_.clear();
   ed::End();
   ed::SetCurrentEditor(nullptr);
+  // Shift+click keeps a block's links lit (again: off); Shift+double-click opens a group in place.
+  std::string expand_now;
+  if (shift && ImGui::IsMouseClicked(0) && !hovered_now.empty() && resizing_.empty()) {
+    if (!pinned_.erase(hovered_now)) pinned_.insert(hovered_now);
+    if (ImGui::IsMouseDoubleClicked(0)) expand_now = hovered_now;
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape) && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) pinned_.clear();
+  hover_unit_ = hovered_now;
   // Manual moves and sizes are saved and win over the automatic layout (14.2).
   bool moved = false;
   if (ImGui::IsMouseReleased(0) && !node_of.empty() && resizing_.empty()) {

@@ -1,6 +1,6 @@
 // karkas-gui (14): Dear ImGui (docking) + GLFW + OpenGL 3.3 + imgui-node-editor.
 //   karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]
-//              [--lang en|ru] [--block-scale F] [--settings] [--drag x1,y1,x2,y2]
+//              [--lang en|ru] [--block-scale F] [--settings] [--script "..."] [--drag x1,y1,x2,y2]
 //              [--frames N --screenshot out.png]   (headless checks)
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -22,6 +22,7 @@
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "png.hpp"
+#include "script.hpp"
 #include "ui.hpp"
 #include "worker.hpp"
 
@@ -49,7 +50,7 @@ std::string find_font(const std::string& configured, bool mono) {
 
 void usage() {
   std::cerr << "usage: karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]\n"
-               "                  [--lang en|ru] [--block-scale F] [--settings] [--drag x1,y1,x2,y2]\n"
+               "                  [--lang en|ru] [--block-scale F] [--settings] [--script \"...\"] [--drag x1,y1,x2,y2]\n"
                "                  [--frames N] [--screenshot out.png] [--version]\n";
 }
 
@@ -60,7 +61,7 @@ int main(int argc, char** argv) {
   float block_scale = 0;
   bool all_levels = false;
   bool open_settings = false;
-  std::vector<float> drag;  // headless check: a mouse drag in window pixels
+  std::string script_text;  // headless checks: scripted input (script.hpp)
   int frames = 0;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -72,13 +73,8 @@ int main(int argc, char** argv) {
     else if (a == "--lang") lang = next();
     else if (a == "--block-scale") block_scale = std::strtof(next().c_str(), nullptr);
     else if (a == "--settings") open_settings = true;
-    else if (a == "--drag") {
-      for (const auto& v : kk::core::split(next(), ',')) drag.push_back(std::strtof(v.c_str(), nullptr));
-      if (drag.size() != 4) {
-        usage();
-        return 2;
-      }
-    }
+    else if (a == "--script") script_text += next() + ";";
+    else if (a == "--drag") script_text += "drag " + kk::core::replace_all(next(), ",", " ") + ";";
     else if (a == "--frames") frames = std::atoi(next().c_str());
     else if (a == "--screenshot") screenshot = next();
     else if (a == "--version") {
@@ -161,24 +157,21 @@ int main(int argc, char** argv) {
   int settle = 3;
   std::shared_ptr<const kk::gui::Model> model;
   int ready_since = -1;
-  int drag_frame = -1;  // >= 0 while the scripted drag runs
-  std::uint64_t release_serial = 0;
+  std::string script_error;
+  auto script = kk::gui::InputScript::parse(script_text, &script_error);
+  if (!script) {
+    std::cerr << "karkas-gui: " << script_error << "\n";
+    return 2;
+  }
+  int phase = 0;  // headless: 0 wait for the level, 1 run the script, 2 let the model follow
+  int settle_frames = 0;
   auto start = std::chrono::steady_clock::now();
   while (glfwWindowShouldClose(window) == 0) {
     model = worker.model();
     bool animate = false;
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
-    if (drag_frame >= 0 && drag_frame <= 12) {
-      // Scripted drag (headless checks): move, press, 10 steps, release.
-      if (drag_frame == 0) io.AddMousePosEvent(drag[0], drag[1]);
-      if (drag_frame == 1) io.AddMouseButtonEvent(0, true);
-      if (drag_frame >= 2 && drag_frame <= 11) {
-        float t = static_cast<float>(drag_frame - 1) / 10.0f;
-        io.AddMousePosEvent(drag[0] + (drag[2] - drag[0]) * t, drag[1] + (drag[3] - drag[1]) * t);
-      }
-      if (drag_frame == 12) io.AddMouseButtonEvent(0, false);
-    }
+    if (phase == 1) script->step(io);
     ImGui::NewFrame();
     ui.request().char_w = ImGui::CalcTextSize("abcdefghijklmnopqrstuvwxyz").x / 26.0f;
     ui.request().line_h = ImGui::GetTextLineHeightWithSpacing();
@@ -204,13 +197,15 @@ int main(int argc, char** argv) {
       else if (ready_since < 0) ready_since = frame;
       bool ready = have && frame - ready_since >= 6;
       auto waited = std::chrono::steady_clock::now() - start;
-      if (!drag.empty() && ready && frame >= frames) {
-        if (drag_frame == 12) release_serial = model->serial;
-        if (drag_frame < 12 || model->serial <= release_serial || drag_frame < 30) {
-          ++drag_frame;
-          ready = false;
-        }
+      if (phase == 0 && ready && frame >= frames) phase = script->empty() ? 3 : 1;
+      if (phase == 1 && script->done()) phase = 2;
+      if (phase == 2) {
+        // After the script: the worker has the latest request and a few frames passed.
+        bool synced = model && model->req == ui.request();
+        settle_frames = synced ? settle_frames + 1 : 0;
+        if (settle_frames >= 8) phase = 3;
       }
+      ready = phase == 3;
       if ((frame >= frames && ready) || waited > std::chrono::seconds(30)) {
         if (!screenshot.empty()) {
           std::vector<std::uint8_t> px(static_cast<std::size_t>(w * h * 4));

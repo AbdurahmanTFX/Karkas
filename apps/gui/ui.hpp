@@ -64,6 +64,10 @@ class Ui {
   double pulse_ = 0;
   bool quit_ = false;
   bool show_settings_ = false;
+  // highlighting (hover, Shift+click)
+  std::set<std::string> pinned_;  // blocks whose links stay lit
+  std::string hover_unit_;        // block under the mouse on the schema (last frame)
+  std::string tree_hover_;        // block under the mouse in the tree (this frame)
   // block resizing
   std::string resizing_;
   std::pair<float, float> resize_start_{0, 0};

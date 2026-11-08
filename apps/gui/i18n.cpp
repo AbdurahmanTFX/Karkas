@@ -111,6 +111,15 @@ const std::unordered_map<std::string_view, const char*>& ru() {
       {"Apply", "Применить"},
       {"Close", "Закрыть"},
       {"{} → {}: {} {} links", "{} → {}: связей {}: {}"},
+      {"Highlighted: %zu", "Подсвечено: %zu"},
+      {"Clear", "Сбросить"},
+      {"Link colors", "Цвет связей"},
+      {"by block", "по блоку"},
+      {"by link kind", "по виду связи"},
+      {"Hover a block to see only its links. Shift+click keeps a block's links lit (several "
+       "blocks can be lit); Shift+double-click opens a group in place.",
+       "Наведите на блок — останутся видны только его связи. Shift+щелчок закрепляет подсветку "
+       "связей блока (можно несколько блоков); Shift+двойной щелчок раскрывает группу на месте."},
       // empty schema
       {"No blocks on this level.", "На этом уровне нет блоков."},
       {"Right click → Add block, or the \"Add block\" button above.",

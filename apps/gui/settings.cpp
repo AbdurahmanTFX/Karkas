@@ -30,13 +30,17 @@ GuiSettings load_settings() {
     if (j.contains("language")) s.lang = lang_from_code(j.value("language", "en"));
     s.block_scale = std::clamp(j.value("block_scale", 1.0f), kMinBlockScale, kMaxBlockScale);
     s.ui_scale = std::clamp(j.value("ui_scale", 1.0f), 0.8f, 1.6f);
+    s.links_by_block = j.value("link_colors", std::string("block")) != "kind";
   } catch (const json::exception&) {
   }
   return s;
 }
 
 bool save_settings(const GuiSettings& s) {
-  json j = {{"language", lang_code(s.lang)}, {"block_scale", s.block_scale}, {"ui_scale", s.ui_scale}};
+  json j = {{"language", lang_code(s.lang)},
+            {"block_scale", s.block_scale},
+            {"ui_scale", s.ui_scale},
+            {"link_colors", s.links_by_block ? "block" : "kind"}};
   return core::write_file(settings_path(), j.dump(2) + "\n").has_value();
 }
 
