@@ -20,6 +20,7 @@
 #include "icons.hpp"
 #include "theme.hpp"
 #include "ui_common.hpp"
+#include "widgets.hpp"
 #include "metrics.hpp"
 #include "kk/agents/edit.hpp"
 #include "kk/core/text.hpp"
@@ -817,29 +818,34 @@ void Ui::draw_graph(const Model& m) {
   if (ImGui::BeginPopup("node_menu")) {
     const auto* b = snap.block(target_);
     ImGui::TextDisabled("%s", target_.c_str());
-    if (b != nullptr && b->kind == "group" && ImGui::MenuItem(tr("Open"))) go_into = target_;
-    if (b != nullptr && b->kind != "group" && ImGui::MenuItem(tr("Add port..."))) dialog_ = "add_port";
-    if (ImGui::MenuItem(tr("Rename..."))) dialog_ = "rename";
-    if (b != nullptr && b->kind != "group" && ImGui::MenuItem(tr("Split..."))) dialog_ = "split";
-    if (b != nullptr && b->kind != "group" && ImGui::MenuItem(tr("Merge into..."))) dialog_ = "merge";
-    if (ImGui::MenuItem(tr("Reset size"))) reset_one = true;
-    if (ImGui::MenuItem(tr("Remove"))) {
+    ImGui::Separator();
+    if (b != nullptr && b->kind == "group" && ImGui::MenuItem(with_icon(Icon::Layers, tr("Open")).c_str())) go_into = target_;
+    if (b != nullptr && b->kind != "group" && ImGui::MenuItem(with_icon(Icon::Plus, tr("Add port...")).c_str())) dialog_ = "add_port";
+    if (ImGui::MenuItem(with_icon(Icon::Card, tr("Rename...")).c_str())) dialog_ = "rename";
+    if (b != nullptr && b->kind != "group" && ImGui::MenuItem(with_icon(Icon::Changes, tr("Split...")).c_str())) dialog_ = "split";
+    if (b != nullptr && b->kind != "group" && ImGui::MenuItem(with_icon(Icon::Link, tr("Merge into...")).c_str())) dialog_ = "merge";
+    if (ImGui::MenuItem(with_icon(Icon::Fit, tr("Reset size")).c_str())) reset_one = true;
+    ImGui::Separator();
+    if (b != nullptr && ImGui::MenuItem(with_icon(Icon::Card, tr("Open card in editor")).c_str())) w_.open_in_editor(b->dir + "/block.ksl", 1);
+    if (b != nullptr && ImGui::MenuItem(with_icon(Icon::Folder, tr("Open folder")).c_str())) w_.open_block_folder(b->id);
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(241, 110, 110));
+    if (ImGui::MenuItem(with_icon(Icon::Close, tr("Remove")).c_str())) {
       auto id = target_;
       w_.propose([=](const core::Schema& s) { return agents::op_remove_block(s, id); });
       preview_open_ = true;
     }
-    if (b != nullptr && ImGui::MenuItem(tr("Open card in editor"))) w_.open_in_editor(b->dir + "/block.ksl", 1);
-    if (b != nullptr && ImGui::MenuItem(tr("Open folder"))) w_.open_block_folder(b->id);
+    ImGui::PopStyleColor();
     ImGui::EndPopup();
   }
   if (ImGui::BeginPopup("bg_menu")) {
-    if (ImGui::MenuItem(tr("Add block..."))) {
+    if (ImGui::MenuItem(with_icon(Icon::Plus, tr("Add block...")).c_str())) {
       dialog_ = "add_block";
       target_ = scope;
     }
-    if (ImGui::MenuItem(tr("Fit to view"))) navigate_ = 1;
-    if (ImGui::MenuItem(tr("Auto layout (reset positions and sizes)"))) auto_layout = true;
-    if (ImGui::MenuItem(tr("Show project folder"))) w_.open_folder("");
+    if (ImGui::MenuItem(with_icon(Icon::Fit, tr("Fit to view")).c_str())) navigate_ = 1;
+    if (ImGui::MenuItem(with_icon(Icon::Schema, tr("Auto layout (reset positions and sizes)")).c_str())) auto_layout = true;
+    if (ImGui::MenuItem(with_icon(Icon::Folder, tr("Show project folder")).c_str())) w_.open_folder("");
     ImGui::EndPopup();
   }
   ed::Resume();
@@ -929,6 +935,13 @@ void Ui::draw_empty(const Model& m) {
   float width = std::min(avail.x - 40.0f, 640.0f);
   ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + (avail.x - width) / 2, ImGui::GetCursorPosY() + avail.y * 0.15f));
   ImGui::BeginGroup();
+  {
+    ImFont* big = theme::icon_font_big();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddText(big, big->FontSize * 2.0f, ImVec2(p.x + width * 0.5f - big->FontSize, p.y),
+                                        ImGui::GetColorU32(ImGuiCol_TextDisabled), icon(Icon::Schema));
+    ImGui::Dummy(ImVec2(width, big->FontSize * 2.4f));
+  }
   ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
   if (!m.snap->blocks.empty()) {
     ImGui::TextUnformatted(tr("No blocks on this level."));
@@ -957,24 +970,56 @@ void Ui::draw_empty(const Model& m) {
 // --- edit dialogs: form → KSL diff preview → apply (14.6) -------------------------------------------
 
 void Ui::draw_dialogs(const Model& m) {
+  // A form → KSL diff preview → apply. Labels above the fields, the main action highlighted.
+  auto field = [](const char* label) {
+    ui::muted("%s", label);
+    ImGui::SetNextItemWidth(-1);
+  };
+  auto primary = [](const std::string& label) {
+    ImGui::PushStyleColor(ImGuiCol_Button, theme::accent(0.9f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::accent(1.0f));
+    bool r = ImGui::Button(label.c_str());
+    ImGui::PopStyleColor(2);
+    return r;
+  };
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  ImVec2 center(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f);
   if (!dialog_.empty() && !ImGui::IsPopupOpen(title("Edit").c_str())) {
     ImGui::OpenPopup(title("Edit").c_str());
     preview_open_ = false;
   }
-  if (ImGui::BeginPopupModal(title("Edit").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 30, 0), ImGuiCond_Appearing);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18, 14));
+  if (ImGui::BeginPopupModal(title("Edit").c_str(), nullptr, ImGuiWindowFlags_NoResize)) {
     auto close = [&] {
       dialog_.clear();
       ImGui::CloseCurrentPopup();
     };
+    auto heading = [&](Icon ic, const std::string& text) {
+      ImGui::TextColored(theme::accent(1.0f), "%s", icon(ic));
+      ImGui::SameLine();
+      ImGui::TextUnformatted(text.c_str());
+      ImGui::Separator();
+      ImGui::Spacing();
+    };
+    bool go = false;
     if (dialog_ == "add_block") {
-      ImGui::Text(tr("New block in %s"), target_.empty() ? tr("the project") : target_.c_str());
-      ImGui::InputText(tr("name"), buf_name_, sizeof buf_name_);
+      heading(Icon::Plus, fmt::format(fmt::runtime(core::replace_all(tr("New block in %s"), "%s", "{}")),
+                                      target_.empty() ? tr("the project") : target_));
+      field(tr("name"));
+      if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+      go |= ImGui::InputText("##name", buf_name_, sizeof buf_name_, ImGuiInputTextFlags_EnterReturnsTrue);
       std::string kinds = std::string(tr_kind("group")) + '\0' + tr_kind("leaf") + '\0' + tr_kind("entry") + '\0' +
                           tr_kind("shared") + '\0' + '\0';
-      ImGui::Combo(tr("kind"), &kind_, kinds.c_str());
-      ImGui::InputText(tr("purpose"), buf_purpose_, sizeof buf_purpose_);
-      ImGui::InputText(tr("thread"), buf_thread_, sizeof buf_thread_);
-      if (ImGui::Button(tr("Preview"))) {
+      field(tr("kind"));
+      ImGui::Combo("##kind", &kind_, kinds.c_str());
+      field(tr("purpose"));
+      ImGui::InputText("##purpose", buf_purpose_, sizeof buf_purpose_);
+      field(tr("thread"));
+      ImGui::InputText("##thread", buf_thread_, sizeof buf_thread_);
+      ImGui::Spacing();
+      if (primary(with_icon(Icon::Eye, tr("Preview"))) || go) {
         std::string parent = target_, name = buf_name_, purpose = buf_purpose_, thread = buf_thread_;
         auto kind = static_cast<core::BlockKind>(kind_);
         w_.propose([=](const core::Schema& s) { return agents::op_add_block(s, parent, name, kind, purpose, thread); });
@@ -982,11 +1027,17 @@ void Ui::draw_dialogs(const Model& m) {
         close();
       }
     } else if (dialog_ == "add_port") {
-      ImGui::Text(tr("New port of %s"), target_.c_str());
-      ImGui::Combo(tr("dir"), &dir_, "in\0out\0fn\0");
-      if (dir_ != 2) ImGui::InputText(tr("name"), buf_name_, sizeof buf_name_);
-      ImGui::InputText(dir_ == 2 ? tr("signature: name(params) -> R") : tr("type"), buf_spec_, sizeof buf_spec_);
-      if (ImGui::Button(tr("Preview"))) {
+      heading(Icon::Plus, fmt::format(fmt::runtime(core::replace_all(tr("New port of %s"), "%s", "{}")), target_));
+      field(tr("dir"));
+      ImGui::Combo("##dir", &dir_, "in\0out\0fn\0");
+      if (dir_ != 2) {
+        field(tr("name"));
+        ImGui::InputText("##name", buf_name_, sizeof buf_name_);
+      }
+      field(dir_ == 2 ? tr("signature: name(params) -> R") : tr("type"));
+      go |= ImGui::InputText("##spec", buf_spec_, sizeof buf_spec_, ImGuiInputTextFlags_EnterReturnsTrue);
+      ImGui::Spacing();
+      if (primary(with_icon(Icon::Eye, tr("Preview"))) || go) {
         std::string id = target_, name = buf_name_, spec = buf_spec_;
         auto dir = static_cast<core::PortDir>(dir_);
         w_.propose([=](const core::Schema& s) { return agents::op_add_port(s, id, dir, name, spec); });
@@ -996,10 +1047,16 @@ void Ui::draw_dialogs(const Model& m) {
     } else if (dialog_ == "rename" || dialog_ == "merge" || dialog_ == "split") {
       const char* head = dialog_ == "rename" ? "Rename %s" : dialog_ == "merge" ? "Merge %s into" : "Split %s";
       const char* label = dialog_ == "rename" ? "new name" : dialog_ == "merge" ? "merge into (block id)" : "new block name";
-      ImGui::Text(tr(head), target_.c_str());
-      ImGui::InputText(tr(label), buf_name_, sizeof buf_name_);
-      if (dialog_ == "split") ImGui::InputText(tr("ports to move (comma separated)"), buf_spec_, sizeof buf_spec_);
-      if (ImGui::Button(tr("Preview"))) {
+      heading(dialog_ == "rename" ? Icon::Card : Icon::Changes, fmt::format(fmt::runtime(core::replace_all(tr(head), "%s", "{}")), target_));
+      field(tr(label));
+      if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+      go |= ImGui::InputText("##name", buf_name_, sizeof buf_name_, ImGuiInputTextFlags_EnterReturnsTrue);
+      if (dialog_ == "split") {
+        field(tr("ports to move (comma separated)"));
+        ImGui::InputText("##spec", buf_spec_, sizeof buf_spec_);
+      }
+      ImGui::Spacing();
+      if (primary(with_icon(Icon::Eye, tr("Preview"))) || go) {
         std::string id = target_, name = buf_name_, spec = buf_spec_, what = dialog_;
         w_.propose([=](const core::Schema& s) -> kk::Result<agents::EditOp> {
           if (what == "rename") return agents::op_rename(s, id, name);
@@ -1011,31 +1068,53 @@ void Ui::draw_dialogs(const Model& m) {
       }
     }
     ImGui::SameLine();
-    if (ImGui::Button(tr("Cancel"))) close();
+    if (ImGui::Button(tr("Cancel")) || ImGui::IsKeyPressed(ImGuiKey_Escape)) close();
     ImGui::EndPopup();
   }
+  ImGui::PopStyleVar();
   if (preview_open_ && (m.has_pending || !m.pending_error.empty()) && !ImGui::IsPopupOpen(title("KSL diff").c_str())) {
     ImGui::OpenPopup(title("KSL diff").c_str());
   }
-  if (ImGui::BeginPopupModal(title("KSL diff").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  bool failed = !m.pending_error.empty();
+  ImGui::SetNextWindowSize(failed ? ImVec2(ImGui::GetFontSize() * 30, 0) : ImVec2(ImGui::GetFontSize() * 42, ImGui::GetFontSize() * 30),
+                           ImGuiCond_Appearing);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18, 14));
+  if (ImGui::BeginPopupModal(title("KSL diff").c_str(), nullptr, failed ? ImGuiWindowFlags_AlwaysAutoResize : 0)) {
+    float footer = ImGui::GetFrameHeightWithSpacing() + 8;
     if (!m.pending_error.empty()) {
-      ImGui::TextColored(rgb(230, 80, 80), "%s", m.pending_error.c_str());
+      ImGui::TextColored(rgb(241, 76, 76), "%s", icon(Icon::Error));
+      ImGui::SameLine();
+      ImGui::PushTextWrapPos(0);
+      ImGui::TextUnformatted(m.pending_error.c_str());
+      ImGui::PopTextWrapPos();
     } else {
-      ImGui::TextUnformatted(m.pending_preview.c_str());
+      ImGui::TextColored(theme::accent(1.0f), "%s", icon(Icon::Changes));
+      ImGui::SameLine();
+      ImGui::TextUnformatted(m.pending_title.c_str());
+      ImGui::Separator();
+      ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::col(theme::kEditorBg));
+      ImGui::BeginChild("pdiff", ImVec2(0, -footer), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+      ui::diff_text(m.pending_preview);
+      ImGui::EndChild();
+      ImGui::PopStyleColor();
     }
-    if (m.has_pending && m.pending_error.empty() && ImGui::Button(tr("Apply"))) {
+    bool can_apply = m.has_pending && m.pending_error.empty();
+    if (!can_apply) ImGui::Spacing();
+    if (can_apply && primary(with_icon(Icon::Check, tr("Apply")))) {
       w_.confirm();
       preview_open_ = false;
       ImGui::CloseCurrentPopup();
     }
-    ImGui::SameLine();
-    if (ImGui::Button(tr("Close"))) {
+    if (can_apply) ImGui::SameLine();
+    if (ImGui::Button(tr("Close")) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
       w_.cancel();
       preview_open_ = false;
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
   }
+  ImGui::PopStyleVar();
 }
 
 }  // namespace kk::gui

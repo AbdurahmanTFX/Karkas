@@ -143,8 +143,8 @@ const std::unordered_map<std::string_view, const char*>& ru() {
       {"Show hidden folders", "Показывать скрытые папки"},
       {"(Karkas project)", "(проект Karkas)"},
       {"(no folders)", "(нет папок)"},
-      {"Pick a folder marked ● (it holds project.ksl); double click enters a folder.",
-       "Выберите папку с отметкой ● (в ней есть project.ksl); двойной щелчок — войти в папку."},
+      {"Pick a green folder (it holds project.ksl); double click enters a folder.",
+       "Выберите зелёную папку (в ней есть project.ksl); двойной щелчок — войти в папку."},
       {"Project: %s", "Проект: %s"},
       {"not a folder: ", "не папка: "},
       // IDE shell

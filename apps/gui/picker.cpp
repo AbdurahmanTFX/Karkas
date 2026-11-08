@@ -7,6 +7,8 @@
 #include <cstdlib>
 
 #include "i18n.hpp"
+#include "icons.hpp"
+#include "theme.hpp"
 #include "kk/core/text.hpp"
 
 namespace fs = std::filesystem;
@@ -76,16 +78,16 @@ std::optional<fs::path> ProjectPicker::draw(bool* open, bool welcome) {
   if (!recent.empty()) {
     ImGui::TextDisabled("%s", tr("Recent projects"));
     for (const auto& r : recent) {
-      std::string label = fs::path(r).filename().string() + "  —  " + r;
+      std::string label = with_icon(Icon::Schema, fs::path(r).filename().string()) + "   " + r;
       if (ImGui::Selectable(label.c_str())) chosen = fs::path(r);
     }
     ImGui::Separator();
   }
   // Path line, up, home.
-  if (ImGui::Button("↑")) go(dir_.parent_path());
+  if (ImGui::Button(icon(Icon::ArrowUp))) go(dir_.parent_path());
   if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Parent folder"));
   ImGui::SameLine();
-  if (ImGui::Button(tr("Home"))) {
+  if (ImGui::Button(with_icon(Icon::Home, tr("Home")).c_str())) {
     if (const char* h = std::getenv("HOME"); h != nullptr) go(h);
   }
   ImGui::SameLine();
@@ -98,8 +100,9 @@ std::optional<fs::path> ProjectPicker::draw(bool* open, bool welcome) {
   ImGui::BeginChild("dirs", ImVec2(0, -footer), ImGuiChildFlags_Borders);
   for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
     const auto& e = entries_[static_cast<std::size_t>(i)];
-    std::string label = (e.project ? "● " : "    ") + e.name + (e.project ? std::string("   ") + tr("(Karkas project)") : "");
-    if (e.project) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.85f, 0.5f, 1.0f));
+    std::string label = std::string(icon(e.project ? Icon::Schema : Icon::Folder)) + "  " + e.name +
+                        (e.project ? std::string("   ") + tr("(Karkas project)") : "");
+    ImGui::PushStyleColor(ImGuiCol_Text, e.project ? ImVec4(0.45f, 0.85f, 0.5f, 1.0f) : ImVec4(0.86f, 0.71f, 0.48f, 1.0f));
     if (ImGui::Selectable(label.c_str(), selected_ == i, ImGuiSelectableFlags_AllowDoubleClick)) {
       selected_ = i;
       if (ImGui::IsMouseDoubleClicked(0)) {
@@ -107,12 +110,13 @@ std::optional<fs::path> ProjectPicker::draw(bool* open, bool welcome) {
           chosen = dir_ / e.name;
         } else {
           auto next = dir_ / e.name;
+          ImGui::PopStyleColor();
           go(next);
           break;
         }
       }
     }
-    if (e.project) ImGui::PopStyleColor();
+    ImGui::PopStyleColor();
   }
   if (entries_.empty()) ImGui::TextDisabled("%s", tr("(no folders)"));
   ImGui::EndChild();
@@ -124,12 +128,15 @@ std::optional<fs::path> ProjectPicker::draw(bool* open, bool welcome) {
     target = dir_;
   }
   if (target.empty()) {
-    ImGui::TextDisabled("%s", tr("Pick a folder marked ● (it holds project.ksl); double click enters a folder."));
+    ImGui::TextDisabled("%s", tr("Pick a green folder (it holds project.ksl); double click enters a folder."));
   } else {
     ImGui::Text(tr("Project: %s"), target.string().c_str());
   }
   ImGui::BeginDisabled(target.empty());
-  if (ImGui::Button(tr("Open"))) chosen = target;
+  ImGui::PushStyleColor(ImGuiCol_Button, theme::accent(0.9f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::accent(1.0f));
+  if (ImGui::Button(with_icon(Icon::FolderOpen, tr("Open")).c_str())) chosen = target;
+  ImGui::PopStyleColor(2);
   ImGui::EndDisabled();
   if (!welcome) {
     ImGui::SameLine();
