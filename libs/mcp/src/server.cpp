@@ -3,6 +3,7 @@
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <iostream>
 #include <nlohmann/json.hpp>
 
@@ -210,66 +211,78 @@ std::optional<std::string> Server::handle(std::string_view line) {
     if (method == "tools/call") {
       std::string name = params.value("name", "");
       json args = params.value("arguments", json::object());
-      auto tools = make_tools(opts_);
-      if (std::none_of(tools.begin(), tools.end(), [&](const Tool& t) { return t.name == name; })) {
-        return error(id, kInvalidParams, "unknown tool: " + name);
-      }
-      if (name == "kk_guide") return response(id, text_result(template_text("target/karkas_guide.md"), false));
-      if (name == "kk_ksl_reference") {
-        return response(id, text_result(template_text("prompts/ksl_reference.txt") + "\n" +
-                                            template_text("prompts/ksl_change_example.txt"),
-                                        false));
-      }
-      if (auto st = idx_.update({false, opts_.analyzer}); !st) {
-        return response(id, text_result("index update failed: " + st.error().str(), true));
-      }
-      auto out = [&](const kk::Result<std::string>& r) {
-        return r ? response(id, text_result(*r, false)) : response(id, text_result(r.error().message, true));
+      auto call_tool = [&]() -> std::string {
+        auto tools = make_tools(opts_);
+        if (std::none_of(tools.begin(), tools.end(), [&](const Tool& t) { return t.name == name; })) {
+          return error(id, kInvalidParams, "unknown tool: " + name);
+        }
+        if (name == "kk_guide") return response(id, text_result(template_text("target/karkas_guide.md"), false));
+        if (name == "kk_ksl_reference") {
+          return response(id, text_result(template_text("prompts/ksl_reference.txt") + "\n" +
+                                              template_text("prompts/ksl_change_example.txt"),
+                                          false));
+        }
+        if (auto st = idx_.update({false, opts_.analyzer}); !st) {
+          return response(id, text_result("index update failed: " + st.error().str(), true));
+        }
+        auto out = [&](const kk::Result<std::string>& r) {
+          return r ? response(id, text_result(*r, false)) : response(id, text_result(r.error().message, true));
+        };
+        index::ViewOptions vo{args.value("use", false)};
+        if (name == "kk_overview") return out(idx_.overview(vo));
+        if (name == "kk_view") {
+          std::string b = sarg(args, "block");
+          int level = args.value("level", 0);
+          if (level == 0) {
+            auto snap = idx_.snapshot();
+            const auto* row = snap.block(b);
+            level = row != nullptr && row->kind == "group" ? 1 : 2;
+          }
+          auto v = idx_.view(b, level, vo);
+          if (v && opts_.model_hint) *v += opts_.model_hint(b);
+          return out(v);
+        }
+        if (name == "kk_children") return out(idx_.children(sarg(args, "block")));
+        if (name == "kk_neighbors") {
+          std::string dir = sarg(args, "dir");
+          return out(idx_.neighbors(sarg(args, "block"), sarg(args, "kind"), dir.empty() ? "both" : dir));
+        }
+        if (name == "kk_dependents") return out(idx_.dependents(sarg(args, "block")));
+        if (name == "kk_path") return out(idx_.path(sarg(args, "from"), sarg(args, "to")));
+        if (name == "kk_search") return out(idx_.search(sarg(args, "text")));
+        if (name == "kk_history") return out(idx_.history(sarg(args, "block"), args.value("n", 10)));
+        if (name == "kk_status") return out(idx_.status(sarg(args, "block")));
+        if (name == "kk_probes") return out(idx_.probes(sarg(args, "target")));
+        if (name == "kk_drift") return out(idx_.drift(sarg(args, "block")));
+        if (name == "kk_ticket_view" || name == "kk_ticket_append") {
+          core::TicketStore store(idx_.root());
+          std::string tid = sarg(args, "id");
+          if (name == "kk_ticket_append") {
+            auto r = store.append_line(tid, sarg(args, "line"));
+            if (!r) return response(id, text_result(r.error().message, true));
+            return response(id, text_result("ok\n", false));
+          }
+          auto t = store.load(tid);
+          if (!t) return response(id, text_result(t.error().message, true));
+          std::string at = sarg(args, "at");
+          return response(id, text_result(at.empty() ? core::write_ticket(*t) : core::path_view(*t, at), false));
+        }
+        if (name == "kk_run_tests") return response(id, text_result(opts_.run_tests(sarg(args, "block")), false));
+        if (name == "kk_check") return response(id, text_result(opts_.check(), false));
+        if (name == "kk_propose_change") return out(opts_.propose_change(sarg(args, "reason"), sarg(args, "diff")));
+        if (name == "kk_changes") return out(opts_.changes(sarg(args, "id")));
+        if (name == "kk_model_for") return out(opts_.model_for(sarg(args, "block"), sarg(args, "role")));
+        return error(id, kMethodNotFound, "unknown tool: " + name);
       };
-      index::ViewOptions vo{args.value("use", false)};
-      if (name == "kk_overview") return out(idx_.overview(vo));
-      if (name == "kk_view") {
-        std::string b = sarg(args, "block");
-        int level = args.value("level", 0);
-        if (level == 0) {
-          auto snap = idx_.snapshot();
-          const auto* row = snap.block(b);
-          level = row != nullptr && row->kind == "group" ? 1 : 2;
-        }
-        auto v = idx_.view(b, level, vo);
-        if (v && opts_.model_hint) *v += opts_.model_hint(b);
-        return out(v);
-      }
-      if (name == "kk_children") return out(idx_.children(sarg(args, "block")));
-      if (name == "kk_neighbors") {
-        std::string dir = sarg(args, "dir");
-        return out(idx_.neighbors(sarg(args, "block"), sarg(args, "kind"), dir.empty() ? "both" : dir));
-      }
-      if (name == "kk_dependents") return out(idx_.dependents(sarg(args, "block")));
-      if (name == "kk_path") return out(idx_.path(sarg(args, "from"), sarg(args, "to")));
-      if (name == "kk_search") return out(idx_.search(sarg(args, "text")));
-      if (name == "kk_history") return out(idx_.history(sarg(args, "block"), args.value("n", 10)));
-      if (name == "kk_status") return out(idx_.status(sarg(args, "block")));
-      if (name == "kk_probes") return out(idx_.probes(sarg(args, "target")));
-      if (name == "kk_drift") return out(idx_.drift(sarg(args, "block")));
-      if (name == "kk_ticket_view" || name == "kk_ticket_append") {
-        core::TicketStore store(idx_.root());
-        std::string tid = sarg(args, "id");
-        if (name == "kk_ticket_append") {
-          auto r = store.append_line(tid, sarg(args, "line"));
-          if (!r) return response(id, text_result(r.error().message, true));
-          return response(id, text_result("ok\n", false));
-        }
-        auto t = store.load(tid);
-        if (!t) return response(id, text_result(t.error().message, true));
-        std::string at = sarg(args, "at");
-        return response(id, text_result(at.empty() ? core::write_ticket(*t) : core::path_view(*t, at), false));
-      }
-      if (name == "kk_run_tests") return response(id, text_result(opts_.run_tests(sarg(args, "block")), false));
-      if (name == "kk_check") return response(id, text_result(opts_.check(), false));
-      if (name == "kk_propose_change") return out(opts_.propose_change(sarg(args, "reason"), sarg(args, "diff")));
-      if (name == "kk_changes") return out(opts_.changes(sarg(args, "id")));
-      if (name == "kk_model_for") return out(opts_.model_for(sarg(args, "block"), sarg(args, "role")));
+      // Every call is logged (with its time) so a session can be followed in .karkas/karkas.log.
+      auto t0 = std::chrono::steady_clock::now();
+      std::string resp = call_tool();
+      auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+      std::string brief = args.dump();
+      if (brief.size() > 160) brief = brief.substr(0, 157) + "...";
+      bool failed = core::contains(resp, "\"isError\":true") || core::contains(resp, "\"error\":{");
+      spdlog::info("mcp: {} {} -> {} in {} ms", name, brief, failed ? "error" : "ok", ms);
+      return resp;
     }
   } catch (const std::exception& e) {
     return error(id, kInternalError, e.what());

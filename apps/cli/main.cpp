@@ -45,6 +45,8 @@ void setup_logging(const App& app, const fs::path& project_root, bool mcp_mode) 
   }
   auto logger = std::make_shared<spdlog::logger>("karkas", sinks.begin(), sinks.end());
   logger->set_level(spdlog::level::debug);
+  // The MCP server is usually ended by a signal: write info lines at once instead of buffering.
+  logger->flush_on(spdlog::level::info);
   logger->set_pattern("%Y-%m-%d %H:%M:%S.%e %^%l%$ %v");
   spdlog::set_default_logger(logger);
 }
