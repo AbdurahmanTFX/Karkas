@@ -12,7 +12,8 @@ struct GuiSettings {
   Lang lang = Lang::En;
   float block_scale = 1.0f;  // default size of blocks on the schema
   float ui_scale = 1.0f;     // text size of the interface (io.FontGlobalScale)
-  bool links_by_block = true;  // link color: of the block it starts at (else: by link kind, 14.5)
+  bool links_by_block = true;   // link color: of the block it starts at (else: by link kind, 14.5)
+  bool blocks_by_block = true;  // block background: its own color (else: by status, 14.5)
   std::vector<std::string> recent;  // recently opened project roots, newest first
 };
 

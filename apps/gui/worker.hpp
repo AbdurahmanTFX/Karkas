@@ -47,7 +47,6 @@ struct Model {
   std::map<std::string, layout::Pos> manual;  // saved positions and sizes of this view
   std::vector<layout::Box> nested;            // groups opened in place: frames and their contents
   std::string layout_key;  // changes when positions must be re-applied
-  std::vector<layout::Box> boxes;
   std::vector<index::RunRow> runs;
   std::vector<core::Change> changes;
   std::vector<metrics::ActiveRun> active;

@@ -1,4 +1,5 @@
-add_executable(karkas-gui main.cpp worker.cpp ui.cpp png.cpp i18n.cpp settings.cpp script.cpp picker.cpp)
+add_executable(karkas-gui main.cpp worker.cpp ui.cpp png.cpp i18n.cpp settings.cpp script.cpp picker.cpp
+                          theme.cpp icons.cpp widgets.cpp ui_shell.cpp)
 target_link_libraries(karkas-gui PRIVATE kk_core kk_index kk_code kk_agents kk_layout kk_metrics
                       kk_imgui kk_imgui_node_editor kk_imgui_text_edit spdlog::spdlog Threads::Threads
                       nlohmann_json::nlohmann_json)

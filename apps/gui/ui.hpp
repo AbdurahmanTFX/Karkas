@@ -1,16 +1,20 @@
 #pragma once
-// Panels of karkas-gui (14.4): block tree, schema of the current level, inspector,
-// bottom tabs, code view, the edit dialogs (14.6) and the settings window.
+// karkas-gui window (14.4), laid out like an IDE: activity bar, side bar (explorer, search,
+// schema changes, settings), editor with tabs (the schema of the current level and opened
+// code files), inspector, bottom panel (tickets, agents, build & tests, costs, drift) and a
+// status bar; plus the edit dialogs (14.6). ui_shell.cpp holds the shell, ui.cpp the schema.
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <optional>
-#include <utility>
 #include <set>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "picker.hpp"
 #include "settings.hpp"
+#include "ui_common.hpp"
 #include "worker.hpp"
 
 namespace ax::NodeEditor {
@@ -32,24 +36,37 @@ class Ui {
   bool draw(const std::shared_ptr<const Model>& m, bool first_frame);
   Request& request() { return req_; }
   [[nodiscard]] bool quit_requested() const { return quit_; }
-  void open_settings() { show_settings_ = true; }
+  void open_settings() { side_ = SideView::Settings; }
   // A project chosen in "Open project" (main switches to it); empty when none.
   std::optional<std::filesystem::path> take_open_request() { return std::exchange(open_request_, std::nullopt); }
   void set_project_root(std::filesystem::path root) { root_ = std::move(root); }
 
  private:
+  enum class SideView { Explorer, Search, Changes, Settings };
+
+  // shell (ui_shell.cpp)
   void draw_menu();
-  void draw_settings(const Model* m);
-  void draw_toolbar(const Model& m);
-  void draw_address(const Model& m);
-  void navigate_path(const Model& m, const std::string& text);
-  void draw_tree(const Model& m);
-  void draw_graph(const Model& m);
-  void draw_empty(const Model& m);  // explains an empty level instead of a blank canvas
-  void draw_all_levels(const Model& m);
+  void draw_activity_bar(const Model* m);
+  void draw_status_bar(const Model* m);
+  void draw_side_bar(const Model* m);
+  void side_explorer(const Model& m);
+  void side_search(const Model& m);
+  void side_changes(const Model& m);
+  void side_settings(const Model* m);
+  void draw_editor(const Model& m);
+  void draw_schema_toolbar(const Model& m);
+  void draw_file_tab(const Model& m, const std::string& file);
+  void open_file_tab(const std::string& file);
   void draw_inspector(const Model& m);
   void draw_bottom(const Model& m);
-  void draw_code(const Model& m);
+  void show_picker();
+  void go_to(const Model& m, const std::string& id);  // open the level of a block and select it
+  ImVec4 color_of(const Model& m, const std::string& id) { return colors_.get(*m.snap, m.serial, id); }
+  // schema (ui.cpp)
+  void draw_address(const Model& m);
+  void navigate_path(const Model& m, const std::string& text);
+  void draw_graph(const Model& m);
+  void draw_empty(const Model& m);  // explains an empty level instead of a blank canvas
   void draw_dialogs(const Model& m);
   void enter(const std::string& scope);
   void select(const std::string& id);
@@ -58,26 +75,35 @@ class Ui {
   std::pair<float, float> base_size(const Model& m, const std::string& id) const;
   std::pair<float, float> node_size(const Model& m, const std::string& id) const;
   void save_view(const Model& m, bool reset_sizes = false, const std::string& reset_one = "");
+  void set_all_levels(const Model& m, bool on);
 
   Worker& w_;
   GuiSettings& settings_;
   bool persist_ = true;
   Request req_;
   ax::NodeEditor::EditorContext* ed_ = nullptr;
-  std::unique_ptr<TextEditor> code_;
-  std::string code_loaded_;
+  BlockColors colors_;
   std::string applied_layout_;
   std::string navigated_view_;
   std::map<std::string, std::pair<float, float>> placed_;  // node positions we set
   std::set<std::string> active_blocks_;
   double pulse_ = 0;
   bool quit_ = false;
-  bool show_settings_ = false;
   std::filesystem::path root_;  // the open project
   std::unique_ptr<ProjectPicker> picker_;
   bool picker_open_ = false;
   std::optional<std::filesystem::path> open_request_;
-  void show_picker();
+  // shell
+  SideView side_ = SideView::Explorer;
+  bool side_visible_ = true;
+  char filter_[128] = {};
+  char search_[128] = {};
+  bool focus_search_ = false;
+  std::vector<std::string> open_files_;                         // code tabs of the editor
+  std::map<std::string, std::unique_ptr<TextEditor>> editors_;  // per open file
+  std::map<std::string, std::string> editor_loaded_;            // text shown per file
+  std::string select_tab_;     // tab to bring forward next frame ("#schema" or a file)
+  std::string bottom_select_;  // bottom panel tab to bring forward next frame
   // address bar
   bool editing_path_ = false;
   bool focus_path_ = false;
@@ -110,8 +136,7 @@ class Ui {
   int kind_ = 1;  // leaf
   int dir_ = 0;   // in
   bool preview_open_ = false;
-  int navigate_ = 0;    // frames until "fit to content" (node sizes are known after drawing)
-  float zoom_ = 0.55f;  // all-levels view
+  int navigate_ = 0;  // frames until "fit to content" (node sizes are known after drawing)
 };
 
 }  // namespace kk::gui

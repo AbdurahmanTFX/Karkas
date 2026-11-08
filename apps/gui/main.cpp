@@ -23,6 +23,7 @@
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "picker.hpp"
+#include "theme.hpp"
 #include "png.hpp"
 #include "script.hpp"
 #include "ui.hpp"
@@ -31,19 +32,6 @@
 namespace fs = std::filesystem;
 
 namespace {
-
-std::string find_font(const std::string& configured) {
-  std::vector<std::string> candidates;
-  if (!configured.empty()) candidates.push_back(configured);
-  for (const char* f : {"/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-                        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"}) {
-    candidates.emplace_back(f);
-  }
-  for (const auto& c : candidates) {
-    if (fs::exists(c)) return c;
-  }
-  return {};
-}
 
 void usage() {
   std::cerr << "usage: karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]\n"
@@ -148,23 +136,13 @@ int main(int argc, char** argv) {
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
   io.IniFilename = nullptr;  // the panel layout is rebuilt each start (window ids are language independent)
-  ImGui::StyleColorsDark();
   float xs = 1.0f;
   float ys = 1.0f;
   glfwGetWindowContentScale(window, &xs, &ys);
   float scale = std::max(1.0f, xs);
-  ImGui::GetStyle().ScaleAllSizes(scale);
-  // Cyrillic glyphs (14.8): ImGui 1.91 needs explicit glyph ranges.
-  auto font = find_font(font_cfg);
-  if (!font.empty()) {
-    io.Fonts->AddFontFromFileTTF(font.c_str(), 15.0f * scale, nullptr, io.Fonts->GetGlyphRangesCyrillic());
-    static const ImWchar extra[] = {0x2000, 0x206F, 0x2190, 0x21FF, 0x25A0, 0x25FF, 0};
-    ImFontConfig merge;
-    merge.MergeMode = true;
-    io.Fonts->AddFontFromFileTTF(font.c_str(), 15.0f * scale, &merge, extra);
-  } else {
-    io.Fonts->AddFontDefault();
-  }
+  // IDE look (theme.hpp): dark theme, UI/heading/monospace fonts with Cyrillic, icon glyphs.
+  kk::gui::theme::apply(scale);
+  kk::gui::theme::load_fonts(scale, font_cfg);
   // Settings (~/.config/karkas/gui.json). Command-line values override them for this run
   // only; headless runs (--frames) never write the file.
   auto settings = kk::gui::load_settings();
