@@ -160,7 +160,9 @@ struct Checker {
     }
   }
 
-  // E09: files of imported blocks exist, are claimed once and stay outside other blocks' folders.
+  // E09: files of imported blocks are claimed once and stay outside other blocks' folders.
+  // W07: a listed file that does not exist yet. Schema first: a new block may name the files it
+  // will be written in; it stays in design until they exist (docs/adr/0016).
   void files() {
     std::map<std::string, const Block*> owner;
     for (const auto& b : s.blocks) {
@@ -168,7 +170,7 @@ struct Checker {
         for (const auto& p : f.paths) {
           std::error_code ec;
           if (!s.root.empty() && !std::filesystem::is_regular_file(s.root / p, ec)) {
-            add("E09", 'E', &b, fmt::format("files: '{}' does not exist", p), f.line, f.col);
+            add("W07", 'W', &b, fmt::format("files: '{}' does not exist yet", p), f.line, f.col);
           }
           if (auto [it, fresh] = owner.emplace(p, &b); !fresh) {
             add("E09", 'E', &b, fmt::format("files: '{}' already belongs to {}", p, it->second->id), f.line, f.col);

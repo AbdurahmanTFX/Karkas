@@ -243,10 +243,14 @@ TEST_CASE("validate: files of imported blocks (E09) and use of imported leaves")
   kk::test::write(p.dir / "blocks/a/x.cpp", "int x;\n");
   auto all = p.issues();
   auto e = with_code(all, "E09");
-  REQUIRE(e.size() == 3);
-  CHECK(e[0].message == "files: 'src/missing.hpp' does not exist");
-  CHECK(e[1].message == "files: 'src/a.cpp' already belongs to a");
-  CHECK(e[2].message == "files: 'blocks/a/x.cpp' is inside the folder of block a");
+  REQUIRE(e.size() == 2);
+  CHECK(e[0].message == "files: 'src/a.cpp' already belongs to a");
+  CHECK(e[1].message == "files: 'blocks/a/x.cpp' is inside the folder of block a");
+  // A file that is not written yet only warns: the schema may come before the code.
+  auto w = with_code(all, "W07");
+  REQUIRE(w.size() == 1);
+  CHECK(w[0].message == "files: 'src/missing.hpp' does not exist yet");
+  CHECK(w[0].severity == 'W');
   // "use b" of an imported leaf is allowed (types-only dependency), unlike a native leaf.
   CHECK(with_code(all, "E03").empty());
   auto s = p.schema();

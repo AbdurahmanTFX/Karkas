@@ -119,3 +119,20 @@ TEST_CASE("changes: karkas import goes through a change and applies cleanly") {
   CHECK(s->find("game.player")->external());
   CHECK(test::read(p / "src/game/player.cpp").find("Player::Update") != std::string::npos);  // code untouched
 }
+
+TEST_CASE("changes: schema first in an imported project — a new block names files it will be written in") {
+  test::FixtureCopy p("wavkit");
+  // Like a new module of an imported project: code beside the others, not under blocks/.
+  auto c = agents::propose_change(p.path(), "mcp", "hit effects",
+                                  "+ @block dsp.sparkle\n+ purpose short visual sparkles\n+ kind leaf\n+ thread main\n"
+                                  "+ files src/Sparkle.cpp src/Sparkle.h\n+ fn spark(int) -> void\n");
+  REQUIRE_MESSAGE(c, (c ? "" : c.error().str()));
+  auto applied = agents::apply_diff(p.path(), c->diff);
+  REQUIRE(applied);
+  CHECK(applied->issues.empty());
+  auto s = core::load_schema(p.path());
+  REQUIRE(s);
+  auto issues = core::check_schema(*s);
+  CHECK_FALSE(core::has_errors(issues));
+  CHECK(std::any_of(issues.begin(), issues.end(), [](const core::Issue& i) { return i.code == "W07"; }));
+}
