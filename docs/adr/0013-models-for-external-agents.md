@@ -53,3 +53,13 @@ hand it over") was not enough. Now:
   tests) before it accepts it. The main session keeps design, schema changes, review and
   integration.
 - The subagent prompt says its diff is reviewed against the card.
+
+## Amendment (2026-11-09): the brief is a spec; visual work is checked by eye
+
+In the Blobby round 2 the subagents (Haiku) did what their briefs said — and the briefs said
+what to build, not how it should look. The effects and the font came out plainer than the
+version written by Sonnet alone. The guide now asks for briefs written as specs (goal, exact
+files and functions, concrete numbers, what good looks like, checks, what not to touch), a review
+that reads the code and not only the report, and for work judged by eye a look at a rendered
+preview before accepting it. The subagent prompt asks to follow the brief's numbers and to
+preview visual work before reporting.

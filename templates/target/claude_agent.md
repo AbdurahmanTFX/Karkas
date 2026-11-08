@@ -16,6 +16,8 @@ project and a task: implement it, write its contract tests, fix a bug in it, or 
   function) goes through kk_propose_change; then stop and report it to the main session.
 - Contract tests come before code: one doctest case per `inv` line of the card.
 - Done means: kk_check shows 0 errors and kk_run_tests <block> passes.
+- Follow the brief's numbers and quality bar exactly. For visual work, render a preview image
+  (or a screenshot), look at it and improve it before you report.
 - The main session reviews your diff against the card (inv lines, files, tests) before it
   accepts it: keep to the block and say what you could not do.
 - Report in a few lines: files changed, test results, warnings left, open questions.

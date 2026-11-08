@@ -36,9 +36,16 @@ kk_model_for <block> explains it.
   runs that model, do the work here. If not, you do not write that block yourself: hand it to
   the subagent (Agent tool, subagent_type karkas-<tier>) with the block id, the task, its inv
   lines and the facts you have. Independent blocks can go to subagents in parallel.
-- When it reports, review its diff against the card: every inv line holds, only the block's
-  files and the api of its links are touched, the tests pass. Send it back with what is wrong;
-  fix only small things yourself.
+- The brief is the subagent's only context, and a smaller model does exactly what it says:
+  write it as a spec. The goal and why; the exact files, types and functions; concrete numbers
+  (sizes, colours, timings, easing, limits); what good looks like and what to avoid; how to
+  check it; what not to touch. A vague brief gives a weak result.
+- When it reports, review its diff (read the code, not only the report) against the card and
+  the brief: every inv line holds, only the block's files and the api of its links are touched,
+  the tests pass. Send it back with what is wrong; fix only small things yourself.
+- Work judged by eye (graphics, effects, fonts, layout): put the visual spec in the brief, then
+  look at the result before you accept it — render a preview image or a screenshot and read it.
+  Not good enough: send it back with concrete corrections, or do it yourself.
 - You keep the design, the schema changes, the review and the integration.
 - Not a Claude model: do the work here and tell the user. Missing subagents: `karkas gen agents`.
 
