@@ -120,6 +120,9 @@ const std::unordered_map<std::string_view, const char*>& ru() {
        "blocks can be lit); Shift+double-click opens a group in place.",
        "Наведите на блок — останутся видны только его связи. Shift+щелчок закрепляет подсветку "
        "связей блока (можно несколько блоков); Shift+двойной щелчок раскрывает группу на месте."},
+      {"Click a part of the path to go there, or the empty space to type a path (Enter to go).",
+       "Щёлкните часть пути, чтобы перейти туда, или пустое место, чтобы ввести путь (Enter — перейти)."},
+      {"no block {}", "нет блока {}"},
       // empty schema
       {"No blocks on this level.", "На этом уровне нет блоков."},
       {"Right click → Add block, or the \"Add block\" button above.",

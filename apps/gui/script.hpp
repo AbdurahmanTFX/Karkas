@@ -1,6 +1,7 @@
 #pragma once
 // Scripted mouse and keyboard input for headless checks (karkas-gui --script "..."):
-//   move X Y | click X Y [shift] | dclick X Y [shift] | drag X1 Y1 X2 Y2 | wait N | key esc
+//   move X Y | click X Y [shift] | dclick X Y [shift] | drag X1 Y1 X2 Y2 | wait N |
+//   key esc|enter | type TEXT
 // separated by ';'. Every action is spread over frames, one event batch per frame.
 #include <functional>
 #include <optional>

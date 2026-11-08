@@ -34,6 +34,8 @@ class Ui {
   void draw_menu();
   void draw_settings(const Model* m);
   void draw_toolbar(const Model& m);
+  void draw_address(const Model& m);
+  void navigate_path(const Model& m, const std::string& text);
   void draw_tree(const Model& m);
   void draw_graph(const Model& m);
   void draw_empty(const Model& m);  // explains an empty level instead of a blank canvas
@@ -64,6 +66,11 @@ class Ui {
   double pulse_ = 0;
   bool quit_ = false;
   bool show_settings_ = false;
+  // address bar
+  bool editing_path_ = false;
+  bool focus_path_ = false;
+  char path_buf_[256] = {};
+  std::string path_error_;
   // highlighting (hover, Shift+click)
   std::set<std::string> pinned_;  // blocks whose links stay lit
   std::string hover_unit_;        // block under the mouse on the schema (last frame)

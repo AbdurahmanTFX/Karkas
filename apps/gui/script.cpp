@@ -47,9 +47,13 @@ std::optional<InputScript> InputScript::parse(std::string_view text, std::string
       f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(0, false); });
     } else if (cmd == "wait" && w.size() == 2) {
       for (int i = 0; i < std::atoi(w[1].c_str()); ++i) f.emplace_back([](ImGuiIO&) {});
-    } else if (cmd == "key" && w.size() == 2 && w[1] == "esc") {
-      f.emplace_back([](ImGuiIO& io) { io.AddKeyEvent(ImGuiKey_Escape, true); });
-      f.emplace_back([](ImGuiIO& io) { io.AddKeyEvent(ImGuiKey_Escape, false); });
+    } else if (cmd == "key" && w.size() == 2 && (w[1] == "esc" || w[1] == "enter")) {
+      ImGuiKey k = w[1] == "esc" ? ImGuiKey_Escape : ImGuiKey_Enter;
+      f.emplace_back([k](ImGuiIO& io) { io.AddKeyEvent(k, true); });
+      f.emplace_back([k](ImGuiIO& io) { io.AddKeyEvent(k, false); });
+    } else if (cmd == "type" && w.size() >= 2) {
+      std::string typed(core::trim(std::string_view(raw).substr(raw.find("type") + 4)));
+      f.emplace_back([typed](ImGuiIO& io) { io.AddInputCharactersUTF8(typed.c_str()); });
     } else {
       return fail("cannot parse script action '" + std::string(core::trim(raw)) + "'");
     }

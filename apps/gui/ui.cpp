@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <tuple>
 
@@ -307,17 +308,97 @@ void Ui::draw_settings(const Model* m) {
 
 // --- toolbar with breadcrumbs ---------------------------------------------------------------
 
-void Ui::draw_toolbar(const Model& m) {
-  if (ImGui::SmallButton(m.snap->project.empty() ? "root" : m.snap->project.c_str())) enter("");
+// Address bar like in a file manager: "project / group / group". A click on a part goes
+// there; a click on the empty space turns the bar into a text field for a typed path.
+void Ui::draw_address(const Model& m) {
+  std::string project = m.snap->project.empty() ? "root" : m.snap->project;
+  float w = ImGui::GetContentRegionAvail().x;
+  if (editing_path_) {
+    ImGui::SetNextItemWidth(w);
+    if (focus_path_) {
+      ImGui::SetKeyboardFocusHere();
+      focus_path_ = false;
+    }
+    bool go = ImGui::InputText("##path", path_buf_, sizeof path_buf_,
+                               ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    if (go) {
+      navigate_path(m, path_buf_);
+      editing_path_ = false;
+    } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || (ImGui::IsItemDeactivated() && !focus_path_)) {
+      editing_path_ = false;
+    }
+    return;
+  }
+  ImVec2 p = ImGui::GetCursorScreenPos();
+  float h = ImGui::GetFrameHeight();
+  ImGui::InvisibleButton("##address", ImVec2(w, h));
+  bool clicked = ImGui::IsItemClicked();
+  bool bar_hovered = ImGui::IsItemHovered();
+  auto* dl = ImGui::GetWindowDrawList();
+  const auto& st = ImGui::GetStyle();
+  dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), ImGui::GetColorU32(bar_hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
+                    st.FrameRounding);
+  std::vector<std::pair<std::string, std::string>> parts = {{project, ""}};  // label, scope
   std::string acc;
   for (const auto& part : core::split(req_.scope, '.')) {
     acc = acc.empty() ? part : acc + "." + part;
-    ImGui::SameLine();
-    ImGui::TextUnformatted("›");
-    ImGui::SameLine();
-    if (ImGui::SmallButton(part.c_str())) enter(acc);
+    parts.emplace_back(part, acc);
   }
-  ImGui::SameLine(0, 24);
+  float x = p.x + st.FramePadding.x;
+  float ty = p.y + st.FramePadding.y;
+  bool consumed = false;
+  for (std::size_t i = 0; i < parts.size(); ++i) {
+    const auto& [label, target] = parts[i];
+    ImVec2 ts = ImGui::CalcTextSize(label.c_str());
+    ImVec2 a(x - 3, p.y + 2);
+    ImVec2 b(x + ts.x + 3, p.y + h - 2);
+    bool hot = ImGui::IsMouseHoveringRect(a, b);
+    bool last = i + 1 == parts.size();
+    if (hot) dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGuiCol_HeaderHovered), st.FrameRounding);
+    dl->AddText(ImVec2(x, ty), ImGui::GetColorU32(ImGuiCol_Text, last ? 1.0f : 0.8f), label.c_str());
+    if (hot && clicked) {
+      enter(target);
+      consumed = true;
+    }
+    x += ts.x;
+    if (!last) {
+      const char* sep = " / ";
+      dl->AddText(ImVec2(x, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), sep);
+      x += ImGui::CalcTextSize(sep).x;
+    }
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && !consumed) ImGui::SetTooltip("%s", tr("Click a part of the path to go there, or the empty space to type a path (Enter to go)."));
+  if (clicked && !consumed) {
+    std::string text = project;
+    for (std::size_t i = 1; i < parts.size(); ++i) text += "/" + parts[i].first;
+    std::snprintf(path_buf_, sizeof path_buf_, "%s", text.c_str());
+    editing_path_ = true;
+    focus_path_ = true;
+  }
+}
+
+void Ui::navigate_path(const Model& m, const std::string& text) {
+  auto parts = core::split(core::replace_all(std::string(core::trim(text)), ".", "/"), '/');
+  if (!parts.empty() && parts.front() == m.snap->project) parts.erase(parts.begin());
+  std::string id = core::join(parts, ".");
+  path_error_.clear();
+  if (id.empty()) {
+    enter("");
+    return;
+  }
+  const auto* b = m.snap->block(id);
+  if (b == nullptr) {
+    path_error_ = fmt::format(fmt::runtime(tr("no block {}")), id);
+  } else if (b->kind == "group") {
+    enter(id);
+  } else {
+    enter(core::parent_id(id));
+    select(id);
+  }
+}
+
+void Ui::draw_toolbar(const Model& m) {
+  draw_address(m);
   ImGui::Checkbox(tr("All levels"), &req_.all_levels);
   if (req_.all_levels) {
     ImGui::SameLine();
@@ -345,6 +426,10 @@ void Ui::draw_toolbar(const Model& m) {
   std::string status = m.engine + " · " + fmt::format(fmt::runtime(tr("index {:.0f} ms")), m.index_ms);
   if (!m.message.empty()) status += " · " + m.message;
   ImGui::TextDisabled("%s", status.c_str());
+  if (!path_error_.empty()) {
+    ImGui::SameLine();
+    ImGui::TextColored(rgb(230, 80, 80), "%s", path_error_.c_str());
+  }
 }
 
 // --- tree ---------------------------------------------------------------------------------------
