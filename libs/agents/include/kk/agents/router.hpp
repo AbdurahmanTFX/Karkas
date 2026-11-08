@@ -57,5 +57,7 @@ kk::Result<ModelChoice> model_for(const core::Config& cfg, const core::Schema& s
                                   const std::vector<index::RunRow>& runs, std::string_view block, std::string role = "");
 // The text of kk_model_for: tier, model and what an external agent should do with it.
 std::string model_choice_text(const ModelChoice& c);
+// One line of the same for kk_view: "model: tier cheap (...) -> subagent karkas-cheap (...)".
+std::string model_choice_line(const ModelChoice& c);
 
 }  // namespace kk::agents

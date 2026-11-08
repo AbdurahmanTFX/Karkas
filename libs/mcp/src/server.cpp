@@ -236,7 +236,9 @@ std::optional<std::string> Server::handle(std::string_view line) {
           const auto* row = snap.block(b);
           level = row != nullptr && row->kind == "group" ? 1 : 2;
         }
-        return out(idx_.view(b, level, vo));
+        auto v = idx_.view(b, level, vo);
+        if (v && opts_.model_hint) *v += opts_.model_hint(b);
+        return out(v);
       }
       if (name == "kk_children") return out(idx_.children(sarg(args, "block")));
       if (name == "kk_neighbors") {

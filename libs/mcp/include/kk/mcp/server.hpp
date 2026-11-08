@@ -31,6 +31,8 @@ struct ServerOptions {
   // kk_model_for: the model Karkas assigns to work on a block (karkas.toml, ADR 0011/0013) and
   // the Claude Code subagent that runs it. role "" = by the kind of the block.
   std::function<kk::Result<std::string>(const std::string& block, const std::string& role)> model_for;
+  // One line appended to kk_view: the model of the block and its subagent ("" = nothing).
+  std::function<std::string(const std::string& block)> model_hint;
 };
 
 class Server {

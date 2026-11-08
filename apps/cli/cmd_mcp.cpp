@@ -65,6 +65,13 @@ AutoRegister reg([](CLI::App& cli, App& app) {
       if (!c) return std::unexpected(c.error());
       return agents::model_choice_text(*c);
     };
+    o.model_hint = [root, ix = idx.get()](const std::string& block) -> std::string {
+      auto cfg = core::load_config(root);
+      auto schema = core::load_schema(root);
+      if (!cfg || !schema) return {};
+      auto c = agents::model_for(*cfg, *schema, ix->snapshot(), ix->runs(), block);
+      return c ? agents::model_choice_line(*c) : std::string();
+    };
     mcp::Server server(*idx, o);
     std::ios::sync_with_stdio(false);
     std::exit(server.serve(std::cin, std::cout));

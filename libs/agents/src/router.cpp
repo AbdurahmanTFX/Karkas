@@ -141,6 +141,16 @@ kk::Result<ModelChoice> model_for(const core::Config& cfg, const core::Schema& s
   return c;
 }
 
+std::string model_choice_line(const ModelChoice& c) {
+  if (!c.defined) return fmt::format("model: tier {} ({}) has no [models.{}]; work here\n", c.tier, c.by, c.tier);
+  if (c.claude_model.empty()) {
+    return fmt::format("model: tier {} ({}) = {} ({}), not a Claude model; work here\n", c.tier, c.by, c.model.model,
+                       c.model.provider);
+  }
+  return fmt::format("model: tier {} ({}) -> subagent {} ({}); a session on another model hands the {} work to it\n",
+                     c.tier, c.by, c.subagent, c.claude_model, c.role);
+}
+
 std::string model_choice_text(const ModelChoice& c) {
   std::string out = fmt::format("block {}  level {}  role {}\ntier {}  ({})\n", c.block.empty() ? "(project)" : c.block,
                                 c.level, c.role, c.tier, c.by);
@@ -155,9 +165,10 @@ std::string model_choice_text(const ModelChoice& c) {
     out += "claude code: this model is not a Claude model, a Claude Code subagent cannot run it. Do the work in this "
            "session, or let the user run Karkas's own agents (`karkas implement` / `karkas task`).\n";
   } else {
-    out += fmt::format("claude code: delegate the work on this block to the subagent {} (model {}); if this session "
-                       "already runs {}, do it here. Missing subagent: `karkas gen agents`.\n",
-                       c.subagent, c.claude_model, c.claude_model);
+    out += fmt::format("claude code: if this session runs {}, do the work here. Otherwise hand it to the subagent {} "
+                       "(Agent tool, subagent_type {}) with the block, the task and its inv lines, then review its diff "
+                       "against the card before you accept it. Missing subagent: `karkas gen agents`.\n",
+                       c.claude_model, c.subagent, c.subagent);
   }
   return out;
 }

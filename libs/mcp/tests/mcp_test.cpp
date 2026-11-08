@@ -145,3 +145,15 @@ TEST_CASE("mcp: kk_model_for is offered when wired and passes block and role") {
   CHECK(got == "/");
   CHECK(call({{"block", "nowhere"}})["isError"] == true);
 }
+
+TEST_CASE("mcp: kk_view carries the model line of the block when wired") {
+  McpFixture f;
+  mcp::ServerOptions o;
+  o.model_hint = [](const std::string& block) { return "model: tier cheap -> subagent karkas-cheap for " + block + "\n"; };
+  mcp::Server server(*f.idx, o);
+  auto r = json::parse(*server.handle(
+      R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"kk_view","arguments":{"block":"stream.ring"}}})"));
+  auto text = r["result"]["content"][0]["text"].get<std::string>();
+  CHECK(text.ends_with("model: tier cheap -> subagent karkas-cheap for stream.ring\n"));
+  CHECK(core::contains(text, "stream.ring"));
+}

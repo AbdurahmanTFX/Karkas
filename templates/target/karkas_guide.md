@@ -28,13 +28,27 @@ not read or grep the whole code base.
    blocks its card links to. Make its contract tests pass (kk_run_tests <block>).
 6. After every step: kk_check shows 0 errors and the tests pass. Name the warnings you leave.
 
-## Models
-karkas.toml says which model works on which part of the tree ([blocks], [levels], [roles]).
-Before you design, test or implement a block, call kk_model_for <block>. If it names a
-subagent (karkas-strong, karkas-medium, karkas-cheap, ...) and this session runs a different
-model, hand the block to that subagent with the task and the facts you have; if it is your own
-model, do the work here. Missing subagents: `karkas gen agents`. A model that is not a Claude
-model cannot run in Claude Code: do the work here and tell the user.
+## Models and delegation
+karkas.toml decides which model works on which part of the tree ([blocks], [levels], [roles]).
+This is part of the method, not a hint. kk_view ends with the model line of the block;
+kk_model_for <block> explains it.
+- The line names a subagent (karkas-strong, karkas-medium, karkas-cheap, ...). If this session
+  runs that model, do the work here. If not, you do not write that block yourself: hand it to
+  the subagent (Agent tool, subagent_type karkas-<tier>) with the block id, the task, its inv
+  lines and the facts you have. Independent blocks can go to subagents in parallel.
+- When it reports, review its diff against the card: every inv line holds, only the block's
+  files and the api of its links are touched, the tests pass. Send it back with what is wrong;
+  fix only small things yourself.
+- You keep the design, the schema changes, the review and the integration.
+- Not a Claude model: do the work here and tell the user. Missing subagents: `karkas gen agents`.
+
+## Imported projects (own CMakeLists.txt)
+- Blocks name their existing files (`files`). A new block may name files that do not exist
+  yet (warning W07): propose the card first, then write the files.
+- Karkas never writes the project's CMakeLists.txt: add new source files to it yourself.
+- Contract tests go into the project's own test suite. kk_run_tests builds the project and runs
+  `[test] command` of karkas.toml (set it once, e.g. `command = "build/test/run_all"`;
+  extra configure flags go to `[project] cmake_args`).
 
 ## Changing an existing schema
 - A new block, link, port or function is a schema change: kk_propose_change with

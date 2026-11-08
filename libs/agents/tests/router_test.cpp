@@ -84,7 +84,14 @@ TEST_CASE("model_for: tiers Claude Code cannot run, unknown tiers, blocks and ro
   CHECK_FALSE(m.defined);
   CHECK(core::contains(agents::model_choice_text(m), "has no [models.missing]"));
   auto ok = agents::model_choice_text(rig.pick(cfg, "stream.pump"));
-  CHECK(core::contains(ok, "subagent karkas-cheap (model m-cheap)"));
+  CHECK(core::contains(ok, "hand it to the subagent karkas-cheap (Agent tool, subagent_type karkas-cheap)"));
+  CHECK(core::contains(ok, "review its diff against the card"));
+  auto line = agents::model_choice_line(rig.pick(cfg, "stream.pump"));
+  CHECK(line.starts_with("model: tier cheap (routing score="));
+  CHECK(core::contains(line, "-> subagent karkas-cheap (m-cheap)"));
+  CHECK(line.ends_with("\n"));
+  CHECK(core::contains(agents::model_choice_line(d), "not a Claude model; work here"));
+  CHECK(core::contains(agents::model_choice_line(m), "has no [models.missing]"));
   CHECK_FALSE(agents::model_for(cfg, rig.schema, rig.idx->snapshot(), {}, "nowhere"));
   CHECK_FALSE(agents::model_for(cfg, rig.schema, rig.idx->snapshot(), {}, "dsp", "poet"));
 }

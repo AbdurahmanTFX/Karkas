@@ -39,3 +39,17 @@ server calls no model and cannot switch the client's model.
   task and the facts it has.
 - Subagent names are lowercase "karkas-" + tier with other characters as hyphens
   (`core::subagent_name`).
+
+## Amendment (2026-11-09): delegation is part of the method, with a review
+
+In both experiments (wavkit S3, Blobby features) Claude Code on Sonnet never called kk_model_for
+and never handed work to a karkas-<tier> subagent: a recommendation ("if your model differs,
+hand it over") was not enough. Now:
+- kk_view ends with the model line of the block (`model_choice_line`, wired in `karkas mcp` as
+  `ServerOptions::model_hint`), so the agent sees it wherever it looks at a block.
+- The guide (section "Models and delegation"), the MCP instructions and kk_model_for say it as a
+  rule: a session on another model does not write that block itself; it hands the block, the task
+  and the inv lines to the subagent, then reviews the diff against the card (inv lines, files,
+  tests) before it accepts it. The main session keeps design, schema changes, review and
+  integration.
+- The subagent prompt says its diff is reviewed against the card.
