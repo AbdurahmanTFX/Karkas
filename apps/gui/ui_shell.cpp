@@ -126,6 +126,7 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
     ImGui::DockBuilderFinish(dock);
   }
   draw_side_bar(m);
+  draw_settings_window(m);
   if (m == nullptr) {
     if (begin_panel("###editor", theme::kEditorBg)) ui::muted("%s", mp ? mp->message.c_str() : tr("indexing..."));
     ImGui::End();
@@ -163,6 +164,7 @@ void Ui::show_picker() {
 
 void Ui::draw_menu() {
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) show_picker();
+  if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Comma)) show_settings_ = !show_settings_;
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_F)) {
     side_ = SideView::Search;
     focus_search_ = true;
@@ -193,7 +195,7 @@ void Ui::draw_menu() {
     }
     if (ImGui::MenuItem(with_icon(Icon::Folder, tr("Show project folder")).c_str())) w_.open_folder("");
     ImGui::Separator();
-    if (ImGui::MenuItem(with_icon(Icon::Gear, tr("Settings...")).c_str())) side_ = SideView::Settings;
+    if (ImGui::MenuItem(with_icon(Icon::Gear, tr("Settings...")).c_str(), "Ctrl+,")) show_settings_ = true;
     ImGui::Separator();
     if (ImGui::MenuItem(with_icon(Icon::Close, tr("Quit")).c_str())) quit_ = true;
     ImGui::EndMenu();
@@ -247,9 +249,14 @@ void Ui::draw_activity_bar(const Model* m) {
       ImGui::InvisibleButton(tip, size);
       bool hot = ImGui::IsItemHovered();
       bool on = side_ == v;
+      if (v == SideView::Settings) on = show_settings_;
       if (ImGui::IsItemClicked()) {
         if (v == SideView::Search && side_ != v) focus_search_ = true;
-        side_ = v;
+        if (v == SideView::Settings) {
+          show_settings_ = !show_settings_;  // a separate window, not a side bar view
+        } else {
+          side_ = v;
+        }
       }
       if (hot) ImGui::SetTooltip("%s", tip);
       if (on) dl->AddRectFilled(p, ImVec2(p.x + 2, p.y + size.y), theme::kAccent);
@@ -355,9 +362,7 @@ void Ui::draw_side_bar(const Model* m) {
     if (ui::icon_button("ex_folder", Icon::Folder, tr("Show project folder"))) w_.open_folder("");
   }
   ImGui::Spacing();
-  if (side_ == SideView::Settings) {
-    side_settings(m);
-  } else if (m == nullptr) {
+  if (m == nullptr) {
     ui::muted("%s", tr("indexing..."));
   } else if (side_ == SideView::Explorer) {
     side_explorer(*m);
@@ -546,69 +551,137 @@ void Ui::side_changes(const Model& m) {
   }
 }
 
-void Ui::side_settings(const Model* m) {
+// --- settings window ----------------------------------------------------------------------
+
+void Ui::draw_settings_window(const Model* m) {
+  if (!show_settings_) return;
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Appearing,
+                          ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 56, ImGui::GetFontSize() * 36), ImGuiCond_Appearing);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::col(theme::kSideBg));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  bool open = ImGui::Begin((with_icon(Icon::Gear, tr("Settings")) + "###settings_window").c_str(), &show_settings_,
+                           ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse);
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor();
+  if (!open) {
+    ImGui::End();
+    return;
+  }
+  if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Escape)) show_settings_ = false;
+  // Categories on the left, the page on the right (as in an IDE).
+  struct Page {
+    Icon icon;
+    const char* name;
+  };
+  const Page pages[] = {{Icon::Eye, "Appearance"}, {Icon::Schema, "Schema"}, {Icon::Agent, "Models and API"}, {Icon::Info, "Help"}};
+  float list_w = ImGui::GetFontSize() * 13;
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::col(theme::kActivityBg));
+  ImGui::BeginChild("pages", ImVec2(list_w, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
+  ImGui::Spacing();
+  for (int i = 0; i < static_cast<int>(std::size(pages)); i++) {
+    ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0, 0.5f));
+    if (ImGui::Selectable((with_icon(pages[i].icon, tr(pages[i].name)) + "##page" + std::to_string(i)).c_str(), settings_page_ == i, 0,
+                          ImVec2(0, ImGui::GetFrameHeight() * 1.2f))) {
+      settings_page_ = i;
+    }
+    ImGui::PopStyleVar();
+  }
+  ImGui::EndChild();
+  ImGui::PopStyleColor();
+  ImGui::SameLine(0, 0);
+  ImGui::BeginChild("page", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
+  ImGui::SetWindowFontScale(1.4f);
+  ImGui::TextUnformatted(tr(pages[settings_page_].name));
+  ImGui::SetWindowFontScale(1.0f);
+  ImGui::Separator();
+  ImGui::Spacing();
   bool changed = false;
-  ImGui::PushItemWidth(-ImGui::GetFontSize() * 0.5f);
-  if (ui::section(tr("APPEARANCE"))) {
-    ui::muted("%s", tr("Language"));
-    if (ImGui::BeginCombo("##lang", lang_name(settings_.lang))) {
-      for (auto l : {Lang::En, Lang::Ru}) {
-        if (ImGui::Selectable(lang_name(l), settings_.lang == l)) {
-          settings_.lang = l;
-          changed = true;
+  ImGui::PushItemWidth(ImGui::GetFontSize() * 18);
+  switch (settings_page_) {
+    case 0: {  // Appearance
+      ui::muted("%s", tr("Language"));
+      if (ImGui::BeginCombo("##lang", lang_name(settings_.lang))) {
+        for (auto l : {Lang::En, Lang::Ru}) {
+          if (ImGui::Selectable(lang_name(l), settings_.lang == l)) {
+            settings_.lang = l;
+            changed = true;
+          }
         }
+        ImGui::EndCombo();
       }
-      ImGui::EndCombo();
+      ImGui::Spacing();
+      ui::muted("%s", tr("Interface text size"));
+      changed |= ImGui::SliderFloat("##ui_scale", &settings_.ui_scale, 0.8f, 1.6f, "%.2f");
+      break;
     }
-    ui::muted("%s", tr("Interface text size"));
-    changed |= ImGui::SliderFloat("##ui_scale", &settings_.ui_scale, 0.8f, 1.6f, "%.2f");
-    ImGui::Spacing();
-  }
-  if (ui::section(tr("SCHEMA"))) {
-    ui::muted("%s", tr("Default block size"));
-    changed |= ImGui::SliderFloat("##block_scale", &settings_.block_scale, kMinBlockScale, kMaxBlockScale, "%.2f");
-    ui::muted("%s", tr("Block colors"));
-    if (ImGui::RadioButton(tr("by block"), settings_.blocks_by_block)) {
-      settings_.blocks_by_block = true;
-      changed = true;
+    case 1: {  // Schema
+      ui::muted("%s", tr("Default block size"));
+      changed |= ImGui::SliderFloat("##block_scale", &settings_.block_scale, kMinBlockScale, kMaxBlockScale, "%.2f");
+      ImGui::Spacing();
+      ui::muted("%s", tr("Block colors"));
+      if (ImGui::RadioButton(tr("by block"), settings_.blocks_by_block)) {
+        settings_.blocks_by_block = true;
+        changed = true;
+      }
+      ImGui::SameLine();
+      if (ImGui::RadioButton(tr("by status"), !settings_.blocks_by_block)) {
+        settings_.blocks_by_block = false;
+        changed = true;
+      }
+      ImGui::Spacing();
+      ui::muted("%s", tr("Link colors"));
+      ImGui::PushID("links");
+      if (ImGui::RadioButton(tr("by block"), settings_.links_by_block)) {
+        settings_.links_by_block = true;
+        changed = true;
+      }
+      ImGui::SameLine();
+      if (ImGui::RadioButton(tr("by link kind"), !settings_.links_by_block)) {
+        settings_.links_by_block = false;
+        changed = true;
+      }
+      ImGui::PopID();
+      ImGui::Spacing();
+      if (m != nullptr && m->snap && ImGui::Button(with_icon(Icon::Fit, tr("Reset block sizes in this view")).c_str())) save_view(*m, true);
+      if (m != nullptr) {
+        ImGui::Spacing();
+        ui::muted(tr("Layout engine: %s"), m->engine.c_str());
+      }
+      break;
     }
-    ImGui::SameLine();
-    if (ImGui::RadioButton(tr("by status"), !settings_.blocks_by_block)) {
-      settings_.blocks_by_block = false;
-      changed = true;
+    case 2:  // Models and API
+      settings_models(m);
+      break;
+    default: {  // Help
+      ImGui::PushTextWrapPos(0);
+      ImGui::TextUnformatted(tr("Drag the corner of a block to resize it; the text follows the size."));
+      ImGui::Spacing();
+      ImGui::TextUnformatted(tr("Hover a block to see only its links. Shift+click keeps a block's links lit (several "
+                                "blocks can be lit); Shift+double-click opens a group in place."));
+      ImGui::Spacing();
+      ImGui::TextUnformatted(tr("Mouse wheel zooms the schema, the right button drags it."));
+      ImGui::Spacing();
+      ImGui::TextUnformatted(tr("Right click on a line removes its links; Delete removes the selected line."));
+      ImGui::PopTextWrapPos();
+      break;
     }
-    ui::muted("%s", tr("Link colors"));
-    ImGui::PushID("links");
-    if (ImGui::RadioButton(tr("by block"), settings_.links_by_block)) {
-      settings_.links_by_block = true;
-      changed = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::RadioButton(tr("by link kind"), !settings_.links_by_block)) {
-      settings_.links_by_block = false;
-      changed = true;
-    }
-    ImGui::PopID();
-    if (m != nullptr && m->snap && ImGui::Button(with_icon(Icon::Fit, tr("Reset block sizes in this view")).c_str())) save_view(*m, true);
-    ImGui::Spacing();
-  }
-  if (ui::section(tr("HELP"))) {
-    ImGui::PushTextWrapPos(0);
-    ImGui::TextUnformatted(tr("Drag the corner of a block to resize it; the text follows the size."));
-    ImGui::Spacing();
-    ImGui::TextUnformatted(tr("Hover a block to see only its links. Shift+click keeps a block's links lit (several "
-                              "blocks can be lit); Shift+double-click opens a group in place."));
-    ImGui::Spacing();
-    ImGui::TextUnformatted(tr("Mouse wheel zooms the schema, the right button drags it."));
-    ImGui::PopTextWrapPos();
-    ImGui::Spacing();
   }
   ImGui::PopItemWidth();
-  if (m != nullptr) ui::muted(tr("Layout engine: %s"), m->engine.c_str());
+  ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), ImGui::GetWindowHeight() - ImGui::GetTextLineHeightWithSpacing() * 2.5f));
+  ImGui::Separator();
   ImGui::PushTextWrapPos(0);
   ui::muted(tr("Settings are saved to %s"), settings_path().string().c_str());
   ImGui::PopTextWrapPos();
+  ImGui::EndChild();
   if (changed) settings_changed();
+  ImGui::End();
+}
+
+void Ui::settings_models(const Model* m) {
+  (void)m;
+  ui::muted("%s", tr("indexing..."));
 }
 
 // --- editor -----------------------------------------------------------------------------------

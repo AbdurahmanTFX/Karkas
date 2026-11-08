@@ -214,6 +214,11 @@ const std::unordered_map<std::string_view, const char*>& ru() {
       {"Remove the link", "Удалить связь"},
       {"Remove {}", "Удалить {}"},
       {"Remove all {} links", "Удалить все связи ({})"},
+      {"Appearance", "Внешний вид"},
+      {"Models and API", "Модели и API"},
+      {"Help", "Справка"},
+      {"Right click on a line removes its links; Delete removes the selected line.",
+       "Правый щелчок по линии удаляет её связи; Delete удаляет выделенную линию."},
       // empty schema
       {"No blocks on this level.", "На этом уровне нет блоков."},
       {"Right click → Add block, or the \"Add block\" button above.",

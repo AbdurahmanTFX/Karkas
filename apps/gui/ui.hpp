@@ -41,7 +41,7 @@ class Ui {
   bool draw(const std::shared_ptr<const Model>& m, bool first_frame);
   Request& request() { return req_; }
   [[nodiscard]] bool quit_requested() const { return quit_; }
-  void open_settings() { side_ = SideView::Settings; }
+  void open_settings() { show_settings_ = true; }
   // A project chosen in "Open project" (main switches to it); empty when none.
   std::optional<std::filesystem::path> take_open_request() { return std::exchange(open_request_, std::nullopt); }
   void set_project_root(std::filesystem::path root) { root_ = std::move(root); }
@@ -57,7 +57,8 @@ class Ui {
   void side_explorer(const Model& m);
   void side_search(const Model& m);
   void side_changes(const Model& m);
-  void side_settings(const Model* m);
+  void draw_settings_window(const Model* m);
+  void settings_models(const Model* m);
   void draw_editor(const Model& m);
   void draw_schema_toolbar(const Model& m);
   void draw_file_tab(const Model& m, const std::string& file);
@@ -101,6 +102,8 @@ class Ui {
   std::optional<std::filesystem::path> open_request_;
   // shell
   SideView side_ = SideView::Explorer;
+  bool show_settings_ = false;  // the settings window
+  int settings_page_ = 0;
   bool side_visible_ = true;
   char filter_[128] = {};
   char search_[128] = {};
