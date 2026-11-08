@@ -22,7 +22,14 @@ struct ModelTier {
   // provider). Only the variable's name is stored, never the key (ADR 0011).
   std::string api_key_env;
   [[nodiscard]] std::string key_env() const;
+  // Model id an external Claude Code session can run for this tier: the model of an Anthropic
+  // tier, "" otherwise (ADR 0013).
+  [[nodiscard]] std::string claude_model() const;
 };
+
+// Name of the generated Claude Code subagent of a tier (.claude/agents/<name>.md):
+// "karkas-<tier>" in lowercase letters, digits and hyphens (ADR 0013).
+std::string subagent_name(std::string_view tier);
 
 // A model pinned for a part of the block tree (ADR 0011).
 struct Pin {

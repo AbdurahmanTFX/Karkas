@@ -27,6 +27,7 @@ struct GenResult {
   std::vector<std::string> written;    // files created or changed (relative paths)
   std::vector<std::string> unchanged;  // files that already had this content
   std::vector<std::string> skipped;    // hand-written files left alone
+  std::vector<std::string> removed;    // generated files that are no longer needed
 };
 
 // Writes CMakeLists.txt (and cmake/user.cmake when missing).

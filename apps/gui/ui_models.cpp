@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "i18n.hpp"
+#include "kk/code/init.hpp"
 #include "kk/core/text.hpp"
 #include "theme.hpp"
 #include "ui.hpp"
@@ -40,6 +41,13 @@ std::string by_text(const std::string& by) {
   if (by.starts_with("level ")) return fmt::format(fmt::runtime(tr("level {}")), by.substr(6));
   if (by.starts_with("block ")) return fmt::format(fmt::runtime(tr("block {}")), by.substr(6));
   return by;
+}
+
+// The Claude Code subagents of the tiers follow the APIs (ADR 0013), in projects that have them.
+void sync_claude_agents(const std::filesystem::path& root, const core::Config& cfg) {
+  std::error_code ec;
+  if (!std::filesystem::is_directory(root / ".claude" / "agents", ec)) return;
+  (void)code::write_claude_agents(root, cfg);
 }
 
 }  // namespace
@@ -268,6 +276,7 @@ void Ui::draw_api_form() {
       api_edit_.clear();
     }
     reload_models();
+    sync_claude_agents(root_, cfg_);
     w_.reload_config();
   }
   ImGui::PopStyleColor();
@@ -292,6 +301,7 @@ void Ui::draw_api_form() {
     if (ImGui::Button(with_icon(Icon::Close, tr("Delete")).c_str())) {
       auto r = core::erase_config_section(root_, "models." + api_edit_);
       reload_models();
+      sync_claude_agents(root_, cfg_);
       if (!r) models_msg_ = r.error().message;
       else if (cfg_.tier(api_edit_) != nullptr) models_msg_ = tr("it is also defined in ~/.config/karkas/config.toml");
       else models_msg_ = fmt::format(fmt::runtime(tr("saved to {}")), (root_ / "karkas.toml").string());

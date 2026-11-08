@@ -2,9 +2,12 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <regex>
+#include <set>
 
 #include "kk/code/gen.hpp"
+#include "kk/core/config.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
@@ -72,6 +75,47 @@ kk::Result<std::string> write_agent_guide(const fs::path& root) {
   return std::string("updated");
 }
 
+kk::Result<GenResult> write_claude_agents(const fs::path& root, const core::Config& cfg) {
+  GenResult out;
+  const fs::path dir = root / ".claude" / "agents";
+  std::error_code ec;
+  std::set<std::string> wanted;
+  for (const auto& [tier, t] : cfg.models) {
+    if (t.claude_model().empty()) continue;  // not a Claude model: Claude Code cannot run it
+    auto name = core::subagent_name(tier);
+    auto text = target_template("claude_agent.md", {{"name", name}, {"tier", tier}, {"model", t.claude_model()}});
+    if (!text) return std::unexpected(text.error());
+    wanted.insert(name + ".md");
+    auto path = dir / (name + ".md");
+    auto rel = core::rel_str(root, path);
+    if (fs::exists(path, ec)) {
+      auto old = core::read_file(path);
+      if (!old) return std::unexpected(old.error());
+      if (!core::contains(*old, kGeneratedMarker)) {
+        out.skipped.push_back(rel);
+        continue;
+      }
+      if (*old == *text) {
+        out.unchanged.push_back(rel);
+        continue;
+      }
+    }
+    if (auto r = core::write_file(path, *text); !r) return std::unexpected(r.error());
+    out.written.push_back(rel);
+  }
+  // Subagents of tiers that are gone (or no longer Claude models).
+  for (auto it = fs::directory_iterator(dir, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+    auto n = it->path().filename().string();
+    if (!n.starts_with("karkas-") || !n.ends_with(".md") || wanted.contains(n)) continue;
+    auto old = core::read_file(it->path());
+    if (!old || !core::contains(*old, kGeneratedMarker)) continue;
+    fs::remove(it->path(), ec);
+    out.removed.push_back(core::rel_str(root, it->path()));
+  }
+  std::ranges::sort(out.removed);
+  return out;
+}
+
 kk::Result<InitResult> init_project(const fs::path& root_in, std::string_view idea) {
   fs::path root = core::normalize(root_in);
   InitResult out;
@@ -118,6 +162,12 @@ kk::Result<InitResult> init_project(const fs::path& root_in, std::string_view id
   auto g = write_agent_guide(root);
   if (!g) return std::unexpected(g.error());
   if (*g != "unchanged") out.written.push_back("CLAUDE.md");
+  // Subagents per model tier for Claude Code (karkas.toml merged with the user's config).
+  auto cfg = core::load_config(root);
+  if (!cfg) return std::unexpected(cfg.error());
+  auto agents = write_claude_agents(root, *cfg);
+  if (!agents) return std::unexpected(agents.error());
+  out.written.insert(out.written.end(), agents->written.begin(), agents->written.end());
   fs::create_directories(root / "blocks", ec);
   fs::create_directories(root / "tests" / "integration", ec);
   if (auto r = index::ensure_karkas_dir(root); !r) return std::unexpected(r.error());

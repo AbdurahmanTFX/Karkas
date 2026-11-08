@@ -23,6 +23,17 @@ std::string ModelTier::key_env() const {
   return provider == "openai_compat" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
 }
 
+std::string ModelTier::claude_model() const { return provider == "anthropic" ? model : std::string(); }
+
+std::string subagent_name(std::string_view tier) {
+  std::string out = "karkas-";
+  for (char c : tier) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    out += (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ? c : '-';
+  }
+  return out;
+}
+
 int block_level(std::string_view block) {
   if (block.empty() || block == "root") return 0;
   return 1 + static_cast<int>(std::count(block.begin(), block.end(), '.'));

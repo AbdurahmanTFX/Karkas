@@ -28,6 +28,14 @@ not read or grep the whole code base.
    blocks its card links to. Make its contract tests pass (kk_run_tests <block>).
 6. After every step: kk_check shows 0 errors and the tests pass. Name the warnings you leave.
 
+## Models
+karkas.toml says which model works on which part of the tree ([blocks], [levels], [roles]).
+Before you design, test or implement a block, call kk_model_for <block>. If it names a
+subagent (karkas-strong, karkas-medium, karkas-cheap, ...) and this session runs a different
+model, hand the block to that subagent with the task and the facts you have; if it is your own
+model, do the work here. Missing subagents: `karkas gen agents`. A model that is not a Claude
+model cannot run in Claude Code: do the work here and tell the user.
+
 ## Changing an existing schema
 - A new block, link, port or function is a schema change: kk_propose_change with
   "~ @block <id>" and then "+ <line>" / "- <line>". Never edit block.ksl or a frozen api/
@@ -44,7 +52,7 @@ the trail (kk_ticket_append). Fix inside one leaf; a contract change goes throug
 
 ## Commands
 karkas view [block] | check | test [block] | change list|show <id> | approve L0|api|C-NNNN
-karkas gen cmake|skel|mocks|guide | import | gui
+karkas gen cmake|skel|mocks|guide|agents | import | gui
 (karkas design / expand / implement / task / debug run Karkas's own agents; they need an
 API key. Without one you do the same work by hand, following this guide.)
 

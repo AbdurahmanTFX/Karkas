@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
+
 #include "kk/code/init.hpp"
 #include "kk/core/config.hpp"
 #include "kk/core/schema.hpp"
@@ -23,7 +25,14 @@ TEST_CASE("init: a new folder gets the project frame") {
   REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
   CHECK(r->name == "my_game");
   CHECK_FALSE(r->existing_code);
-  CHECK(r->written == std::vector<std::string>{"project.ksl", "karkas.toml", "cmake/user.cmake", ".gitignore", "CLAUDE.md"});
+  REQUIRE(r->written.size() >= 5);
+  CHECK(std::vector<std::string>(r->written.begin(), r->written.begin() + 5) ==
+        std::vector<std::string>{"project.ksl", "karkas.toml", "cmake/user.cmake", ".gitignore", "CLAUDE.md"});
+  // Subagents of the default tiers (more if the user's config adds Claude tiers).
+  for (const char* tier : {"strong", "medium", "cheap"}) {
+    auto f = std::string(".claude/agents/karkas-") + tier + ".md";
+    CHECK_MESSAGE(std::ranges::find(r->written, f) != r->written.end(), f);
+  }
   CHECK(core::contains(test::read(root / "CLAUDE.md"), "kk_propose_change"));
   CHECK(fs::is_directory(root / "blocks"));
   CHECK(fs::is_directory(root / ".karkas"));
@@ -69,4 +78,44 @@ TEST_CASE("init: the agent guide is a managed block of CLAUDE.md") {
   CHECK(*code::write_agent_guide(root) == "updated");
   auto again = test::read(root / "CLAUDE.md");
   CHECK(again == text + "## After\nmore notes\n");
+}
+
+TEST_CASE("init: Claude Code subagents follow the model tiers (ADR 0013)") {
+  test::TempDir tmp;
+  auto root = tmp.path();
+  core::Config cfg;
+  auto tier = [](std::string provider, std::string model) {
+    core::ModelTier t;
+    t.provider = std::move(provider);
+    t.model = std::move(model);
+    return t;
+  };
+  cfg.models = {{"strong", tier("anthropic", "claude-opus-5-5")},
+                {"cheap", tier("anthropic", "claude-haiku-5-5")},
+                {"Fast_One", tier("anthropic", "claude-sonnet-5-5")},
+                {"local", tier("openai_compat", "qwen3-coder")}};
+  auto r = code::write_claude_agents(root, cfg);
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  CHECK(r->written == std::vector<std::string>{".claude/agents/karkas-fast-one.md", ".claude/agents/karkas-cheap.md",
+                                               ".claude/agents/karkas-strong.md"});
+  auto cheap = test::read(root / ".claude/agents/karkas-cheap.md");
+  CHECK(cheap.starts_with("---\nname: karkas-cheap\n"));
+  CHECK(core::contains(cheap, "\nmodel: claude-haiku-5-5\n---\n"));
+  CHECK(core::contains(cheap, "karkas:generated"));
+  CHECK(core::contains(cheap, "kk_model_for names karkas-cheap"));
+  CHECK_FALSE(fs::exists(root / ".claude/agents/karkas-local.md"));  // Claude Code cannot run it
+  // Again: nothing changes. A hand-written file is kept.
+  CHECK(code::write_claude_agents(root, cfg)->unchanged.size() == 3);
+  test::write(root / ".claude/agents/karkas-strong.md", "---\nname: karkas-strong\nmodel: opus\n---\nmine\n");
+  // The cheap tier changes model, Fast_One is gone: rewritten and removed; the user's file stays.
+  cfg.models["cheap"].model = "claude-sonnet-5-5";
+  cfg.models.erase("Fast_One");
+  auto again = code::write_claude_agents(root, cfg);
+  REQUIRE(again);
+  CHECK(again->written == std::vector<std::string>{".claude/agents/karkas-cheap.md"});
+  CHECK(again->skipped == std::vector<std::string>{".claude/agents/karkas-strong.md"});
+  CHECK(again->removed == std::vector<std::string>{".claude/agents/karkas-fast-one.md"});
+  CHECK(core::contains(test::read(root / ".claude/agents/karkas-cheap.md"), "model: claude-sonnet-5-5"));
+  CHECK(test::read(root / ".claude/agents/karkas-strong.md").ends_with("mine\n"));
+  CHECK(core::subagent_name("Fast_One") == "karkas-fast-one");
 }

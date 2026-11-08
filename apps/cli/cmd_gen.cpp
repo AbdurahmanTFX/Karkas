@@ -7,6 +7,7 @@
 #include "app.hpp"
 #include "kk/code/gen.hpp"
 #include "kk/code/init.hpp"
+#include "kk/core/config.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
@@ -19,16 +20,17 @@ void report(const kk::Result<code::GenResult>& r) {
   if (!r) die(r.error().str());
   for (const auto& f : r->written) std::cout << "wrote " << f << "\n";
   for (const auto& f : r->skipped) std::cout << "kept  " << f << " (hand-written)\n";
-  if (r->written.empty() && r->skipped.empty()) std::cout << "up to date\n";
+  for (const auto& f : r->removed) std::cout << "removed " << f << "\n";
+  if (r->written.empty() && r->skipped.empty() && r->removed.empty()) std::cout << "up to date\n";
 }
 
 AutoRegister reg_gen([](CLI::App& cli, App& app) {
-  auto* cmd = cli.add_subcommand("gen", "deterministic generation: cmake | mocks | probe | skel | guide");
+  auto* cmd = cli.add_subcommand("gen", "deterministic generation: cmake | mocks | probe | skel | guide | agents");
   static std::string what;
   static std::string block = "all";
-  cmd->add_option("what", what, "cmake | mocks | probe | skel | all | guide (Karkas block of CLAUDE.md)")
+  cmd->add_option("what", what, "cmake | mocks | probe | skel | all | guide (Karkas block of CLAUDE.md) | agents (Claude Code subagents of the model tiers)")
       ->required()
-      ->check(CLI::IsMember({"cmake", "mocks", "probe", "skel", "all", "guide"}));
+      ->check(CLI::IsMember({"cmake", "mocks", "probe", "skel", "all", "guide", "agents"}));
   cmd->add_option("block", block, "block for mocks/skel (default: all)");
   cmd->callback([&app] {
     auto root = app.root();
@@ -46,6 +48,11 @@ AutoRegister reg_gen([](CLI::App& cli, App& app) {
       auto g = code::write_agent_guide(root);
       if (!g) die(g.error().str());
       std::cout << "CLAUDE.md: " << *g << "\n";
+    }
+    if (what == "agents") {
+      auto cfg = core::load_config(root);
+      if (!cfg) die(cfg.error().str());
+      report(code::write_claude_agents(root, *cfg));
     }
   });
 });

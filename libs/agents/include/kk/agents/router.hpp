@@ -58,9 +58,4 @@ kk::Result<ModelChoice> model_for(const core::Config& cfg, const core::Schema& s
 // The text of kk_model_for: tier, model and what an external agent should do with it.
 std::string model_choice_text(const ModelChoice& c);
 
-// Model id Claude Code can run for a tier: the model of an Anthropic tier, "" otherwise.
-std::string claude_code_model(const core::ModelTier& t);
-// Name of the generated Claude Code subagent of a tier: "karkas-<tier>".
-std::string subagent_name(std::string_view tier);
-
 }  // namespace kk::agents

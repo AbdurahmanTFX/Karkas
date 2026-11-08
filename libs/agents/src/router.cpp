@@ -91,10 +91,6 @@ Route route_block(const core::Schema& schema, const index::Snapshot& snap, const
   return route(in, cfg, n, ok);
 }
 
-std::string claude_code_model(const core::ModelTier& t) { return t.provider == "anthropic" ? t.model : std::string(); }
-
-std::string subagent_name(std::string_view tier) { return "karkas-" + std::string(tier); }
-
 kk::Result<ModelChoice> model_for(const core::Config& cfg, const core::Schema& schema, const index::Snapshot& snap,
                                   const std::vector<index::RunRow>& runs, std::string_view block_in, std::string role) {
   // Default tiers of the roles, as the engine uses them when [roles] does not name one.
@@ -139,8 +135,8 @@ kk::Result<ModelChoice> model_for(const core::Config& cfg, const core::Schema& s
   if (const auto* t = cfg.tier(c.tier)) {
     c.defined = true;
     c.model = *t;
-    c.claude_model = claude_code_model(*t);
-    if (!c.claude_model.empty()) c.subagent = subagent_name(c.tier);
+    c.claude_model = t->claude_model();
+    if (!c.claude_model.empty()) c.subagent = core::subagent_name(c.tier);
   }
   return c;
 }
