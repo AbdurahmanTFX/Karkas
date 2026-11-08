@@ -2,6 +2,7 @@
 
 #include <fmt/format.h>
 
+#include <map>
 #include <set>
 
 #include "kk/core/text.hpp"
@@ -67,6 +68,102 @@ RouteInput route_input(const core::Schema& schema, const index::Snapshot& snap, 
   }
   in.failed_tickets_30d = static_cast<int>(failed.size());
   return in;
+}
+
+}  // namespace kk::agents
+
+namespace kk::agents {
+
+Route route_block(const core::Schema& schema, const index::Snapshot& snap, const std::vector<index::RunRow>& runs,
+                  const std::string& block, const std::string& difficulty, const core::Config& cfg) {
+  auto in = route_input(schema, snap, block, difficulty, runs);
+  std::map<std::string, std::string> bucket_of;
+  int n = 0;
+  int ok = 0;
+  auto mine = route(in, cfg).bucket;
+  for (const auto& r : runs) {
+    if (r.role != "worker" || r.attempt != 1 || r.tier != "cheap" || r.block.empty()) continue;
+    if (!bucket_of.contains(r.block)) bucket_of[r.block] = route(route_input(schema, snap, r.block, "", runs), cfg).bucket;
+    if (bucket_of[r.block] != mine) continue;
+    ++n;
+    ok += (r.outcome == "fixed" || r.outcome == "done") ? 1 : 0;
+  }
+  return route(in, cfg, n, ok);
+}
+
+std::string claude_code_model(const core::ModelTier& t) { return t.provider == "anthropic" ? t.model : std::string(); }
+
+std::string subagent_name(std::string_view tier) { return "karkas-" + std::string(tier); }
+
+kk::Result<ModelChoice> model_for(const core::Config& cfg, const core::Schema& schema, const index::Snapshot& snap,
+                                  const std::vector<index::RunRow>& runs, std::string_view block_in, std::string role) {
+  // Default tiers of the roles, as the engine uses them when [roles] does not name one.
+  static const std::map<std::string, std::string, std::less<>> kDefaults = {
+      {"worker", "cheap"},     {"tester", "cheap"},   {"integration_tester", "medium"}, {"architect", "strong"},
+      {"orchestrator", "strong"}, {"navigator", "medium"}, {"composer", "medium"},          {"ask", "cheap"}};
+  ModelChoice c;
+  c.block = block_in == "root" ? std::string() : std::string(block_in);
+  const core::Block* b = c.block.empty() ? nullptr : schema.find(c.block);
+  if (!c.block.empty() && b == nullptr) return kk::fail("model", "no block " + c.block);
+  if (role.empty()) role = b != nullptr && b->has_code() ? "worker" : "architect";
+  auto def = kDefaults.find(role);
+  if (def == kDefaults.end()) {
+    std::vector<std::string> names;
+    for (const auto& [n, _] : kDefaults) names.push_back(n);
+    return kk::fail("model", fmt::format("unknown role {} (one of: {})", role, core::join(names, ", ")));
+  }
+  c.role = role;
+  c.level = core::block_level(c.block);
+  auto by_role = [&](const std::string& fallback, const std::string& why) {
+    auto it = cfg.roles.find(role);
+    if (it != cfg.roles.end() && it->second != "auto" && !it->second.empty()) {
+      c.tier = it->second;
+      c.by = "role " + role;
+    } else {
+      c.tier = fallback;
+      c.by = why;
+    }
+  };
+  if (auto p = cfg.pin(c.block); !p.tier.empty()) {
+    c.tier = p.tier;
+    c.by = "pinned by " + p.by;
+  } else if (role == "worker" && b != nullptr && b->has_code()) {
+    auto rt = route_block(schema, snap, runs, c.block, "", cfg);
+    by_role(rt.tier, "routing " + rt.reason);
+  } else if (role == "tester" && b != nullptr && b->est.value == "L") {
+    c.tier = "medium";
+    c.by = "tester of an est=L leaf";
+  } else {
+    by_role(def->second, "default of role " + role);
+  }
+  if (const auto* t = cfg.tier(c.tier)) {
+    c.defined = true;
+    c.model = *t;
+    c.claude_model = claude_code_model(*t);
+    if (!c.claude_model.empty()) c.subagent = subagent_name(c.tier);
+  }
+  return c;
+}
+
+std::string model_choice_text(const ModelChoice& c) {
+  std::string out = fmt::format("block {}  level {}  role {}\ntier {}  ({})\n", c.block.empty() ? "(project)" : c.block,
+                                c.level, c.role, c.tier, c.by);
+  if (!c.defined) {
+    out += fmt::format("model: tier {} has no [models.{}] in karkas.toml; work in this session or ask the user to add it\n",
+                       c.tier, c.tier);
+    return out;
+  }
+  out += fmt::format("model {}  ({}{})\n", c.model.model, c.model.provider,
+                     c.model.base_url.empty() ? "" : " at " + c.model.base_url);
+  if (c.claude_model.empty()) {
+    out += "claude code: this model is not a Claude model, a Claude Code subagent cannot run it. Do the work in this "
+           "session, or let the user run Karkas's own agents (`karkas implement` / `karkas task`).\n";
+  } else {
+    out += fmt::format("claude code: delegate the work on this block to the subagent {} (model {}); if this session "
+                       "already runs {}, do it here. Missing subagent: `karkas gen agents`.\n",
+                       c.subagent, c.claude_model, c.claude_model);
+  }
+  return out;
 }
 
 }  // namespace kk::agents

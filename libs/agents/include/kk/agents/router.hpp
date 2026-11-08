@@ -31,4 +31,36 @@ RouteInput route_input(const core::Schema& schema, const index::Snapshot& snap, 
                        const std::string& difficulty, const std::vector<index::RunRow>& runs);
 std::string next_tier(const std::string& tier);  // cheap → medium → strong → ""
 
+// route() of a leaf with the self-tuning statistics of its feature bucket taken from `runs`
+// (first-attempt cheap worker runs, 11.4).
+Route route_block(const core::Schema& schema, const index::Snapshot& snap, const std::vector<index::RunRow>& runs,
+                  const std::string& block, const std::string& difficulty, const core::Config& cfg);
+
+// The model for an agent working on a block (ADR 0011, 0013), as Karkas's own agents pick it:
+// the block or its nearest ancestor in [blocks], then [levels], then the role ([roles]; a
+// worker with role "auto" is routed by the size of the leaf, 11.2).
+struct ModelChoice {
+  std::string block;  // "" = the project
+  int level = 0;
+  std::string role;   // worker | tester | architect | ...
+  std::string tier;   // strong | medium | cheap | a custom [models.<tier>]
+  std::string by;     // "block game", "level 2", "role architect", "routing score=3 est=M+1"
+  bool defined = false;  // the tier has a [models.<tier>] section
+  core::ModelTier model;
+  // Model id an external Claude Code session can run for this tier ("" when the tier is not an
+  // Anthropic model), and the name of the generated subagent (.claude/agents/<name>.md).
+  std::string claude_model;
+  std::string subagent;
+};
+// role "" = worker for a block with code, architect for a group or the project.
+kk::Result<ModelChoice> model_for(const core::Config& cfg, const core::Schema& schema, const index::Snapshot& snap,
+                                  const std::vector<index::RunRow>& runs, std::string_view block, std::string role = "");
+// The text of kk_model_for: tier, model and what an external agent should do with it.
+std::string model_choice_text(const ModelChoice& c);
+
+// Model id Claude Code can run for a tier: the model of an Anthropic tier, "" otherwise.
+std::string claude_code_model(const core::ModelTier& t);
+// Name of the generated Claude Code subagent of a tier: "karkas-<tier>".
+std::string subagent_name(std::string_view tier);
+
 }  // namespace kk::agents

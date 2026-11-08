@@ -5,5 +5,5 @@ kk_add_library(agents
 target_compile_definitions(kk_agents PRIVATE KK_DOCTEST_INCLUDE_DIR="${KK_DOCTEST_INCLUDE_DIR}")
 
 kk_add_tests(agents
-  SOURCES tests/scripted.cpp tests/sandbox_test.cpp tests/loop_test.cpp tests/engine_test.cpp tests/changes_test.cpp tests/edit_test.cpp tests/bench_test.cpp
+  SOURCES tests/scripted.cpp tests/router_test.cpp tests/sandbox_test.cpp tests/loop_test.cpp tests/engine_test.cpp tests/changes_test.cpp tests/edit_test.cpp tests/bench_test.cpp
   DEPS nlohmann_json::nlohmann_json)

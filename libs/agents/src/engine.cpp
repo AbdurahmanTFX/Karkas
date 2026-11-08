@@ -301,20 +301,8 @@ struct Engine::Impl {
       std::lock_guard lk(mu);
       auto snap = idx->snapshot();
       auto runs = idx->runs();
-      auto in = route_input(*s, snap, block, difficulty, runs);
       // Self-tuning statistics: first-attempt cheap worker runs of the same bucket.
-      std::map<std::string, std::string> bucket_of;
-      int n = 0;
-      int ok = 0;
-      auto mine = route(in, cfg).bucket;
-      for (const auto& r : runs) {
-        if (r.role != "worker" || r.attempt != 1 || r.tier != "cheap" || r.block.empty()) continue;
-        if (!bucket_of.contains(r.block)) bucket_of[r.block] = route(route_input(*s, snap, r.block, "", runs), cfg).bucket;
-        if (bucket_of[r.block] != mine) continue;
-        ++n;
-        ok += (r.outcome == "fixed" || r.outcome == "done") ? 1 : 0;
-      }
-      auto rt = route(in, cfg, n, ok);
+      auto rt = route_block(*s, snap, runs, block, difficulty, cfg);
       reason = rt.reason;
       tier = tier_for("worker", rt.tier);
     }
