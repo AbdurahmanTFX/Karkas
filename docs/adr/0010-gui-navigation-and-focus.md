@@ -1,0 +1,25 @@
+# 0010 — GUI: link colors, focus, groups opened in place, address bar, projects
+
+Status: accepted
+
+Additions to section 14 on request; one deviation.
+
+- Deviation from 14.5: links are colored by the block they start at (well-separated hues
+  per level), because many lines of one kind (calls of imported code) were all gray. The
+  colors of 14.5 (data blue, event orange, call gray, state red, use thin gray) remain as
+  the setting "Link colors: by link kind"; thickness still tells state (thick) and use
+  (thin) apart.
+- Focus: hovering a block (schema or tree) dims everything except it, its links and its
+  partners; Shift+click keeps a block's links lit, several blocks can be lit (Shift+click
+  again, Esc, a click on the background or "Clear" turn it off).
+- Groups opened in place (Shift+double-click): the group's whole subtree is laid out inside
+  a frame among the closed blocks of the level (kk_layout::layout_nested), so it shows which
+  inner blocks talk to which whole blocks. The frame's top edge is a path bar; a click on a
+  part closes that group. The view is temporary: positions are not saved there.
+- Pins flow left to right like the layout: inputs on the left (in, fn, "used"), outputs on
+  the right (out, "calls"), so call lines no longer cross the blocks.
+- Address bar "project / group / group" instead of breadcrumb buttons; the empty part turns
+  into a text field for a typed path.
+- Projects: "Open project…" (Ctrl+O, a folder browser that marks folders with project.ksl,
+  recent projects in ~/.config/karkas/gui.json); started outside a project, karkas-gui opens
+  with it. "Show project folder" / "Open folder" of a block use xdg-open.

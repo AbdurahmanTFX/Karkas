@@ -51,6 +51,17 @@ std::optional<InputScript> InputScript::parse(std::string_view text, std::string
       f.emplace_back([d](ImGuiIO& io) { io.AddMouseWheelEvent(0, d); });
     } else if (cmd == "wait" && w.size() == 2) {
       for (int i = 0; i < std::atoi(w[1].c_str()); ++i) f.emplace_back([](ImGuiIO&) {});
+    } else if (cmd == "key" && w.size() == 2 && w[1] == "ctrl+o") {
+      f.emplace_back([](ImGuiIO& io) {
+        io.AddKeyEvent(ImGuiMod_Ctrl, true);
+        io.AddKeyEvent(ImGuiKey_LeftCtrl, true);
+      });
+      f.emplace_back([](ImGuiIO& io) { io.AddKeyEvent(ImGuiKey_O, true); });
+      f.emplace_back([](ImGuiIO& io) { io.AddKeyEvent(ImGuiKey_O, false); });
+      f.emplace_back([](ImGuiIO& io) {
+        io.AddKeyEvent(ImGuiKey_LeftCtrl, false);
+        io.AddKeyEvent(ImGuiMod_Ctrl, false);
+      });
     } else if (cmd == "key" && w.size() == 2 && (w[1] == "esc" || w[1] == "enter")) {
       ImGuiKey k = w[1] == "esc" ? ImGuiKey_Escape : ImGuiKey_Enter;
       f.emplace_back([k](ImGuiIO& io) { io.AddKeyEvent(k, true); });

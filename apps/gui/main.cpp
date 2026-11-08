@@ -2,6 +2,7 @@
 //   karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]
 //              [--lang en|ru] [--block-scale F] [--settings] [--script "..."] [--drag x1,y1,x2,y2]
 //              [--frames N --screenshot out.png]   (headless checks)
+// Without a project (started outside one) the window opens with "Open project".
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -10,17 +11,18 @@
 
 #include <GL/gl.h>
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "kk/core/config.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
+#include "picker.hpp"
 #include "png.hpp"
 #include "script.hpp"
 #include "ui.hpp"
@@ -30,17 +32,12 @@ namespace fs = std::filesystem;
 
 namespace {
 
-std::string find_font(const std::string& configured, bool mono) {
+std::string find_font(const std::string& configured) {
   std::vector<std::string> candidates;
-  if (!configured.empty() && !mono) candidates.push_back(configured);
-  if (mono) {
-    candidates = {"/usr/share/fonts/TTF/DejaVuSansMono.ttf", "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
-                  "/usr/share/fonts/liberation/LiberationMono-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"};
-  } else {
-    for (const char* f : {"/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-                          "/usr/share/fonts/liberation/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"}) {
-      candidates.emplace_back(f);
-    }
+  if (!configured.empty()) candidates.push_back(configured);
+  for (const char* f : {"/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+                        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"}) {
+    candidates.emplace_back(f);
   }
   for (const auto& c : candidates) {
     if (fs::exists(c)) return c;
@@ -52,6 +49,32 @@ void usage() {
   std::cerr << "usage: karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]\n"
                "                  [--lang en|ru] [--block-scale F] [--settings] [--script \"...\"] [--drag x1,y1,x2,y2]\n"
                "                  [--frames N] [--screenshot out.png] [--version]\n";
+}
+
+void render(GLFWwindow* window) {
+  ImGui::Render();
+  int w = 0;
+  int h = 0;
+  glfwGetFramebufferSize(window, &w, &h);
+  glViewport(0, 0, w, h);
+  glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+}
+
+void screenshot_to(GLFWwindow* window, const std::string& path) {
+  int w = 0;
+  int h = 0;
+  glfwGetFramebufferSize(window, &w, &h);
+  std::vector<std::uint8_t> px(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
+  glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+  std::vector<std::uint8_t> flipped(px.size());
+  auto row = static_cast<std::size_t>(w) * 4;
+  for (std::size_t y = 0; y < static_cast<std::size_t>(h); ++y) {
+    std::copy_n(px.begin() + static_cast<long>((static_cast<std::size_t>(h) - 1 - y) * row), row,
+                flipped.begin() + static_cast<long>(y * row));
+  }
+  kk::gui::write_png(path, w, h, flipped);
 }
 
 }  // namespace
@@ -85,15 +108,22 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
-  auto root = kk::core::find_project_root(project.empty() ? fs::current_path() : fs::path(project));
-  if (!root) {
-    std::cerr << "karkas-gui: " << root.error().message << "\n";
+  std::optional<fs::path> root;
+  if (auto r = kk::core::find_project_root(project.empty() ? fs::current_path() : fs::path(project))) {
+    root = *r;
+  } else if (!project.empty()) {
+    std::cerr << "karkas-gui: " << r.error().message << "\n";
     return 1;
   }
-  auto cfg = kk::core::load_config(*root);
-  if (!cfg) {
-    std::cerr << "karkas-gui: " << cfg.error().str() << "\n";
-    return 1;
+  std::string script_error;
+  auto script = kk::gui::InputScript::parse(script_text, &script_error);
+  if (!script) {
+    std::cerr << "karkas-gui: " << script_error << "\n";
+    return 2;
+  }
+  std::string font_cfg;
+  if (root) {
+    if (auto cfg = kk::core::load_config(*root)) font_cfg = cfg->font;
   }
   spdlog::set_level(spdlog::level::warn);
   if (glfwInit() == 0) {
@@ -104,7 +134,7 @@ int main(int argc, char** argv) {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   if (frames > 0) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-  GLFWwindow* window = glfwCreateWindow(1600, 950, ("Karkas — " + root->filename().string()).c_str(), nullptr, nullptr);
+  GLFWwindow* window = glfwCreateWindow(1600, 950, "Karkas", nullptr, nullptr);
   if (window == nullptr) {
     std::cerr << "karkas-gui: cannot create an OpenGL 3.3 window\n";
     glfwTerminate();
@@ -125,7 +155,7 @@ int main(int argc, char** argv) {
   float scale = std::max(1.0f, xs);
   ImGui::GetStyle().ScaleAllSizes(scale);
   // Cyrillic glyphs (14.8): ImGui 1.91 needs explicit glyph ranges.
-  auto font = find_font(cfg->font, false);
+  auto font = find_font(font_cfg);
   if (!font.empty()) {
     io.Fonts->AddFontFromFileTTF(font.c_str(), 15.0f * scale, nullptr, io.Fonts->GetGlyphRangesCyrillic());
     static const ImWchar extra[] = {0x2000, 0x206F, 0x2190, 0x21FF, 0x25A0, 0x25FF, 0};
@@ -146,86 +176,11 @@ int main(int argc, char** argv) {
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init("#version 330");
 
-  kk::gui::Worker worker(*root, *cfg, [] { glfwPostEmptyEvent(); });
-  kk::gui::Ui ui(worker, settings, persist);
-  if (open_settings) ui.open_settings();
-  ui.request().scope = scope;
-  ui.request().selected = select;
-  ui.request().all_levels = all_levels;
-  bool first = true;
-  int frame = 0;
+  // Redraw on events only (14.8): near 0% CPU while idle; ~20 fps while agents work
+  // (pulsing blocks). One extra frame after every event lets ImGui settle hovers/popups.
   int settle = 3;
-  std::shared_ptr<const kk::gui::Model> model;
-  int ready_since = -1;
-  std::string script_error;
-  auto script = kk::gui::InputScript::parse(script_text, &script_error);
-  if (!script) {
-    std::cerr << "karkas-gui: " << script_error << "\n";
-    return 2;
-  }
-  int phase = 0;  // headless: 0 wait for the level, 1 run the script, 2 let the model follow
-  int settle_frames = 0;
-  auto start = std::chrono::steady_clock::now();
-  while (glfwWindowShouldClose(window) == 0) {
-    model = worker.model();
-    bool animate = false;
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    if (phase == 1) script->step(io);
-    ImGui::NewFrame();
-    ui.request().char_w = ImGui::CalcTextSize("abcdefghijklmnopqrstuvwxyz").x / 26.0f;
-    ui.request().line_h = ImGui::GetTextLineHeightWithSpacing();
-    animate = ui.draw(model, first);
-    first = false;
-    if (ui.quit_requested()) glfwSetWindowShouldClose(window, GLFW_TRUE);
-    worker.set_request(ui.request());
-    ImGui::Render();
-    int w = 0;
-    int h = 0;
-    glfwGetFramebufferSize(window, &w, &h);
-    glViewport(0, 0, w, h);
-    glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    ++frame;
-    if (frames > 0) {
-      // Headless check: wait until the worker delivered a model, then capture.
-      // Ready: the model of the requested level has been on screen for a few frames
-      // (positions applied, then "fit to view").
-      bool have = model && model->snap && model->req.scope == ui.request().scope;
-      if (!have) ready_since = -1;
-      else if (ready_since < 0) ready_since = frame;
-      bool ready = have && frame - ready_since >= 6;
-      auto waited = std::chrono::steady_clock::now() - start;
-      if (phase == 0 && ready && frame >= frames) phase = script->empty() ? 3 : 1;
-      if (phase == 1 && script->done()) phase = 2;
-      if (phase == 2) {
-        // After the script: the worker has the latest request and a few frames passed.
-        bool synced = model && model->req == ui.request();
-        settle_frames = synced ? settle_frames + 1 : 0;
-        if (settle_frames >= 8) phase = 3;
-      }
-      ready = phase == 3;
-      if ((frame >= frames && ready) || waited > std::chrono::seconds(30)) {
-        if (!screenshot.empty()) {
-          std::vector<std::uint8_t> px(static_cast<std::size_t>(w * h * 4));
-          glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-          std::vector<std::uint8_t> flipped(px.size());
-          for (int y = 0; y < h; ++y) {
-            std::copy_n(px.begin() + static_cast<long>((h - 1 - y) * w * 4), w * 4, flipped.begin() + static_cast<long>(y * w * 4));
-          }
-          kk::gui::write_png(screenshot, w, h, flipped);
-        }
-        break;
-      }
-      glfwSwapBuffers(window);
-      glfwWaitEventsTimeout(0.05);
-      continue;
-    }
-    glfwSwapBuffers(window);
-    // Redraw on events only (14.8): near 0% CPU while idle; ~20 fps while agents work
-    // (pulsing blocks). One extra frame after every event lets ImGui settle hovers/popups.
-    if (animate) {
+  auto wait = [&](bool animate) {
+    if (frames > 0 || animate) {
       glfwWaitEventsTimeout(0.05);
     } else if (settle > 0) {
       --settle;
@@ -233,6 +188,109 @@ int main(int argc, char** argv) {
     } else {
       glfwWaitEvents();
       settle = 2;
+    }
+  };
+
+  bool quit = false;
+  bool first_project = true;  // command-line --scope/--select/... apply to the first project only
+  while (!quit && glfwWindowShouldClose(window) == 0) {
+    if (!root) {
+      // No project yet: the window is the "Open project" picker.
+      kk::gui::ProjectPicker picker(fs::current_path(), settings.recent);
+      int picker_frames = 0;
+      while (!root && glfwWindowShouldClose(window) == 0) {
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        if (frames > 0 && picker_frames >= frames) script->step(io);
+        ImGui::NewFrame();
+        bool open = true;
+        if (auto chosen = picker.draw(&open, true)) root = *chosen;
+        render(window);
+        // Headless check of the welcome screen: capture once the script is done.
+        if (frames > 0 && ++picker_frames >= frames && script->done() && !root) {
+          if (!screenshot.empty()) screenshot_to(window, screenshot);
+          quit = true;
+          break;
+        }
+        glfwSwapBuffers(window);
+        wait(false);
+      }
+      continue;
+    }
+    auto cfg = kk::core::load_config(*root);
+    if (!cfg) {
+      std::cerr << "karkas-gui: " << cfg.error().str() << "\n";
+      if (frames > 0) return 1;
+      root.reset();
+      continue;
+    }
+    kk::gui::add_recent(settings, *root);
+    if (persist) kk::gui::save_settings(settings);
+    glfwSetWindowTitle(window, ("Karkas — " + root->filename().string()).c_str());
+    std::optional<fs::path> next_project;
+    {
+      kk::gui::Worker worker(*root, *cfg, [] { glfwPostEmptyEvent(); });
+      kk::gui::Ui ui(worker, settings, persist);
+      ui.set_project_root(*root);
+      if (first_project) {
+        if (open_settings) ui.open_settings();
+        ui.request().scope = scope;
+        ui.request().selected = select;
+        ui.request().all_levels = all_levels;
+      }
+      bool first = true;
+      int frame = 0;
+      int ready_since = -1;
+      int phase = 0;  // headless: 0 wait for the level, 1 run the script, 2 let the model follow, 3 done
+      int settle_frames = 0;
+      auto start = std::chrono::steady_clock::now();
+      while (glfwWindowShouldClose(window) == 0) {
+        auto model = worker.model();
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        if (phase == 1) script->step(io);
+        ImGui::NewFrame();
+        ui.request().char_w = ImGui::CalcTextSize("abcdefghijklmnopqrstuvwxyz").x / 26.0f;
+        ui.request().line_h = ImGui::GetTextLineHeightWithSpacing();
+        bool animate = ui.draw(model, first);
+        first = false;
+        if (ui.quit_requested()) glfwSetWindowShouldClose(window, GLFW_TRUE);
+        worker.set_request(ui.request());
+        render(window);
+        ++frame;
+        if (auto req = ui.take_open_request(); req && *req != *root) {
+          next_project = *req;
+          break;
+        }
+        if (frames > 0) {
+          // Headless check: the model of the requested level has been on screen for a few
+          // frames (positions applied, then "fit to view"), then the script, then capture.
+          bool have = model && model->snap && model->req.scope == ui.request().scope;
+          if (!have) ready_since = -1;
+          else if (ready_since < 0) ready_since = frame;
+          bool ready = have && frame - ready_since >= 6;
+          if (phase == 0 && ready && frame >= frames) phase = script->empty() ? 3 : 1;
+          if (phase == 1 && script->done()) phase = 2;
+          if (phase == 2) {
+            bool synced = model && model->req == ui.request();
+            settle_frames = synced ? settle_frames + 1 : 0;
+            if (settle_frames >= 8) phase = 3;
+          }
+          if (phase == 3 || std::chrono::steady_clock::now() - start > std::chrono::seconds(30)) {
+            if (!screenshot.empty()) screenshot_to(window, screenshot);
+            quit = true;
+            break;
+          }
+        }
+        glfwSwapBuffers(window);
+        wait(animate);
+      }
+    }
+    first_project = false;
+    if (next_project) {
+      root = *next_project;
+    } else {
+      quit = true;
     }
   }
   ImGui_ImplOpenGL3_Shutdown();

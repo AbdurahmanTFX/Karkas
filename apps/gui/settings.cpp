@@ -31,16 +31,29 @@ GuiSettings load_settings() {
     s.block_scale = std::clamp(j.value("block_scale", 1.0f), kMinBlockScale, kMaxBlockScale);
     s.ui_scale = std::clamp(j.value("ui_scale", 1.0f), 0.8f, 1.6f);
     s.links_by_block = j.value("link_colors", std::string("block")) != "kind";
+    if (j.contains("recent") && j["recent"].is_array()) {
+      for (const auto& r : j["recent"]) {
+        if (r.is_string()) s.recent.push_back(r.get<std::string>());
+      }
+    }
   } catch (const json::exception&) {
   }
   return s;
+}
+
+void add_recent(GuiSettings& s, const std::filesystem::path& root) {
+  auto r = root.string();
+  std::erase(s.recent, r);
+  s.recent.insert(s.recent.begin(), r);
+  if (s.recent.size() > 8) s.recent.resize(8);
 }
 
 bool save_settings(const GuiSettings& s) {
   json j = {{"language", lang_code(s.lang)},
             {"block_scale", s.block_scale},
             {"ui_scale", s.ui_scale},
-            {"link_colors", s.links_by_block ? "block" : "kind"}};
+            {"link_colors", s.links_by_block ? "block" : "kind"},
+            {"recent", s.recent}};
   return core::write_file(settings_path(), j.dump(2) + "\n").has_value();
 }
 

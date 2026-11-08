@@ -162,6 +162,40 @@ void Worker::open_in_editor(const std::string& rel_file, int line) {
   });
 }
 
+namespace {
+
+// Starts a program detached (the GUI never waits for it); false when it cannot start.
+bool spawn_detached(const std::vector<std::string>& args) {
+  std::vector<char*> argv;
+  for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+  argv.push_back(nullptr);
+  pid_t pid = 0;
+  return posix_spawnp(&pid, argv[0], nullptr, nullptr, argv.data(), environ) == 0;
+}
+
+}  // namespace
+
+void Worker::open_folder(const std::string& rel_dir) {
+  post([this, rel_dir] {
+    auto dir = rel_dir.empty() ? root_ : root_ / rel_dir;
+    message_ = spawn_detached({"xdg-open", dir.string()}) ? tr("folder: ") + dir.string() : tr("cannot open the folder: ") + dir.string();
+  });
+}
+
+void Worker::open_block_folder(const std::string& block) {
+  post([this, block] {
+    std::string rel;
+    if (auto s = core::load_schema(root_)) {
+      if (const auto* b = s->find(block)) {
+        rel = b->dir;
+        if (b->external()) rel = fs::path(b->file_list().front()).parent_path().generic_string();
+      }
+    }
+    auto dir = root_ / rel;
+    message_ = spawn_detached({"xdg-open", dir.string()}) ? tr("folder: ") + dir.string() : tr("cannot open the folder: ") + dir.string();
+  });
+}
+
 void Worker::loop() {
   code::CppAnalyzer analyzer;
   std::unique_ptr<index::Index> idx;
@@ -279,6 +313,10 @@ void Worker::loop() {
                  it.increment(ec)) {
               if (ec) break;
               if (it->is_regular_file(ec) && core::is_code_file(it->path())) files.push_back(core::rel_str(root_, it->path()));
+            }
+            // Imported blocks: their code lives elsewhere ("files" of the card).
+            if (auto card = core::parse_block_text(m->card_text, b->dir + "/block.ksl"); card && card->external()) {
+              for (const auto& f : card->file_list()) files.push_back(f);
             }
             std::sort(files.begin(), files.end());
             m->files = std::move(files);

@@ -83,6 +83,10 @@ class Worker {
   void reject_change(const std::string& id);
   void save_positions(const std::string& view, std::map<std::string, layout::Pos> pos);
   void open_in_editor(const std::string& rel_file, int line);
+  // Opens a folder of the project in the system file manager (xdg-open): "" = the root.
+  void open_folder(const std::string& rel_dir);
+  // The folder of a block: its card folder, or the folder of its code for imported blocks.
+  void open_block_folder(const std::string& block);
   void reindex();
   [[nodiscard]] const fs::path& root() const { return root_; }
 

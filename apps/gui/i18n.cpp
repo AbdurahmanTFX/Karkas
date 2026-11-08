@@ -126,6 +126,27 @@ const std::unordered_map<std::string_view, const char*>& ru() {
        "Щёлкните часть пути, чтобы перейти туда, или пустое место, чтобы ввести путь (Enter — перейти)."},
       {"no block {}", "нет блока {}"},
       {"groups opened in place: positions are not saved", "группы раскрыты на месте: позиции не сохраняются"},
+      // projects and folders
+      {"Open project", "Открыть проект"},
+      {"Open project...", "Открыть проект..."},
+      {"Recent projects", "Недавние проекты"},
+      {"Show project folder", "Показать папку проекта"},
+      {"Open folder", "Открыть папку"},
+      {"folder: ", "папка: "},
+      {"cannot open the folder: ", "не удалось открыть папку: "},
+      {"No Karkas project is open. Choose a folder with project.ksl (for an existing code base: "
+       "karkas init there, then karkas import).",
+       "Проект Karkas не открыт. Выберите папку с project.ksl (для существующего кода: karkas init "
+       "в ней, затем karkas import)."},
+      {"Parent folder", "Папка выше"},
+      {"Home", "Домой"},
+      {"Show hidden folders", "Показывать скрытые папки"},
+      {"(Karkas project)", "(проект Karkas)"},
+      {"(no folders)", "(нет папок)"},
+      {"Pick a folder marked ● (it holds project.ksl); double click enters a folder.",
+       "Выберите папку с отметкой ● (в ней есть project.ksl); двойной щелчок — войти в папку."},
+      {"Project: %s", "Проект: %s"},
+      {"not a folder: ", "не папка: "},
       // empty schema
       {"No blocks on this level.", "На этом уровне нет блоков."},
       {"Right click → Add block, or the \"Add block\" button above.",

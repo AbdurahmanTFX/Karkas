@@ -1,11 +1,15 @@
 #pragma once
 // Panels of karkas-gui (14.4): block tree, schema of the current level, inspector,
 // bottom tabs, code view, the edit dialogs (14.6) and the settings window.
+#include <filesystem>
 #include <map>
 #include <memory>
+#include <optional>
+#include <utility>
 #include <set>
 #include <string>
 
+#include "picker.hpp"
 #include "settings.hpp"
 #include "worker.hpp"
 
@@ -29,6 +33,9 @@ class Ui {
   Request& request() { return req_; }
   [[nodiscard]] bool quit_requested() const { return quit_; }
   void open_settings() { show_settings_ = true; }
+  // A project chosen in "Open project" (main switches to it); empty when none.
+  std::optional<std::filesystem::path> take_open_request() { return std::exchange(open_request_, std::nullopt); }
+  void set_project_root(std::filesystem::path root) { root_ = std::move(root); }
 
  private:
   void draw_menu();
@@ -66,6 +73,11 @@ class Ui {
   double pulse_ = 0;
   bool quit_ = false;
   bool show_settings_ = false;
+  std::filesystem::path root_;  // the open project
+  std::unique_ptr<ProjectPicker> picker_;
+  bool picker_open_ = false;
+  std::optional<std::filesystem::path> open_request_;
+  void show_picker();
   // address bar
   bool editing_path_ = false;
   bool focus_path_ = false;

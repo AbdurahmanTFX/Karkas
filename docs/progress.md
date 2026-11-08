@@ -167,6 +167,18 @@
 - Not done: agents inside imported blocks, clustering of big folders, `--describe` with a model,
   type-aware call matching.
 
+## GUI addition — focus, open in place, address bar, projects (docs/adr/0010)
+- Links colored by the block they start at (setting: by block / by link kind); hover focus
+  dims the rest; Shift+click keeps links of several blocks lit.
+- Shift+double-click opens a group in place with its whole subtree in a frame; the frame's
+  top edge is a path bar that closes the group (layout_nested in kk_layout, tested).
+- Pins flow left to right (inputs left, outputs right): call lines no longer cross blocks.
+- Address bar like a file manager (click a part, or type a path).
+- "Open project…" (Ctrl+O), recent projects, start without a project, open folders in the
+  file manager; `karkas gui` outside a project opens the picker.
+- Headless checks: --script with move/click/dclick (shift)/drag/wheel/type/key; verified by
+  screenshots on a 4.5k-line imported game and wavkit.
+
 ## Stage 10 — benchmarks (harness)
 - bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
   (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip

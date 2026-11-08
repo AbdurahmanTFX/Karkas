@@ -1,6 +1,8 @@
 #pragma once
 // User settings of karkas-gui: ~/.config/karkas/gui.json (language, sizes).
 #include <filesystem>
+#include <string>
+#include <vector>
 
 #include "i18n.hpp"
 
@@ -11,7 +13,11 @@ struct GuiSettings {
   float block_scale = 1.0f;  // default size of blocks on the schema
   float ui_scale = 1.0f;     // text size of the interface (io.FontGlobalScale)
   bool links_by_block = true;  // link color: of the block it starts at (else: by link kind, 14.5)
+  std::vector<std::string> recent;  // recently opened project roots, newest first
 };
+
+// Puts a project root first in the recent list (at most 8).
+void add_recent(GuiSettings& s, const std::filesystem::path& root);
 
 // Limits of block sizes (canvas units): a block never shrinks to a dot.
 inline constexpr float kMinBlockW = 120.0f;

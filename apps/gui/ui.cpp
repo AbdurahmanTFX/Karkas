@@ -259,9 +259,33 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
 
 // --- menu and settings ---------------------------------------------------------------------
 
+void Ui::show_picker() {
+  picker_ = std::make_unique<ProjectPicker>(root_.empty() ? std::filesystem::path() : root_.parent_path(), settings_.recent);
+  picker_open_ = true;
+}
+
 void Ui::draw_menu() {
+  if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) show_picker();
+  if (picker_) {
+    if (auto chosen = picker_->draw(&picker_open_, false)) {
+      open_request_ = *chosen;
+      picker_open_ = false;
+    }
+    if (!picker_open_) picker_.reset();
+  }
   if (!ImGui::BeginMainMenuBar()) return;
   if (ImGui::BeginMenu("Karkas")) {
+    if (ImGui::MenuItem(tr("Open project..."), "Ctrl+O")) show_picker();
+    if (ImGui::BeginMenu(tr("Recent projects"), !settings_.recent.empty())) {
+      for (const auto& r : settings_.recent) {
+        std::error_code ec;
+        if (!std::filesystem::exists(std::filesystem::path(r) / "project.ksl", ec)) continue;
+        if (ImGui::MenuItem(r.c_str(), nullptr, std::filesystem::path(r) == root_)) open_request_ = std::filesystem::path(r);
+      }
+      ImGui::EndMenu();
+    }
+    if (ImGui::MenuItem(tr("Show project folder"))) w_.open_folder("");
+    ImGui::Separator();
     if (ImGui::MenuItem(tr("Settings..."))) show_settings_ = true;
     ImGui::Separator();
     if (ImGui::MenuItem(tr("Quit"))) quit_ = true;
@@ -1003,6 +1027,7 @@ void Ui::draw_graph(const Model& m) {
       preview_open_ = true;
     }
     if (b != nullptr && ImGui::MenuItem(tr("Open card in editor"))) w_.open_in_editor(b->dir + "/block.ksl", 1);
+    if (b != nullptr && ImGui::MenuItem(tr("Open folder"))) w_.open_block_folder(b->id);
     ImGui::EndPopup();
   }
   if (ImGui::BeginPopup("bg_menu")) {
@@ -1012,6 +1037,7 @@ void Ui::draw_graph(const Model& m) {
     }
     if (ImGui::MenuItem(tr("Fit to view"))) navigate_ = 1;
     if (ImGui::MenuItem(tr("Auto layout (reset positions and sizes)"))) auto_layout = true;
+    if (ImGui::MenuItem(tr("Show project folder"))) w_.open_folder("");
     ImGui::EndPopup();
   }
   ed::Resume();
@@ -1182,6 +1208,8 @@ void Ui::draw_inspector(const Model& m) {
   }
   ImGui::TextWrapped("%s", b->purpose.c_str());
   if (ImGui::Button(tr("Open card in editor"))) w_.open_in_editor(b->dir + "/block.ksl", 1);
+  ImGui::SameLine();
+  if (ImGui::Button(tr("Open folder"))) w_.open_block_folder(b->id);
   if (b->kind == "group") {
     ImGui::SameLine();
     if (ImGui::Button(tr("Enter"))) enter(b->id);
