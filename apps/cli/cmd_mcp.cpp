@@ -5,6 +5,9 @@
 
 #include "app.hpp"
 #include "kk/agents/changes.hpp"
+#include "kk/agents/router.hpp"
+#include "kk/core/config.hpp"
+#include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
 #include "kk/index/index.hpp"
 #include "kk/mcp/server.hpp"
@@ -51,6 +54,16 @@ AutoRegister reg([](CLI::App& cli, App& app) {
       auto c = store.load(id);
       if (!c) return std::unexpected(c.error());
       return core::write_change(*c) + "\n" + agents::preview_diff(root, c->diff);
+    };
+    // Read karkas.toml on every call: the user may change the models while the session runs.
+    o.model_for = [root, ix = idx.get()](const std::string& block, const std::string& role) -> kk::Result<std::string> {
+      auto cfg = core::load_config(root);
+      if (!cfg) return std::unexpected(cfg.error());
+      auto schema = core::load_schema(root);
+      if (!schema) return std::unexpected(schema.error());
+      auto c = agents::model_for(*cfg, *schema, ix->snapshot(), ix->runs(), block, role);
+      if (!c) return std::unexpected(c.error());
+      return agents::model_choice_text(*c);
     };
     mcp::Server server(*idx, o);
     std::ios::sync_with_stdio(false);

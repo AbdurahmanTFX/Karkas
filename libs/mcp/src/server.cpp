@@ -108,6 +108,18 @@ std::vector<Tool> make_tools(const ServerOptions& o) {
     t.push_back({"kk_changes", "Schema changes: all of them with status (no id), or one with the card diff it makes.",
                  {{"type", "object"}, {"properties", {{"id", str_prop("change id, e.g. C-0003; empty = list")}}}}});
   }
+  if (o.model_for) {
+    t.push_back({"kk_model_for",
+                 "Which model works on a block, as set in karkas.toml ([blocks], [levels], [roles], routing by size), and "
+                 "the Claude Code subagent to delegate that work to. Call it before you implement, test or design a block.",
+                 {{"type", "object"},
+                  {"properties",
+                   {{"block", str_prop("block id; empty = the project")},
+                    {"role", {{"type", "string"},
+                              {"enum", {"worker", "tester", "integration_tester", "architect", "orchestrator", "navigator",
+                                        "composer", "ask"}},
+                              {"description", "default: worker for a leaf, architect for a group or the project"}}}}}}});
+  }
   if (o.run_tests) {
     t.push_back({"kk_run_tests", "Build and run the tests of a block subtree (no model involved); returns a compact summary.",
                  {{"type", "object"}, {"properties", {{"block", str_prop("block id; empty = all")}}}}});
@@ -255,6 +267,7 @@ std::optional<std::string> Server::handle(std::string_view line) {
       if (name == "kk_check") return response(id, text_result(opts_.check(), false));
       if (name == "kk_propose_change") return out(opts_.propose_change(sarg(args, "reason"), sarg(args, "diff")));
       if (name == "kk_changes") return out(opts_.changes(sarg(args, "id")));
+      if (name == "kk_model_for") return out(opts_.model_for(sarg(args, "block"), sarg(args, "role")));
     }
   } catch (const std::exception& e) {
     return error(id, kInternalError, e.what());

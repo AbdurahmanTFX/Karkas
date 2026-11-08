@@ -129,7 +129,7 @@ kk::Result<ModelChoice> model_for(const core::Config& cfg, const core::Schema& s
     c.by = "pinned by " + p.by;
   } else if (role == "worker" && b != nullptr && b->has_code()) {
     auto rt = route_block(schema, snap, runs, c.block, "", cfg);
-    by_role(rt.tier, "routing " + rt.reason);
+    by_role(rt.tier, "routing " + std::string(core::trim(rt.reason)));
   } else if (role == "tester" && b != nullptr && b->est.value == "L") {
     c.tier = "medium";
     c.by = "tester of an est=L leaf";

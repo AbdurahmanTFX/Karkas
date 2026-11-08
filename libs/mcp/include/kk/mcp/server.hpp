@@ -28,6 +28,9 @@ struct ServerOptions {
   // kk_propose_change: checks a KSL diff and stores it as C-NNNN for the user to approve.
   std::function<kk::Result<std::string>(const std::string& reason, const std::string& diff)> propose_change;
   std::function<kk::Result<std::string>(const std::string& id)> changes;  // kk_changes: "" = list
+  // kk_model_for: the model Karkas assigns to work on a block (karkas.toml, ADR 0011/0013) and
+  // the Claude Code subagent that runs it. role "" = by the kind of the block.
+  std::function<kk::Result<std::string>(const std::string& block, const std::string& role)> model_for;
 };
 
 class Server {

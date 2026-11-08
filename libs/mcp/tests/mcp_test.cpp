@@ -120,3 +120,28 @@ TEST_CASE("mcp: the guide, the KSL reference and the write side") {
   CHECK(call("kk_changes", json::object())["content"][0]["text"] == "C-0001  pending");
   CHECK(call("kk_changes", {{"id", "C-0001"}})["content"][0]["text"] == "@change C-0001");
 }
+
+TEST_CASE("mcp: kk_model_for is offered when wired and passes block and role") {
+  McpFixture f;
+  mcp::ServerOptions o;
+  std::string got;
+  o.model_for = [&](const std::string& block, const std::string& role) -> kk::Result<std::string> {
+    got = block + "/" + role;
+    if (block == "nowhere") return kk::fail("model", "no block nowhere");
+    return std::string("tier cheap\n");
+  };
+  mcp::Server server(*f.idx, o);
+  auto list = json::parse(*server.handle(R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})"));
+  CHECK(list["result"]["tools"].size() == 16);
+  auto call = [&](const json& args) {
+    json req = {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "tools/call"}, {"params", {{"name", "kk_model_for"}, {"arguments", args}}}};
+    return json::parse(*server.handle(req.dump()))["result"];
+  };
+  auto r = call({{"block", "stream.ring"}, {"role", "tester"}});
+  CHECK(r["isError"] == false);
+  CHECK(r["content"][0]["text"] == "tier cheap\n");
+  CHECK(got == "stream.ring/tester");
+  CHECK(call(json::object())["isError"] == false);
+  CHECK(got == "/");
+  CHECK(call({{"block", "nowhere"}})["isError"] == true);
+}
