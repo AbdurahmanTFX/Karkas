@@ -231,6 +231,15 @@
   of wavkit with [levels]/[blocks].
 - Not verified here: Claude Code actually delegating to the generated subagents (manual).
 
+## Addition — benchmark method B with the Karkas method, subscription runs (docs/adr/0014)
+- B: `karkas init` in S1, guide in CLAUDE.md (and --append-system-prompt-file under --bare),
+  subagents of the tiers through --agents, MCP; self-approval counted as interventions.
+- `karkas bench run --auth subscription`: claude.ai login (API key removed from the child's
+  environment, `runner::RunOptions::unset_env`), user settings/skills/MCP left out; results carry
+  `auth`, the report lists subscription runs apart (estimated costs). A: --strict-mcp-config.
+- Tests: command lines of A/B × api/subscription; S3 run of method B with a fake `claude`
+  (Karkas frame written, the API key never reaches it, results JSON); runner unset_env.
+
 ## Stage 10 — benchmarks (harness)
 - bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
   (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip
