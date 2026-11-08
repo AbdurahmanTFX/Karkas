@@ -80,7 +80,9 @@ std::string declarator_name(TSNode d, std::string_view src, std::string* scope =
     }
     return n;
   }
-  if (t == "template_function") return declarator_name(field(d, "name"), src, scope);
+  // template_function: f<int>; template_type: the name of a class template specialization,
+  // struct serialize<T, true> { ... }.
+  if (t == "template_function" || t == "template_type") return declarator_name(field(d, "name"), src, scope);
   return {};
 }
 
@@ -159,7 +161,10 @@ struct Walker {
     std::string qual;
     std::string name = declarator_name(field(fn, "declarator"), src, &qual);
     if (name.empty() || name.starts_with("~") || name.starts_with("operator")) return;
-    if (in_class && !ns.empty() && name == core::split(ns.back(), ':').back()) return;  // constructor
+    if (in_class && !ns.empty()) {  // constructor
+      auto parts = core::split(ns.back(), ':');
+      if (!parts.empty() && name == parts.back()) return;
+    }
     TSNode plist = field(fn, "parameters");
     auto params = ts_node_is_null(plist) ? std::vector<std::pair<std::string, std::string>>{} : params_of(plist, src);
     bool pure = false;

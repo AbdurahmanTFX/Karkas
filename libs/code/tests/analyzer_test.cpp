@@ -71,3 +71,23 @@ TEST_CASE("analyzer: aliases, enums, function definitions and calls in impl/") {
   auto broken = an.analyze({"a/impl/y.cpp", "a", "impl", "", 0, false}, "#include \"z.hpp\"\nvoid g( { x(\n");
   CHECK(broken.refs.size() >= 1);
 }
+
+TEST_CASE("analyzer: methods of class template specializations (imported code)") {
+  code::CppAnalyzer an;
+  auto f = an.analyze({"src/GenericIO.h", "generic_io", "api", "", 0, false},
+                      "namespace detail {\n"
+                      "template<class T, class U, bool B> struct serialize_dispatch;\n"
+                      "template<class T>\n"
+                      "struct serialize_dispatch<T, std::false_type, true> {\n"
+                      "  static void serialize(int& out, const T& list) { out = list.size(); }\n"
+                      "  serialize_dispatch() {}\n"
+                      "};\n"
+                      "}\n");
+  const auto* cls = sym(f, "serialize_dispatch", "struct");
+  REQUIRE(cls != nullptr);
+  CHECK(cls->scope == "detail");
+  const auto* m = sym(f, "serialize", "method");
+  REQUIRE(m != nullptr);
+  CHECK(m->scope == "detail::serialize_dispatch");
+  CHECK(sym(f, "serialize_dispatch", "method") == nullptr);  // the constructor is not a method
+}
