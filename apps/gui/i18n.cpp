@@ -123,6 +123,7 @@ const std::unordered_map<std::string_view, const char*>& ru() {
       {"Click a part of the path to go there, or the empty space to type a path (Enter to go).",
        "Щёлкните часть пути, чтобы перейти туда, или пустое место, чтобы ввести путь (Enter — перейти)."},
       {"no block {}", "нет блока {}"},
+      {"groups opened in place: positions are not saved", "группы раскрыты на месте: позиции не сохраняются"},
       // empty schema
       {"No blocks on this level.", "На этом уровне нет блоков."},
       {"Right click → Add block, or the \"Add block\" button above.",

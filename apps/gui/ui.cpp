@@ -4,6 +4,8 @@
 #include <fmt/format.h>
 #include <imgui.h>
 #include <imgui_internal.h>
+
+#include <cfloat>
 #include <imgui_node_editor.h>
 
 #include <algorithm>
@@ -16,6 +18,7 @@
 #include "metrics.hpp"
 #include "kk/agents/edit.hpp"
 #include "kk/core/text.hpp"
+#include "kk/layout/layout.hpp"
 
 namespace ed = ax::NodeEditor;
 
@@ -135,6 +138,7 @@ void Ui::enter(const std::string& scope) {
   req_.scope = scope == "root" ? "" : scope;
   applied_layout_.clear();
   pinned_.clear();
+  req_.expanded.clear();
 }
 
 void Ui::select(const std::string& id) { req_.selected = id; }
@@ -425,6 +429,7 @@ void Ui::draw_toolbar(const Model& m) {
   ImGui::SameLine();
   std::string status = m.engine + " · " + fmt::format(fmt::runtime(tr("index {:.0f} ms")), m.index_ms);
   if (!m.message.empty()) status += " · " + m.message;
+  if (!m.nested.empty()) status += std::string(" · ") + tr("groups opened in place: positions are not saved");
   ImGui::TextDisabled("%s", status.c_str());
   if (!path_error_.empty()) {
     ImGui::SameLine();
@@ -490,6 +495,11 @@ void Ui::draw_graph(const Model& m) {
   }
   if (!hover_unit_.empty() && units.contains(hover_unit_)) focus.insert(hover_unit_);
   if (auto t = unit_of(tree_hover_); !t.empty()) focus.insert(t);
+  if (!hover_frame_.empty()) {
+    for (const auto& u : units) {
+      if (u.starts_with(hover_frame_ + ".")) focus.insert(u);
+    }
+  }
   std::set<std::string> lit_nodes = focus;
   auto lit_pair = [&](const std::string& a, const std::string& b) { return focus.contains(a) || focus.contains(b); };
   for (const auto& l : snap.links) {
@@ -507,18 +517,120 @@ void Ui::draw_graph(const Model& m) {
     relayout_ = false;
   }
   bool resize_done = false;
+  bool nested = !m.nested.empty();  // groups opened in place (temporary view, not saved)
+  if (apply_positions) {
+    for (const auto& n : m.graph.nodes) {
+      auto it = m.level.pos.find(n.id);
+      if (it == m.level.pos.end()) continue;
+      ed::SetNodePosition(hid("node:" + n.id), ImVec2(static_cast<float>(it->second.x), static_cast<float>(it->second.y)));
+      placed_[n.id] = {static_cast<float>(it->second.x), static_cast<float>(it->second.y)};
+    }
+    if (fit_on_apply_) {
+      navigate_ = 3;
+      fit_on_apply_ = false;
+    }
+  }
+  // Frames of opened groups: around the current rectangles of their blocks (so they follow
+  // when blocks are moved); the top edge is a path bar, a click on a part closes that group.
+  std::string header_hit;    // group to close if the mouse is pressed now
+  std::string header_frame;  // frame whose path bar is under the mouse
+  if (nested) {
+    constexpr float kPad = static_cast<float>(layout::kFramePad) - 2.0f;
+    constexpr float kHead = static_cast<float>(layout::kFrameTitle) - kPad;
+    std::vector<const layout::Box*> frames;
+    for (const auto& b : m.nested) {
+      if (b.group) frames.push_back(&b);
+    }
+    std::stable_sort(frames.begin(), frames.end(), [](const layout::Box* a, const layout::Box* b) { return a->depth > b->depth; });
+    std::map<std::string, ImRect> rects;
+    for (const auto* f : frames) {
+      ImRect r(ImVec2(FLT_MAX, FLT_MAX), ImVec2(-FLT_MAX, -FLT_MAX));
+      bool any = false;
+      for (const auto& n : m.graph.nodes) {
+        if (!n.id.starts_with(f->id + ".")) continue;
+        auto nid = hid("node:" + n.id);
+        ImVec2 pos = ed::GetNodePosition(nid);
+        ImVec2 size = ed::GetNodeSize(nid);
+        if (size.x <= 0) size = ImVec2(static_cast<float>(n.w), static_cast<float>(n.h));
+        r.Add(pos);
+        r.Add(ImVec2(pos.x + size.x, pos.y + size.y));
+        any = true;
+      }
+      for (const auto& [id, inner] : rects) {
+        if (id.starts_with(f->id + ".")) r.Add(inner);
+      }
+      if (!any) continue;
+      r.Min.x -= kPad;
+      r.Max.x += kPad;
+      r.Max.y += kPad;
+      r.Min.y -= kPad + kHead;
+      rects[f->id] = r;
+    }
+    auto* dl = ImGui::GetWindowDrawList();
+    ImVec2 mouse = ImGui::GetMousePos();  // canvas space inside the editor
+    auto inside = [&](ImVec2 a, ImVec2 b) { return mouse.x >= a.x && mouse.x < b.x && mouse.y >= a.y && mouse.y < b.y; };
+    for (auto it = frames.rbegin(); it != frames.rend(); ++it) {  // outer frames first
+      const auto* f = *it;
+      auto rit = rects.find(f->id);
+      if (rit == rects.end()) continue;
+      const ImRect& r = rit->second;
+      const auto* gb = snap.block(f->id);
+      ImVec4 c = status_color(gb != nullptr ? gb->status : "design");
+      bool lit = !dimming;
+      for (const auto& u : lit_nodes) lit = lit || u.starts_with(f->id + ".");
+      ImVec4 fill = c, edge = c, head = c;
+      fill.w = lit ? 0.10f : 0.03f;
+      edge.w = lit ? 0.85f : 0.25f;
+      head.w = lit ? 0.55f : 0.15f;
+      dl->AddRectFilled(r.Min, r.Max, ImGui::GetColorU32(fill), 8.0f);
+      dl->AddRect(r.Min, r.Max, ImGui::GetColorU32(edge), 8.0f, 0, 2.0f);
+      ImVec2 ha = r.Min;
+      ImVec2 hb(r.Max.x, r.Min.y + kHead);
+      dl->AddRectFilled(ha, hb, ImGui::GetColorU32(head), 8.0f, ImDrawFlags_RoundCornersTop);
+      if (inside(ha, hb) && hover_unit_.empty()) header_frame = f->id;
+      // Path from the current level: "group / subgroup"; each part closes its group.
+      std::string rel = scope.empty() ? f->id : f->id.substr(scope.size() + 1);
+      std::string acc = scope;
+      float x = ha.x + 8;
+      float ty = ha.y + (kHead - ImGui::GetFontSize()) * 0.5f;
+      ImU32 text_col = ImGui::GetColorU32(ImGuiCol_Text, lit ? 1.0f : 0.35f);
+      auto parts = core::split(rel, '.');
+      for (std::size_t i = 0; i < parts.size(); ++i) {
+        acc = acc.empty() ? parts[i] : acc + "." + parts[i];
+        ImVec2 ts = ImGui::CalcTextSize(parts[i].c_str());
+        ImVec2 sa(x - 3, ha.y + 2);
+        ImVec2 sb(x + ts.x + 3, hb.y - 2);
+        bool hot = inside(sa, sb) && hover_unit_.empty();
+        if (hot) {
+          dl->AddRectFilled(sa, sb, ImGui::GetColorU32(ImGuiCol_HeaderHovered), 4.0f);
+          header_hit = acc;
+        }
+        dl->AddText(ImVec2(x, ty), text_col, parts[i].c_str());
+        x += ts.x;
+        if (i + 1 < parts.size()) {
+          dl->AddText(ImVec2(x, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), " / ");
+          x += ImGui::CalcTextSize(" / ").x;
+        }
+      }
+      // "▲" on the right: close this group, back to the level above.
+      const char* up = "▲";
+      ImVec2 us = ImGui::CalcTextSize(up);
+      ImVec2 ua(hb.x - us.x - 12, ha.y + 2);
+      ImVec2 ub(hb.x - 4, hb.y - 2);
+      bool up_hot = inside(ua, ub) && hover_unit_.empty();
+      if (up_hot) {
+        dl->AddRectFilled(ua, ub, ImGui::GetColorU32(ImGuiCol_HeaderHovered), 4.0f);
+        header_hit = f->id;
+      }
+      dl->AddText(ImVec2(ua.x + 4, ty), text_col, up);
+    }
+    if (!header_hit.empty()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+  }
   for (const auto& n : m.graph.nodes) {
     const auto* b = snap.block(n.id);
     if (b == nullptr) continue;
     auto nid = hid("node:" + n.id);
     node_of[nid] = n.id;
-    if (apply_positions) {
-      auto it = m.level.pos.find(n.id);
-      if (it != m.level.pos.end()) {
-        ed::SetNodePosition(nid, ImVec2(static_cast<float>(it->second.x), static_cast<float>(it->second.y)));
-        placed_[n.id] = {static_cast<float>(it->second.x), static_cast<float>(it->second.y)};
-      }
-    }
     // Size of the block and the font scale that makes its text fit (text follows size).
     auto [w, h] = node_size(m, n.id);
     auto [bw, bh] = base_size(m, n.id);
@@ -649,6 +761,7 @@ void Ui::draw_graph(const Model& m) {
     // Resize grip in the bottom-right corner (min/max sizes, 14.6); same size on screen at any zoom.
     ImGui::PopStyleVar();
     ImGui::SetWindowFontScale(1.0f);
+    if (!nested) {
     float grip = std::min({kGrip / std::max(ed::GetCurrentZoom(), 0.05f), inner_w / 4, inner_h / 3});
     ImGui::SetCursorScreenPos(ImVec2(o.x + inner_w - grip, o.y + inner_h - grip));
     ImGui::InvisibleButton(("##grip" + n.id).c_str(), ImVec2(grip, grip));
@@ -677,6 +790,7 @@ void Ui::draw_graph(const Model& m) {
     for (int k = 1; k <= 3; ++k) {
       float d = grip * 0.27f * static_cast<float>(k);
       dl->AddLine(ImVec2(c.x - d, c.y), ImVec2(c.x, c.y - d), gc, 1.2f * grip / kGrip);
+    }
     }
     ImGui::PopStyleColor(2);
     ed::EndNode();
@@ -897,7 +1011,10 @@ void Ui::draw_graph(const Model& m) {
   } else if (auto hp = ed::GetHoveredPin(); hp && pin_of.contains(hp.Get())) {
     hovered_now = core::split(pin_of[hp.Get()], ':', false).front();
   }
-  if (ed::IsBackgroundClicked() && !shift) pinned_.clear();
+  if (ed::IsBackgroundClicked() && !shift && header_hit.empty()) pinned_.clear();
+  std::string collapse_now;
+  if (!header_hit.empty() && ImGui::IsMouseClicked(0) && !shift) collapse_now = header_hit;
+  hover_frame_ = header_frame;
   ed::End();
   ed::SetCurrentEditor(nullptr);
   // Shift+click keeps a block's links lit (again: off); Shift+double-click opens a group in place.
@@ -908,9 +1025,24 @@ void Ui::draw_graph(const Model& m) {
   }
   if (ImGui::IsKeyPressed(ImGuiKey_Escape) && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) pinned_.clear();
   hover_unit_ = hovered_now;
+  // Open a group in place with everything inside it; close a frame (and what is inside).
+  if (const auto* g = expand_now.empty() ? nullptr : snap.block(expand_now); g != nullptr && g->kind == "group" && !g->children.empty()) {
+    std::set<std::string> open(req_.expanded.begin(), req_.expanded.end());
+    open.insert(g->id);
+    for (const auto& b : snap.blocks) {
+      if (b.kind == "group" && b.id.starts_with(g->id + ".")) open.insert(b.id);
+    }
+    req_.expanded.assign(open.begin(), open.end());
+    pinned_.erase(g->id);
+    fit_on_apply_ = true;
+  }
+  if (!collapse_now.empty()) {
+    std::erase_if(req_.expanded, [&](const std::string& id) { return id == collapse_now || id.starts_with(collapse_now + "."); });
+    fit_on_apply_ = true;
+  }
   // Manual moves and sizes are saved and win over the automatic layout (14.2).
   bool moved = false;
-  if (ImGui::IsMouseReleased(0) && !node_of.empty() && resizing_.empty()) {
+  if (ImGui::IsMouseReleased(0) && !node_of.empty() && resizing_.empty() && !nested) {
     ed::SetCurrentEditor(ed_);
     for (const auto& [nid2, id] : node_of) {
       auto p = ed::GetNodePosition(nid2);

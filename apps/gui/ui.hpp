@@ -75,6 +75,8 @@ class Ui {
   std::set<std::string> pinned_;  // blocks whose links stay lit
   std::string hover_unit_;        // block under the mouse on the schema (last frame)
   std::string tree_hover_;        // block under the mouse in the tree (this frame)
+  std::string hover_frame_;       // opened group whose path bar is under the mouse
+  bool fit_on_apply_ = false;     // fit the view when the next layout arrives (open/close)
   // block resizing
   std::string resizing_;
   std::pair<float, float> resize_start_{0, 0};

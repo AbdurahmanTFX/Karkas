@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 
+#include <map>
+
 #include "kk/layout/layout.hpp"
 #include "kk/test/support.hpp"
 
@@ -87,4 +89,39 @@ TEST_CASE("layout: all levels nests children inside their groups (14.3)") {
   CHECK(ring.y >= stream.y);
   CHECK(ring.x + ring.w <= stream.x + stream.w);
   CHECK(ring.y + ring.h <= stream.y + stream.h);
+}
+
+TEST_CASE("layout: one group opened in place, the others stay closed") {
+  test::FixtureCopy p("wavkit");
+  auto idx = index::Index::open(p.path());
+  REQUIRE(idx);
+  REQUIRE((*idx)->update());
+  layout::SugiyamaEngine eng;
+  auto boxes = layout::layout_nested((*idx)->snapshot(), "", [](const std::string& id) { return id == "stream"; }, false,
+                                     fixed(), eng);
+  std::map<std::string, layout::Box> by;
+  for (const auto& b : boxes) by[b.id] = b;
+  REQUIRE(by.contains("stream"));
+  CHECK(by["stream"].group);  // a frame
+  REQUIRE(by.contains("stream.ring"));
+  CHECK_FALSE(by["dsp"].group);  // closed: one box, no children
+  CHECK_FALSE(by.contains("dsp.chain"));
+  const auto& s = by["stream"];
+  const auto& r = by["stream.ring"];
+  CHECK(r.x >= s.x + layout::kFramePad - 0.5);
+  CHECK(r.y >= s.y + layout::kFrameTitle - 0.5);
+  CHECK(r.x + r.w <= s.x + s.w + 0.5);
+  CHECK(r.y + r.h <= s.y + s.h + 0.5);
+  // Top-level boxes do not overlap.
+  std::vector<layout::Box> top;
+  for (const auto& b : boxes) {
+    if (b.depth == 0) top.push_back(b);
+  }
+  for (std::size_t i = 0; i < top.size(); ++i) {
+    for (std::size_t j = i + 1; j < top.size(); ++j) {
+      bool apart = top[i].x + top[i].w <= top[j].x || top[j].x + top[j].w <= top[i].x || top[i].y + top[i].h <= top[j].y ||
+                   top[j].y + top[j].h <= top[i].y;
+      CHECK_MESSAGE(apart, top[i].id << " overlaps " << top[j].id);
+    }
+  }
 }

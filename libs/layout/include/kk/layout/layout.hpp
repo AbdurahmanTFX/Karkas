@@ -79,6 +79,17 @@ struct Box {
 };
 std::vector<Box> layout_all_levels(const index::Snapshot& snap, bool show_use, const Measure& measure, ILayoutEngine& engine);
 
+// Children of `scope`, where the groups `expand` says yes to are opened in place: their
+// children (recursively, by the same rule) are laid out inside them and the opened group
+// becomes a frame (Box::group = true); other blocks stay single boxes. Boxes are absolute
+// in the level's coordinates, frames before their contents. Frame padding: kFramePad on the
+// sides and the bottom, kFrameTitle above the contents.
+inline constexpr double kFramePad = 14;
+inline constexpr double kFrameTitle = 34;
+std::vector<Box> layout_nested(const index::Snapshot& snap, const std::string& scope,
+                               const std::function<bool(const std::string&)>& expand, bool show_use,
+                               const Measure& measure, ILayoutEngine& engine);
+
 // Cache (.karkas/cache/layout/<hash>.json) and manual positions (.karkas/layout/<view>.json).
 class LayoutStore {
  public:

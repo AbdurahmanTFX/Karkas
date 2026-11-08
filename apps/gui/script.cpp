@@ -45,6 +45,10 @@ std::optional<InputScript> InputScript::parse(std::string_view text, std::string
         f.emplace_back([=](ImGuiIO& io) { io.AddMousePosEvent(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t); });
       }
       f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(0, false); });
+    } else if (cmd == "wheel" && w.size() == 4) {
+      float x = num(w[1]), y = num(w[2]), d = num(w[3]);
+      f.emplace_back([x, y](ImGuiIO& io) { io.AddMousePosEvent(x, y); });
+      f.emplace_back([d](ImGuiIO& io) { io.AddMouseWheelEvent(0, d); });
     } else if (cmd == "wait" && w.size() == 2) {
       for (int i = 0; i < std::atoi(w[1].c_str()); ++i) f.emplace_back([](ImGuiIO&) {});
     } else if (cmd == "key" && w.size() == 2 && (w[1] == "esc" || w[1] == "enter")) {

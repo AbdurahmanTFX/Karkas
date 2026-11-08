@@ -84,9 +84,9 @@ Graph level_graph(const index::Snapshot& snap, const std::string& scope_in, bool
   return g;
 }
 
-std::vector<Box> layout_all_levels(const index::Snapshot& snap, bool show_use, const Measure& measure, ILayoutEngine& engine) {
-  constexpr double kPad = 14;
-  constexpr double kTitle = 30;
+std::vector<Box> layout_nested(const index::Snapshot& snap, const std::string& scope_in,
+                               const std::function<bool(const std::string&)>& expand, bool show_use,
+                               const Measure& measure, ILayoutEngine& engine) {
   std::function<std::pair<std::pair<double, double>, std::vector<Box>>(const std::string&, int)> rec;
   rec = [&](const std::string& scope, int depth) -> std::pair<std::pair<double, double>, std::vector<Box>> {
     Graph g;
@@ -94,9 +94,9 @@ std::vector<Box> layout_all_levels(const index::Snapshot& snap, bool show_use, c
     std::map<std::string, std::vector<Box>> inner;
     for (const auto& id : visible(snap, scope, show_use)) {
       const auto* b = snap.block(id);
-      if (b->kind == "group" && !snap.children_of(id).empty()) {
+      if (b->kind == "group" && !snap.children_of(id).empty() && expand(id)) {
         auto [size, boxes] = rec(id, depth + 1);
-        g.nodes.push_back({id, size.first + 2 * kPad, size.second + kTitle + kPad});
+        g.nodes.push_back({id, size.first + 2 * kFramePad, size.second + kFrameTitle + kFramePad});
         inner[id] = std::move(boxes);
       } else {
         auto [w, h] = measure(*b);
@@ -110,17 +110,21 @@ std::vector<Box> layout_all_levels(const index::Snapshot& snap, bool show_use, c
     std::vector<Box> out;
     for (const auto& n : g.nodes) {
       auto p = l->pos[n.id];
-      const auto* b = snap.block(n.id);
-      out.push_back({n.id, p.x, p.y, n.w, n.h, depth, b != nullptr && b->kind == "group"});
+      bool frame = inner.contains(n.id);
+      out.push_back({n.id, p.x, p.y, n.w, n.h, depth, frame});
       for (auto bx : inner[n.id]) {
-        bx.x += p.x + kPad;
-        bx.y += p.y + kTitle;
+        bx.x += p.x + kFramePad;
+        bx.y += p.y + kFrameTitle;
         out.push_back(bx);
       }
     }
     return {{l->width, l->height}, out};
   };
-  return rec("", 0).second;
+  return rec(scope_in == "root" ? "" : scope_in, 0).second;
+}
+
+std::vector<Box> layout_all_levels(const index::Snapshot& snap, bool show_use, const Measure& measure, ILayoutEngine& engine) {
+  return layout_nested(snap, "", [](const std::string&) { return true; }, show_use, measure, engine);
 }
 
 std::optional<Layout> LayoutStore::cached(const std::string& hash) const {

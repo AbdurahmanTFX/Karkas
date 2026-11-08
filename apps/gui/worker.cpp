@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <set>
 
 #include "kk/agents/changes.hpp"
 #include "kk/agents/engine.hpp"
@@ -252,6 +253,23 @@ void Worker::loop() {
       }
       m->level = store.get(view, m->graph, *engine);
       m->layout_key = view + "|" + layout::graph_hash(m->graph) + (req.show_use ? "|use" : "");
+      if (!req.expanded.empty() && !req.all_levels) {
+        // Groups opened in place (Shift+double-click): a nested layout of this level; the
+        // visible blocks are its non-frame boxes. Not saved: a temporary view.
+        std::set<std::string> open(req.expanded.begin(), req.expanded.end());
+        m->nested = layout::layout_nested(*snap, req.scope, [&](const std::string& id) { return open.contains(id); },
+                                          req.show_use, measure, *engine);
+        m->graph.nodes.clear();
+        m->graph.edges.clear();
+        m->level.pos.clear();
+        for (const auto& b : m->nested) {
+          if (b.group) continue;
+          m->graph.nodes.push_back({b.id, b.w, b.h});
+          m->level.pos[b.id] = layout::Pos{b.x, b.y};
+        }
+        m->layout_key = view + "|open:" + core::join(req.expanded, ",") + "|" + layout::graph_hash(m->graph) +
+                        (req.show_use ? "|use" : "");
+      }
       if (req.all_levels) m->boxes = layout::layout_all_levels(*snap, req.show_use, measure, *engine);
       m->runs = idx->runs();
       if (!req.selected.empty()) {

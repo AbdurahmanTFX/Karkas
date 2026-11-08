@@ -35,6 +35,7 @@ struct Request {
   float char_w = 7.0f;
   float line_h = 17.0f;
   float block_scale = 1.0f;  // default size of blocks (settings)
+  std::vector<std::string> expanded;  // groups of this level opened in place (sorted)
   bool operator==(const Request&) const = default;
 };
 
@@ -44,6 +45,7 @@ struct Model {
   layout::Graph graph;
   layout::Layout level;
   std::map<std::string, layout::Pos> manual;  // saved positions and sizes of this view
+  std::vector<layout::Box> nested;            // groups opened in place: frames and their contents
   std::string layout_key;  // changes when positions must be re-applied
   std::vector<layout::Box> boxes;
   std::vector<index::RunRow> runs;
