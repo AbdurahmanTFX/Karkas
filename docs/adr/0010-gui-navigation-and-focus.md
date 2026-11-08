@@ -23,3 +23,20 @@ Additions to section 14 on request; one deviation.
 - Projects: "Open project…" (Ctrl+O, a folder browser that marks folders with project.ksl,
   recent projects in ~/.config/karkas/gui.json); started outside a project, karkas-gui opens
   with it. "Show project folder" / "Open folder" of a block use xdg-open.
+
+## Addendum — IDE layout and look
+
+- Block backgrounds take the block's own color (title band and a tinted body); the status
+  of 14.5 is a colored dot on the block, and problems (failing, drift, needs_review, an
+  agent at work) are shown on the border. The colors of 14.5 for backgrounds remain as the
+  setting "Block colors: by status". Second deviation from 14.5, same reason as for links.
+- "All levels" (14.3) is drawn as every group opened in place (frames in the node editor)
+  instead of a separate picture of nested boxes, so zoom, colors, focus and links with
+  ports work there too.
+- Layout after VSCode and Godot: activity bar, side bar views (explorer, search, schema
+  changes, settings), editor tabs (schema and code files), inspector, bottom panel, status
+  bar. The panels of 14.4 are all there; "Changes" moved from the bottom tabs to the side
+  bar (like source control in an IDE).
+- No new dependencies: icons are signed distance fields drawn in code and rasterized into
+  the ImGui font atlas; fonts are taken from the system at run time (Noto Sans, JetBrains
+  Mono; DejaVu as fallback).

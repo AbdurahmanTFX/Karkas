@@ -179,6 +179,17 @@
 - Headless checks: --script with move/click/dclick (shift)/drag/wheel/type/key; verified by
   screenshots on a 4.5k-line imported game and wavkit.
 
+## GUI addition — IDE layout and look (docs/adr/0010, addendum)
+- Dark IDE theme, UI/heading/monospace fonts, ~35 vector icons rasterized into the font atlas.
+- Activity bar + side bar (explorer with icons, status dots, filter, context menu; search over
+  blocks, purposes and ports; schema changes with a colored diff and approve/reject; settings),
+  editor tabs (schema with an icon toolbar; code files, read-only, monospace), inspector with a
+  colored KSL card and a project overview, bottom panel with icon tabs and counts, status bar
+  (drift counts, working agents, highlight, language switch).
+- Blocks in their own colors (title band, tinted body, status dot, problems on the border);
+  links start in the block's color; "All levels" uses the opened-in-place view (wheel zoom
+  everywhere). Checked by screenshots in both languages.
+
 ## Stage 10 — benchmarks (harness)
 - bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
   (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip
