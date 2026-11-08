@@ -6,11 +6,13 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <regex>
 #include <set>
 
 #include "kk/code/gen.hpp"
 #include "kk/core/text.hpp"
 #include "kk/index/index.hpp"
+#include "kk/runner/runner.hpp"
 
 namespace kk::agents {
 
@@ -51,19 +53,53 @@ std::string TestService::doctest_include() {
 #endif
 }
 
+namespace {
+
+// Output of a project's own test command for a model: failure and summary lines, colours removed.
+std::string compress_test_output(const std::string& output) {
+  static const std::regex ansi("\x1b\\[[0-9;]*m");
+  static const std::regex interesting(R"((fail|error|assert|passed|abort|expected|test cases?|tests? ok))", std::regex::icase);
+  std::vector<std::string> keep;
+  std::vector<std::string> all;
+  for (const auto& raw : core::split(std::regex_replace(output, ansi, ""), '\n')) {
+    auto t = std::string(core::trim(raw));
+    if (t.empty()) continue;
+    all.push_back(t);
+    if (std::regex_search(t, interesting)) keep.push_back(t);
+  }
+  std::string out;
+  const std::size_t max = 30;
+  for (std::size_t i = 0; i < keep.size() && i < max; ++i) out += keep[i] + "\n";
+  if (keep.size() > max) out += fmt::format("... {} more lines\n", keep.size() - max);
+  // The last lines usually hold the verdict.
+  for (std::size_t i = all.size() > 3 ? all.size() - 3 : 0; i < all.size(); ++i) {
+    if (std::find(keep.begin(), keep.end(), all[i]) == keep.end()) out += all[i] + "\n";
+  }
+  return out;
+}
+
+}  // namespace
+
 kk::Result<TestRun> TestService::build_and_test(const std::vector<std::string>& blocks, bool build_only) {
   std::lock_guard lk(g_build_mu);
   FileLock lock(root_ / ".karkas" / "build.lock");
   TestRun out;
   auto schema = core::load_schema(root_);
   if (!schema) return std::unexpected(schema.error());
-  if (auto g = code::write_cmake(*schema); !g) return std::unexpected(g.error());
+  // An imported project keeps its own CMakeLists.txt: build it as it is (ADR 0016).
+  const bool own = code::has_own_cmake(root_);
+  if (!own) {
+    if (auto g = code::write_cmake(*schema); !g) return std::unexpected(g.error());
+  }
   auto build_dir = root_ / cfg_.build_dir;
   runner::BuildOptions bo;
   bo.source = root_;
   bo.build_dir = build_dir;
   bo.doctest_include = doctest_include();
   bo.timeout = std::chrono::seconds(cfg_.build_timeout_s);
+  for (const auto& a : core::split(cfg_.cmake_args, ' ')) {
+    if (!core::trim(a).empty()) bo.cmake_args.emplace_back(core::trim(a));
+  }
   auto b = runner::build(bo);
   if (!b) return std::unexpected(b.error());
   out.build_ok = b->ok;
@@ -91,6 +127,29 @@ kk::Result<TestRun> TestService::build_and_test(const std::vector<std::string>& 
   if (build_only) {
     out.ok = true;
     out.text = "build ok\n";
+    return out;
+  }
+  if (own) {
+    // The project's own tests run as a whole: [test] command, or ctest.
+    runner::RunOptions ro;
+    const std::string what = cfg_.test_command.empty() ? "ctest" : cfg_.test_command;
+    ro.argv = cfg_.test_command.empty()
+                  ? std::vector<std::string>{"ctest", "--test-dir", build_dir.string(), "--output-on-failure"}
+                  : std::vector<std::string>{"sh", "-c", cfg_.test_command};
+    ro.cwd = root_;
+    ro.timeout = std::chrono::seconds(cfg_.test_timeout_s);
+    auto r = runner::run(ro);
+    if (!r) return std::unexpected(r.error());
+    if (cfg_.test_command.empty() && core::contains(r->output, "No tests were found")) {
+      out.ok = true;
+      out.text = "build ok; ctest found no tests: set [test] command in karkas.toml to the command that runs this "
+                 "project's tests\n";
+      return out;
+    }
+    out.ok = r->ok();
+    std::string verdict = out.ok ? "ok" : r->timed_out ? "timed out" : fmt::format("FAILED (exit {})", r->exit_code);
+    out.text = fmt::format("build ok; tests ({}): {}\n", what, verdict) + compress_test_output(r->output);
+    if (!blocks.empty()) out.text += "(the project's own tests run as a whole, not per block)\n";
     return out;
   }
   runner::TestOptions to;

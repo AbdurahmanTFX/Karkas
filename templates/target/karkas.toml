@@ -3,6 +3,12 @@
 lang      = "cpp"
 build     = "cmake-ninja"
 build_dir = "build"
+# cmake_args = "-DBUILD_TESTS=ON"   # extra arguments of the CMake configure step
+
+# A project with its own CMakeLists.txt (imported code): the command that runs its tests after
+# the build, from the project root. Without it kk_run_tests / karkas test run ctest.
+# [test]
+# command = "build/tests/run_all"
 
 [models.strong]
 provider = "anthropic"

@@ -306,3 +306,14 @@ TEST_CASE("engine: approving the api confirms blocks marked needs_review, also t
   CHECK_FALSE(st->review.contains("app"));
   CHECK_FALSE(st->review.contains("stream.pump"));
 }
+
+TEST_CASE("engine: approve api in a project with its own CMakeLists.txt freezes and generates no build (ADR 0016)") {
+  Rig rig;
+  const std::string own = "cmake_minimum_required(VERSION 3.20)\nproject(wavkit CXX)\n# the project's own build\n";
+  test::write(rig.p / "CMakeLists.txt", own);
+  auto r = rig.engine->approve("api");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  CHECK(core::contains(*r, "api frozen for"));
+  CHECK(core::contains(*r, "own CMakeLists.txt"));
+  CHECK(test::read(rig.p / "CMakeLists.txt") == own);
+}

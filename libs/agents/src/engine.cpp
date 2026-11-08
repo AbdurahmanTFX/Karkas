@@ -728,6 +728,18 @@ kk::Result<std::string> Engine::approve(const std::string& what, const std::stri
       ++n;
     }
     out += fmt::format("api frozen for {} blocks\n", n);
+    if (code::has_own_cmake(root_)) {
+      // An imported project keeps its own build: skeletons and mocks of native leaves only, no
+      // probe and no CMakeLists.txt (ADR 0016).
+      auto s2 = m.schema();
+      if (!s2) return std::unexpected(s2.error());
+      (void)code::write_skel(*s2, "all");
+      (void)code::write_mocks(*s2, "all");
+      m.reindex();
+      out += "the project has its own CMakeLists.txt: Karkas does not generate it (add new source files to it yourself)\n"
+             "next: contract tests in the project's test suite, then the code of one leaf at a time\n";
+      return out;
+    }
     // 13.1 step 7: deterministic generation.
     auto s2 = m.schema();
     if (!s2) return std::unexpected(s2.error());

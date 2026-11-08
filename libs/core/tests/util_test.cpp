@@ -57,6 +57,9 @@ TEST_CASE("config: appendix E example parses") {
   auto r = apply_config_text(cfg, R"([project]
 lang      = "cpp"
 build_dir = "out"
+cmake_args = "-DBUILD_TESTS=ON -DX=1"
+[test]
+command = "build/test/blobbytest"
 [models.strong]
 provider = "anthropic"
 model    = "claude-opus-5-5"
@@ -81,6 +84,8 @@ editor_command = "kitty -e nvim +{line} {file}"
                              "karkas.toml");
   REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
   CHECK(cfg.build_dir == "out");
+  CHECK(cfg.cmake_args == "-DBUILD_TESTS=ON -DX=1");
+  CHECK(cfg.test_command == "build/test/blobbytest");
   CHECK(cfg.tier("strong")->model == "claude-opus-5-5");
   CHECK(cfg.tier("local")->provider == "openai_compat");
   CHECK(cfg.cheap_max == 2);

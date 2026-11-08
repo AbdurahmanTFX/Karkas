@@ -189,6 +189,11 @@ CmakeHashes cmake_hashes(std::string_view text) {
   return h;
 }
 
+bool has_own_cmake(const fs::path& root) {
+  auto text = core::read_file(root / "CMakeLists.txt");
+  return text && !cmake_hashes(*text).generated;
+}
+
 kk::Result<GenResult> write_cmake(const core::Schema& s) {
   GenResult g;
   auto p = s.root / "CMakeLists.txt";

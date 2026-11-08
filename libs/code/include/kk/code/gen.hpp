@@ -30,6 +30,10 @@ struct GenResult {
   std::vector<std::string> removed;    // generated files that are no longer needed
 };
 
+// True when the project has a CMakeLists.txt that Karkas did not generate (imported code): Karkas
+// then builds it as it is and never writes it (ADR 0016).
+bool has_own_cmake(const std::filesystem::path& root);
+
 // Writes CMakeLists.txt (and cmake/user.cmake when missing).
 kk::Result<GenResult> write_cmake(const core::Schema& schema);
 // Mocks of the neighbors of `block` ("" or "all" = every leaf) into <leaf>/mocks/.

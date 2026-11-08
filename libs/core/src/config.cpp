@@ -84,6 +84,8 @@ VoidResult apply_config_text(Config& cfg, std::string_view text, std::string_vie
   get(t, "project", "lang", cfg.lang);
   get(t, "project", "build", cfg.build);
   get(t, "project", "build_dir", cfg.build_dir);
+  get(t, "project", "cmake_args", cfg.cmake_args);
+  get(t, "test", "command", cfg.test_command);
 
   if (const auto* models = t.get_as<toml::table>("models")) {
     for (const auto& [name, node] : *models) {
