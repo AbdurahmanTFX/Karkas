@@ -39,6 +39,26 @@ TEST_CASE("metrics: unpriced cloud model is an error, local models are free") {
   CHECK(*l == 0.0);
 }
 
+TEST_CASE("metrics: cost report recomputes money from current prices") {
+  index::RunRow r;
+  r.ticket = "T-1";
+  r.role = "worker";
+  r.block = "stream.ring";
+  r.provider = "openai_compat";
+  r.model = "deepseek-v4-pro";
+  r.input_tokens = 26937;
+  r.output_tokens = 15576;
+  r.cache_read_tokens = 164352;
+  r.cost_usd = 0.0;  // stored before the model had a price
+  core::Config c;
+  c.prices["deepseek-v4-pro"] = {0.66, 1.98, 0.022, 0, 0};
+  auto rep = metrics::cost_report(c, {r}, "model");
+  REQUIRE(rep);
+  CHECK(core::contains(*rep, "deepseek-v4-pro"));
+  // (26937*0.66 + 164352*0.022 + 15576*1.98) / 1e6 = 0.0522, not the stored 0.
+  CHECK(core::contains(*rep, "0.0522"));
+}
+
 TEST_CASE("metrics: journal lines, active marker, runs row, report") {
   test::FixtureCopy p("wavkit");
   auto idx = index::Index::open(p.path());
@@ -71,6 +91,23 @@ TEST_CASE("metrics: journal lines, active marker, runs row, report") {
   core::Config empty;
   CHECK_FALSE(metrics::cost_report(empty, runs, "role"));
   CHECK_FALSE(metrics::cost_report(priced(), runs, "colour"));
+}
+
+TEST_CASE("metrics: a marker whose owner process is gone is dropped") {
+  test::FixtureCopy p("wavkit");
+  auto idx = index::Index::open(p.path());
+  REQUIRE(idx);
+  REQUIRE((*idx)->update());
+  auto j = metrics::RunJournal::open(p.path(), {"T-0001", "worker", "stream.ring", "anthropic", "claude-haiku-5-5", "cheap", 1});
+  REQUIRE(j);
+  CHECK(metrics::active_runs(p.path()).size() == 1);
+  // Simulate a killed run: overwrite the marker's pid with one that does not exist.
+  auto marker = j->path().parent_path() / "active" / (j->path().stem().string() + ".json");
+  auto text = test::read(marker);
+  REQUIRE(core::contains(text, "\"pid\""));
+  auto dead = text.substr(0, text.rfind("\"pid\"")) + "\"pid\": 2147483647}";
+  test::write(marker, dead);
+  CHECK(metrics::active_runs(p.path()).empty());
 }
 
 TEST_CASE("metrics: --since parsing") {

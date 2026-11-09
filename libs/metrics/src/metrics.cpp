@@ -2,6 +2,10 @@
 
 #include <fmt/format.h>
 
+#include <unistd.h>
+
+#include <csignal>
+
 #include <chrono>
 #include <ctime>
 #include <map>
@@ -86,7 +90,7 @@ kk::Result<RunJournal> RunJournal::open(const fs::path& project_root, RunInfo in
   j.info_ = std::move(info);
   json start = {{"type", "run_start"}, {"ticket", j.info_.ticket}, {"role", j.info_.role},  {"block", j.info_.block},
                 {"provider", j.info_.provider}, {"model", j.info_.model}, {"tier", j.info_.tier},
-                {"attempt", j.info_.attempt}, {"ts", core::unix_now()}};
+                {"attempt", j.info_.attempt}, {"ts", core::unix_now()}, {"pid", ::getpid()}};
   if (auto r = core::append_file(j.path_, start.dump() + "\n"); !r) return std::unexpected(r.error());
   json marker = start;
   marker["journal"] = j.path_.filename().string();
@@ -159,6 +163,14 @@ std::vector<ActiveRun> active_runs(const fs::path& project_root) {
     if (!text) continue;
     try {
       auto j = json::parse(*text);
+      // A marker whose owner process is gone is stale: the run was killed and its
+      // destructor never removed the marker. Drop it so the GUI does not show a
+      // phantom "agent working".
+      int pid = j.value("pid", 0);
+      if (pid > 0 && ::kill(pid, 0) != 0 && errno == ESRCH) {
+        fs::remove(e.path(), ec);
+        continue;
+      }
       out.push_back(ActiveRun{j.value("role", ""), j.value("block", ""), j.value("model", ""), j.value("ticket", ""),
                               j.value("ts", std::int64_t{0}), e.path().parent_path().parent_path() / j.value("journal", "")});
     } catch (const json::exception&) {
@@ -198,14 +210,14 @@ kk::Result<std::string> cost_report(const core::Config& cfg, const std::vector<i
     int runs = 0;
     std::int64_t in = 0, out = 0, cw = 0, cr = 0, ms = 0;
     double usd = 0;
-    void add(const index::RunRow& r) {
+    void add(const index::RunRow& r, double cost) {
       ++runs;
       in += r.input_tokens;
       out += r.output_tokens;
       cw += r.cache_write_tokens;
       cr += r.cache_read_tokens;
       ms += r.duration_ms;
-      usd += r.cost_usd;
+      usd += cost;
     }
   };
   std::map<std::string, Agg> groups;
@@ -219,8 +231,13 @@ kk::Result<std::string> cost_report(const core::Config& cfg, const std::vector<i
     else if (by.empty() || by == "total") key = "";
     else return kk::fail("args", fmt::format("--by expects block|role|model|ticket, got '{}'", by));
     if (key.empty() && !by.empty() && by != "total") key = "-";
-    if (!key.empty()) groups[key].add(r);
-    total.add(r);
+    // Money from the current [prices], not the value stored when the run finished:
+    // prices can be filled in later (16.2), and a report must reflect them.
+    double cost = 0;
+    auto c = cost_usd(cfg, r.provider, r.model, Tokens{r.input_tokens, r.output_tokens, r.cache_write_tokens, 0, r.cache_read_tokens});
+    if (c) cost = *c;
+    if (!key.empty()) groups[key].add(r, cost);
+    total.add(r, cost);
   }
   auto share = [](const Agg& a) {
     double denom = static_cast<double>(a.in + a.cw + a.cr);
