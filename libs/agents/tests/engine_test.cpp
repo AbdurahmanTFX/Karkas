@@ -3,9 +3,11 @@
 #include "kk/agents/changes.hpp"
 #include "kk/agents/engine.hpp"
 #include "kk/code/import.hpp"
+#include "kk/core/cancel.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/tickets.hpp"
 #include "kk/index/state.hpp"
+#include "kk/metrics/metrics.hpp"
 #include "kk/test/support.hpp"
 #include "scripted.hpp"
 
@@ -316,4 +318,49 @@ TEST_CASE("engine: approve api in a project with its own CMakeLists.txt freezes 
   CHECK(core::contains(*r, "api frozen for"));
   CHECK(core::contains(*r, "own CMakeLists.txt"));
   CHECK(test::read(rig.p / "CMakeLists.txt") == own);
+}
+
+TEST_CASE("engine: a worker stopped by the user ends the descent; the ticket stays open, nothing escalates (ADR 0019)") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream", "M", "frames dropped"));
+  rig.model.tool("dispatch", dispatch("stream.ring", "M", "ring drops"));
+  // While the worker reads a file, the user presses "Stop" on it in the GUI.
+  rig.model.then([&](const llm::Request&) {
+    for (const auto& a : metrics::active_runs(rig.p.path())) {
+      if (a.role == "worker") REQUIRE(metrics::request_stop(rig.p.path(), a.journal));
+    }
+    return test::tool_response("read_file", {{"path", "impl/ring.cpp"}});
+  });
+  for (int i = 0; i < 6; ++i) rig.model.tool("report", {{"status", "fixed"}, {"cause", "never reached"}});
+  auto r = rig.engine->debug("crackle", {});
+  REQUIRE_FALSE(r);
+  CHECK(r.error().code == "cancelled");
+  CHECK(core::contains(r.error().message, "karkas ticket run T-0001"));
+  CHECK(rig.model.calls.size() == 3);  // no second attempt, no stronger tier
+  auto t = rig.ticket_text("T-0001");
+  CHECK(core::contains(t, "status  open"));
+  CHECK(core::contains(t, "at=stream.ring model=medium attempt=1 outcome=cancelled"));
+  CHECK(core::contains(t, "stopped by the user at stream.ring (worker)"));
+  CHECK(metrics::active_runs(rig.p.path()).empty());
+  bool journal_says_cancelled = false;
+  for (const auto& run : rig.engine->index().runs()) journal_says_cancelled |= run.role == "worker" && run.outcome == "cancelled";
+  CHECK(journal_says_cancelled);
+}
+
+TEST_CASE("engine: SIGINT of the command stops the navigator and the descent (ADR 0019)") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream", "M", "frames dropped"));
+  rig.model.then([&](const llm::Request&) {
+    core::request_cancel();  // what the CLI's signal handler does
+    return test::tool_response("view", {{"block", "stream"}});
+  });
+  rig.model.tool("dispatch", dispatch("stream.ring", "M", "never reached"));
+  auto r = rig.engine->debug("crackle", {});
+  core::reset_cancel();
+  REQUIRE_FALSE(r);
+  CHECK(r.error().code == "cancelled");
+  CHECK(rig.model.calls.size() == 2);
+  auto t = rig.ticket_text("T-0001");
+  CHECK(core::contains(t, "status  open"));
+  CHECK(core::contains(t, "stopped by the user at stream (navigator)"));
 }

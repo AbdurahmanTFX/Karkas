@@ -3,6 +3,7 @@
 #include "kk/agents/loop.hpp"
 #include "kk/agents/tools.hpp"
 #include "kk/core/text.hpp"
+#include "kk/metrics/metrics.hpp"
 #include "kk/test/support.hpp"
 #include "scripted.hpp"
 
@@ -134,4 +135,27 @@ TEST_CASE("loop: a cloud model without a price never runs") {
   CHECK(r.outcome == "error");
   CHECK(core::contains(r.error, "no price"));
   CHECK(m.calls.empty());
+}
+
+TEST_CASE("loop: a stop request ends the run with outcome cancelled (ADR 0019)") {
+  test::TempDir d{"loop"};
+  auto cfg = test::test_config();
+  test::ScriptedModel m;
+  m.then([&](const llm::Request&) {
+    auto act = metrics::active_runs(d.path());
+    REQUIRE(act.size() == 1);
+    REQUIRE(metrics::request_stop(d.path(), act[0].journal));
+    return test::tool_response("read_file", {{"path", "x"}});
+  });
+  m.tool("report", {{"status", "fixed"}});
+  agents::AgentRunner runner(d.path(), cfg, m.factory(), nullptr);
+  Host host;
+  auto r = runner.run(spec(), host);
+  CHECK(r.outcome == "cancelled");
+  CHECK(r.steps == 1);
+  CHECK(host.calls == 1);  // the tool of the step already answered still ran
+  auto j = test::read(d / ".karkas/runs" / r.journal);
+  CHECK(core::contains(j, "\"kind\":\"cancelled\""));
+  CHECK(core::contains(j, "\"outcome\":\"cancelled\""));
+  CHECK(metrics::active_runs(d.path()).empty());
 }

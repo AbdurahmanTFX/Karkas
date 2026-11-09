@@ -42,6 +42,8 @@ struct ActiveRun {
   std::string role, block, model, ticket;
   std::int64_t started = 0;
   fs::path journal;
+  int pid = 0;            // process running the agent (0: an old marker without it)
+  bool stopping = false;  // a stop was requested and the agent has not ended yet
 };
 
 // One file per agent run: .karkas/runs/<time>-<role>-<block>.jsonl (9.4). While the
@@ -60,16 +62,23 @@ class RunJournal {
   kk::Result<index::RunRow> finish(const Tokens& t, double cost, std::int64_t duration_ms, int steps,
                                    std::string_view outcome, index::Index* idx = nullptr);
   [[nodiscard]] const fs::path& path() const { return path_; }
+  // The GUI asked this run to stop (request_stop); the agent loop ends with "cancelled".
+  [[nodiscard]] bool stop_requested() const;
 
  private:
   RunJournal() = default;
-  fs::path path_, marker_;
+  fs::path path_, marker_, stop_;
   RunInfo info_;
   int n_ = 0;
   bool finished_ = false;
 };
 
 std::vector<ActiveRun> active_runs(const fs::path& project_root);
+
+// Asks one active run to stop (ADR 0019): writes .karkas/runs/active/<journal stem>.stop,
+// which the agent loop of that run checks between steps and while waiting for the model.
+// `journal` is the journal path or its file name. Fails when the run is not active.
+kk::VoidResult request_stop(const fs::path& project_root, const fs::path& journal);
 
 // "YYYY-MM-DD" or a unix timestamp → unix seconds (UTC).
 kk::Result<std::int64_t> parse_since(std::string_view s);

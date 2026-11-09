@@ -6,6 +6,7 @@
 
 #include <csignal>
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <map>
@@ -87,6 +88,7 @@ kk::Result<RunJournal> RunJournal::open(const fs::path& project_root, RunInfo in
   j.path_ = dir / (base + ".jsonl");
   for (int i = 2; fs::exists(j.path_); ++i) j.path_ = dir / fmt::format("{}-{}.jsonl", base, i);
   j.marker_ = dir / "active" / (j.path_.stem().string() + ".json");
+  j.stop_ = dir / "active" / (j.path_.stem().string() + ".stop");
   j.info_ = std::move(info);
   json start = {{"type", "run_start"}, {"ticket", j.info_.ticket}, {"role", j.info_.role},  {"block", j.info_.block},
                 {"provider", j.info_.provider}, {"model", j.info_.model}, {"tier", j.info_.tier},
@@ -102,7 +104,13 @@ RunJournal::~RunJournal() {
   if (!finished_ && !marker_.empty()) {
     std::error_code ec;
     fs::remove(marker_, ec);
+    fs::remove(stop_, ec);
   }
+}
+
+bool RunJournal::stop_requested() const {
+  std::error_code ec;
+  return !stop_.empty() && fs::exists(stop_, ec);
 }
 
 kk::VoidResult RunJournal::step(std::string_view kind, std::string_view payload_json) {
@@ -149,6 +157,7 @@ kk::Result<index::RunRow> RunJournal::finish(const Tokens& t, double cost, std::
   finished_ = true;
   std::error_code ec;
   fs::remove(marker_, ec);
+  fs::remove(stop_, ec);
   if (idx != nullptr) {
     if (auto ins = idx->insert_run(r); !ins) return std::unexpected(ins.error());
   }
@@ -158,7 +167,11 @@ kk::Result<index::RunRow> RunJournal::finish(const Tokens& t, double cost, std::
 std::vector<ActiveRun> active_runs(const fs::path& project_root) {
   std::vector<ActiveRun> out;
   std::error_code ec;
-  for (const auto& e : fs::directory_iterator(project_root / ".karkas" / "runs" / "active", ec)) {
+  auto dir = project_root / ".karkas" / "runs" / "active";
+  std::vector<fs::path> stops;
+  for (const auto& e : fs::directory_iterator(dir, ec)) {
+    if (e.path().extension() == ".stop") stops.push_back(e.path());
+    if (e.path().extension() != ".json") continue;
     auto text = core::read_file(e.path());
     if (!text) continue;
     try {
@@ -171,12 +184,34 @@ std::vector<ActiveRun> active_runs(const fs::path& project_root) {
         fs::remove(e.path(), ec);
         continue;
       }
-      out.push_back(ActiveRun{j.value("role", ""), j.value("block", ""), j.value("model", ""), j.value("ticket", ""),
-                              j.value("ts", std::int64_t{0}), e.path().parent_path().parent_path() / j.value("journal", "")});
+      ActiveRun a{j.value("role", ""), j.value("block", ""), j.value("model", ""), j.value("ticket", ""),
+                  j.value("ts", std::int64_t{0}), e.path().parent_path().parent_path() / j.value("journal", "")};
+      a.pid = pid;
+      auto stop = e.path();
+      stop.replace_extension(".stop");
+      a.stopping = fs::exists(stop, ec);
+      out.push_back(std::move(a));
     } catch (const json::exception&) {
     }
   }
+  // A stop request whose run has ended (or was killed) means nothing any more.
+  for (const auto& s : stops) {
+    auto marker = s;
+    marker.replace_extension(".json");
+    if (!fs::exists(marker, ec)) fs::remove(s, ec);
+  }
+  std::sort(out.begin(), out.end(), [](const ActiveRun& a, const ActiveRun& b) {
+    return a.started != b.started ? a.started < b.started : a.journal < b.journal;
+  });
   return out;
+}
+
+kk::VoidResult request_stop(const fs::path& project_root, const fs::path& journal) {
+  auto dir = project_root / ".karkas" / "runs" / "active";
+  auto stem = journal.stem().string();
+  std::error_code ec;
+  if (stem.empty() || !fs::exists(dir / (stem + ".json"), ec)) return kk::fail("stop", "the run is not active: " + journal.filename().string());
+  return core::write_file(dir / (stem + ".stop"), fmt::format("{}\n", core::unix_now()));
 }
 
 kk::Result<std::int64_t> parse_since(std::string_view s) {

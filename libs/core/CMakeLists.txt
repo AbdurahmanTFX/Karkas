@@ -1,6 +1,6 @@
 kk_add_library(core
   SOURCES src/text.cpp src/ksl.cpp src/model.cpp src/schema.cpp src/validate.cpp
-          src/paths.cpp src/config.cpp src/tickets.cpp
+          src/paths.cpp src/config.cpp src/tickets.cpp src/cancel.cpp
   PUBLIC_DEPS fmt::fmt
   PRIVATE_DEPS tomlplusplus::tomlplusplus)
 

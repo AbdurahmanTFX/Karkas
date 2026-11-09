@@ -1,11 +1,13 @@
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cstdlib>
 #include <random>
 #include <thread>
 
+#include "kk/core/cancel.hpp"
 #include "kk/core/text.hpp"
 #include "kk/llm/provider.hpp"
 
@@ -64,7 +66,7 @@ kk::Result<HttpResponse> with_retries(const RetryPolicy& policy, const std::func
     if (attempts != nullptr) *attempts = attempt;
     r = call();
     bool retryable = (!r && r.error().code == "http") || (r && (r->status == 429 || (r->status >= 500 && r->status <= 599)));
-    if (!retryable || attempt == policy.max_attempts) return r;
+    if (!retryable || attempt == policy.max_attempts || core::cancelled()) return r;
     std::chrono::milliseconds delay = policy.base_delay * (1LL << (attempt - 1));
     delay = std::min(delay, policy.max_delay);
     if (r) {
@@ -83,8 +85,14 @@ kk::Result<HttpResponse> with_retries(const RetryPolicy& policy, const std::func
     if (policy.sleep) {
       policy.sleep(delay);
     } else {
-      std::this_thread::sleep_for(delay);
+      // In slices: a stopped agent does not sit out a long back-off (ADR 0019).
+      auto until = std::chrono::steady_clock::now() + delay;
+      while (std::chrono::steady_clock::now() < until && !core::cancelled()) {
+        std::this_thread::sleep_for(std::min<std::chrono::steady_clock::duration>(std::chrono::milliseconds(100),
+                                                                                 until - std::chrono::steady_clock::now()));
+      }
     }
+    if (core::cancelled()) return kk::fail("cancelled", "stopped by the user");
   }
   return r;
 }

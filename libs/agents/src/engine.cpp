@@ -15,6 +15,7 @@
 #include "kk/agents/tools.hpp"
 #include "kk/code/analyzer.hpp"
 #include "kk/code/gen.hpp"
+#include "kk/core/cancel.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/validate.hpp"
@@ -340,6 +341,14 @@ struct Engine::Impl {
       out.attempts = attempt;
       out.tier = tier;
       out.reads.insert(out.reads.end(), res.reads.begin(), res.reads.end());
+      if (res.outcome == "cancelled") {
+        // Stopped by the user (ADR 0019): no retry, no escalation.
+        out.status = "cancelled";
+        out.cause = "stopped by the user";
+        trail(tid, level_entry(level, "worker",
+                               {{"at", block}, {"model", tier}, {"attempt", std::to_string(attempt)}, {"outcome", "cancelled"}}));
+        return out;
+      }
       std::string status = "failed";
       json rep;
       if (res.terminal_tool == "report") {
@@ -448,7 +457,7 @@ struct Engine::Impl {
       out.status = rep.is_object() ? rep.value("status", "done") : "done";
       if (rep.is_object()) out.tests = sget(rep, "tests");
     } else {
-      out.status = "failed";
+      out.status = res.outcome == "cancelled" ? "cancelled" : "failed";
       out.cause = res.outcome;
     }
     out.test_text = host.last_test_text();
@@ -616,6 +625,7 @@ kk::Result<std::string> Engine::design(const std::string& idea) {
   ArchitectToolHost host(root_, *m.idx, "", frozen_set(root_));
   auto res = m.runner().run(spec, host);
   m.reindex();
+  if (res.outcome == "cancelled") return kk::fail("cancelled", "design stopped by the user");
   if (res.outcome == "error") return kk::fail("design", res.error);
   if (res.terminal_tool == "propose_change") {
     auto j = json::parse(res.terminal_input, nullptr, false);
@@ -669,6 +679,7 @@ kk::Result<std::string> Engine::expand(const std::string& block, bool all) {
   if (!all) return out + expand_one(block);
   std::set<std::string> done;
   for (int round = 0; round < 64; ++round) {
+    if (core::cancel_requested()) return kk::fail("cancelled", out + "expand stopped by the user");
     auto cur = m.schema();
     if (!cur) return std::unexpected(cur.error());
     auto files = index::collect_code_files(*cur);
@@ -865,7 +876,7 @@ kk::Result<std::string> Engine::implement(const std::string& target) {
     for (const auto& id : items) {
       futs.push_back(std::async(std::launch::async, [&, id] {
         sem.acquire();
-        auto line = fn(id);
+        auto line = core::cancel_requested() ? fmt::format("{}: skipped (stopped by the user)\n", id) : fn(id);
         sem.release();
         std::lock_guard lk(out_mu);
         out += line;
@@ -908,11 +919,13 @@ kk::Result<std::string> Engine::implement(const std::string& target) {
       if (row == nullptr || row->status != "passing") todo.push_back(id);
     }
   }
+  if (core::cancel_requested()) return kk::fail("cancelled", "implement stopped by the user:\n" + out);
   parallel(todo, [&](const std::string& id) {
     auto r = m.run_worker(id, "", "Implement the api/ contract of this leaf in impl/ so that every contract test passes.", "");
     return fmt::format("worker {}: {} tier={} attempts={} ${:.4f}\n", id, r.status, r.tier, r.attempts, r.cost);
   });
   m.reindex();
+  if (core::cancel_requested()) return kk::fail("cancelled", "implement stopped by the user:\n" + out);
   // Phase 3: composition root by a medium worker (13.1 step 10).
   for (const auto& b : s->blocks) {
     if (b.kind != core::BlockKind::Entry || !core::Schema::is_under(scope, b.id)) continue;
@@ -933,6 +946,7 @@ kk::Result<std::string> Engine::implement(const std::string& target) {
     std::error_code ec;
     if (!fs::exists(dir, ec)) groups.push_back(b.id);
   }
+  if (core::cancel_requested()) return kk::fail("cancelled", "implement stopped by the user:\n" + out);
   parallel(groups, [&](const std::string& id) {
     auto r = m.run_tester(id, "", true);
     return fmt::format("integration tester {}: {} ${:.4f}\n", id, r.status, r.cost);
@@ -988,7 +1002,17 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id) {
     auto fin = m.tickets.load(id);
     return fin ? core::write_ticket(*fin) : id + "\n";
   };
+  // Stopped by the user (ADR 0019): a note on the trail, the ticket open again so that
+  // `karkas ticket run` continues it; no escalation.
+  auto stopped = [&](const std::string& role, const std::string& at) -> kk::Result<std::string> {
+    m.note(id, fmt::format("stopped by the user at {}{}", at, role.empty() ? "" : " (" + role + ")"));
+    m.set_status(id, core::TicketStatus::Open);
+    m.reindex();
+    m.say(id + " stopped by the user");
+    return kk::fail("cancelled", fmt::format("{} stopped by the user at {}; continue with: karkas ticket run {}", id, at, id));
+  };
   for (int guard = 0; guard < 30; ++guard) {
+    if (core::cancel_requested()) return stopped("", current);
     auto s = m.schema();
     if (!s) return std::unexpected(s.error());
     auto ticket = m.tickets.load(id);
@@ -1018,6 +1042,7 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id) {
       auto res = m.runner().run(spec, host);
       total += res.tokens;
       cost += res.cost;
+      if (res.outcome == "cancelled") return stopped(role, current);
       auto in = json::parse(res.terminal_input.empty() ? "{}" : res.terminal_input, nullptr, false);
       int level = core::trail_level(current);
       if (res.terminal_tool == "dispatch") {
@@ -1082,6 +1107,7 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id) {
     auto lo = m.run_worker(current, id, task, difficulty);
     total += lo.tokens;
     cost += lo.cost;
+    if (lo.status == "cancelled") return stopped("worker", current);
     if (lo.status == "fixed" || lo.status == "done") {
       m.set_status(id, core::TicketStatus::Verifying);
       auto plan = regression_plan(*s, m.idx->dependent_blocks(current), current, false);

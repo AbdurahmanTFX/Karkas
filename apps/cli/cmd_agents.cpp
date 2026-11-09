@@ -1,12 +1,15 @@
 // Commands that run agents (appendix G): design, expand, approve, implement, task, debug,
 // ask, ticket, change.
 #include <fmt/format.h>
+#include <unistd.h>
 
+#include <csignal>
 #include <iostream>
 
 #include "app.hpp"
 #include "kk/agents/changes.hpp"
 #include "kk/agents/engine.hpp"
+#include "kk/core/cancel.hpp"
 #include "kk/core/config.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/tickets.hpp"
@@ -14,7 +17,22 @@
 namespace kk::cli {
 namespace {
 
+// First SIGINT/SIGTERM: stop the agents gracefully (journals finished, tickets get a note
+// and stay open). A second one ends the process at once (ADR 0019).
+void on_stop_signal(int sig) {
+  if (kk::core::cancel_requested()) {
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);
+    return;
+  }
+  kk::core::request_cancel();
+  const char msg[] = "\n· stopping the agents (again to quit at once)\n";
+  (void)!::write(2, msg, sizeof msg - 1);
+}
+
 std::unique_ptr<agents::Engine> engine(App& app) {
+  std::signal(SIGINT, on_stop_signal);
+  std::signal(SIGTERM, on_stop_signal);
   auto root = app.root();
   setup_logging(app, root, false);
   auto cfg = core::load_config(root);
@@ -28,6 +46,7 @@ std::unique_ptr<agents::Engine> engine(App& app) {
 }
 
 void out(const kk::Result<std::string>& r) {
+  if (!r && r.error().code == "cancelled") die(r.error().message, 130);  // like a shell after Ctrl+C
   if (!r) die(r.error().str());
   std::cout << *r;
 }

@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "kk/core/cancel.hpp"
 #include "kk/core/text.hpp"
 #include "kk/llm/provider.hpp"
 #include "kk/test/support.hpp"
@@ -288,4 +289,27 @@ TEST_CASE("llm: provider factory and fallback families") {
   CHECK(llm::supports_default_fallback("claude-opus-5-5"));
   CHECK(llm::supports_default_fallback("claude-sonnet-5-5"));
   CHECK_FALSE(llm::supports_default_fallback("claude-haiku-5-5"));
+}
+
+TEST_CASE("llm: a stopped agent does not retry (ADR 0019)") {
+  int calls = 0;
+  llm::RetryPolicy p;
+  p.jitter = false;
+  p.sleep = [](std::chrono::milliseconds) { core::request_cancel(); };  // the user stops during the back-off
+  auto r = llm::with_retries(p, [&]() -> kk::Result<llm::HttpResponse> {
+    ++calls;
+    return llm::HttpResponse{529, {}, "overloaded"};
+  });
+  core::reset_cancel();
+  CHECK(calls == 1);
+  REQUIRE_FALSE(r);
+  CHECK(r.error().code == "cancelled");
+  // A cancelled transport error is never retried either.
+  calls = 0;
+  auto r2 = llm::with_retries(p, [&]() -> kk::Result<llm::HttpResponse> {
+    ++calls;
+    return kk::fail("cancelled", "stopped by the user");
+  });
+  CHECK(calls == 1);
+  CHECK_FALSE(r2);
 }

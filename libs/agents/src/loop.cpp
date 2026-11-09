@@ -6,6 +6,7 @@
 #include <chrono>
 #include <nlohmann/json.hpp>
 
+#include "kk/core/cancel.hpp"
 #include "kk/core/text.hpp"
 #include "kk/llm/provider.hpp"
 
@@ -60,6 +61,19 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
     return res;
   }
   res.journal = journal->path().filename().string();
+  // Stop requests (ADR 0019): the process flag (SIGINT/SIGTERM) or the stop file of this
+  // run (GUI). The file is looked at no more than every 200 ms; the HTTP transport and
+  // the retry back-off ask the same scope while they wait.
+  bool stop_seen = false;
+  auto stop_checked = std::chrono::steady_clock::time_point{};
+  core::CancelScope stop_scope([&] {
+    if (stop_seen) return true;
+    auto now = std::chrono::steady_clock::now();
+    if (now - stop_checked < std::chrono::milliseconds(200)) return false;
+    stop_checked = now;
+    stop_seen = journal->stop_requested();
+    return stop_seen;
+  });
 
   // Prefix order for the cache (9.6): tools → system (marker) → stable context
   // (marker) → task; the last marker moves forward with every step.
@@ -87,7 +101,16 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
                                    .dump());
 
   bool nudged = false;
+  auto stop_now = [&] {
+    if (!stop_seen) stop_seen = journal->stop_requested();  // unthrottled between steps
+    return stop_seen || core::cancelled();
+  };
   while (true) {
+    if (stop_now()) {
+      res.outcome = "cancelled";
+      (void)journal->step("cancelled", json{{"message", "stopped by the user"}}.dump());
+      break;
+    }
     if (res.steps >= spec.max_steps) {
       res.outcome = "max_steps";
       break;
@@ -99,6 +122,11 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
     }
     auto resp = (*provider)->send(req);
     ++res.steps;
+    if (!resp && (resp.error().code == "cancelled" || stop_now())) {
+      res.outcome = "cancelled";
+      (void)journal->step("cancelled", json{{"message", "stopped by the user"}}.dump());
+      break;
+    }
     if (!resp) {
       res.outcome = "error";
       res.error = resp.error().message;

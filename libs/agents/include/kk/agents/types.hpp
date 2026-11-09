@@ -60,7 +60,7 @@ struct AgentSpec {
 };
 
 struct AgentResult {
-  std::string outcome;        // terminal | max_steps | budget | timeout | end_turn | refusal | error
+  std::string outcome;        // terminal | max_steps | budget | timeout | end_turn | refusal | error | cancelled
   std::string terminal_tool;  // name of the terminal tool that ended the run
   std::string terminal_input; // its JSON input
   std::string final_text;

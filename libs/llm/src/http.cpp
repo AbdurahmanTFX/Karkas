@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <nlohmann/json.hpp>
 
+#include "kk/core/cancel.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 
@@ -49,6 +50,10 @@ std::size_t on_header(char* data, std::size_t size, std::size_t n, void* user) {
   return size * n;
 }
 
+// Called by libcurl about once a second even while waiting for the answer: a stopped
+// agent (ADR 0019) aborts its request instead of waiting minutes for a long reply.
+int on_progress(void*, curl_off_t, curl_off_t, curl_off_t, curl_off_t) { return core::cancelled() ? 1 : 0; }
+
 bool secret_header(std::string_view name) {
   auto n = core::to_lower(name);
   return n == "x-api-key" || n == "authorization" || core::contains(n, "token") || core::contains(n, "secret");
@@ -69,6 +74,7 @@ CurlTransport::CurlTransport() { static CurlGlobal global; }
 kk::Result<HttpResponse> CurlTransport::post(const HttpRequest& req) {
   thread_local Handle handle;  // one connection per thread, reused (keep-alive)
   if (handle.h == nullptr) return kk::fail("http", "curl_easy_init failed");
+  if (core::cancelled()) return kk::fail("cancelled", "stopped by the user");
   CURL* h = handle.h;
   curl_easy_reset(h);
   HttpResponse resp;
@@ -87,8 +93,11 @@ kk::Result<HttpResponse> CurlTransport::post(const HttpRequest& req) {
   curl_easy_setopt(h, CURLOPT_WRITEDATA, &resp.body);
   curl_easy_setopt(h, CURLOPT_HEADERFUNCTION, on_header);
   curl_easy_setopt(h, CURLOPT_HEADERDATA, &resp.headers);
+  curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION, on_progress);
+  curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
   CURLcode rc = curl_easy_perform(h);
   curl_slist_free_all(headers);
+  if (rc == CURLE_ABORTED_BY_CALLBACK) return kk::fail("cancelled", "stopped by the user");
   if (rc != CURLE_OK) return kk::fail("http", fmt::format("request failed: {}", curl_easy_strerror(rc)));
   long status = 0;
   curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &status);

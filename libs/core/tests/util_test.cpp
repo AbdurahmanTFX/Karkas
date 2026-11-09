@@ -1,7 +1,9 @@
 #include <doctest/doctest.h>
 
 #include <cstdlib>
+#include <thread>
 
+#include "kk/core/cancel.hpp"
 #include "kk/core/config.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
@@ -186,4 +188,34 @@ TEST_CASE("text: to_ident makes KSL identifiers from C++ and file names") {
   CHECK(to_ident("__x__") == "x");
   CHECK(to_ident("") == "");
   CHECK(is_ident(to_ident("Draw_UI")));
+}
+
+TEST_CASE("cancel: process flag and per-thread scopes (ADR 0019)") {
+  reset_cancel();
+  CHECK_FALSE(cancelled());
+  bool stop = false;
+  {
+    CancelScope outer([&] { return stop; });
+    CHECK_FALSE(cancelled());
+    {
+      CancelScope inner([] { return false; });
+      stop = true;
+      CHECK(cancelled());  // an outer scope counts inside an inner one
+    }
+    stop = false;
+    CHECK_FALSE(cancelled());
+    bool other_thread = true;
+    std::thread([&] {
+      stop = true;
+      other_thread = cancelled();  // scopes belong to their thread
+    }).join();
+    CHECK_FALSE(other_thread);
+    CHECK(cancelled());
+  }
+  CHECK_FALSE(cancelled());
+  request_cancel();
+  CHECK(cancel_requested());
+  CHECK(cancelled());
+  reset_cancel();
+  CHECK_FALSE(cancelled());
 }

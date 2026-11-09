@@ -1,5 +1,8 @@
 #include <doctest/doctest.h>
 
+#include <unistd.h>
+
+#include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/metrics/metrics.hpp"
 #include "kk/test/support.hpp"
@@ -114,4 +117,32 @@ TEST_CASE("metrics: --since parsing") {
   CHECK(metrics::parse_since("2026-11-07").value() == 1794009600);
   CHECK(metrics::parse_since("1730000000").value() == 1730000000);
   CHECK_FALSE(metrics::parse_since("yesterday"));
+}
+
+TEST_CASE("metrics: a stop request reaches its run only, and goes away with it (ADR 0019)") {
+  test::FixtureCopy p("wavkit");
+  auto a = metrics::RunJournal::open(p.path(), {"T-0001", "worker", "stream.ring", "anthropic", "claude-haiku-5-5", "cheap", 1});
+  auto b = metrics::RunJournal::open(p.path(), {"T-0001", "tester", "stream.ring", "anthropic", "claude-haiku-5-5", "cheap", 1});
+  REQUIRE(a);
+  REQUIRE(b);
+  CHECK_FALSE(a->stop_requested());
+  REQUIRE(metrics::request_stop(p.path(), a->path().filename()));
+  CHECK(a->stop_requested());
+  CHECK_FALSE(b->stop_requested());
+  auto act = metrics::active_runs(p.path());
+  REQUIRE(act.size() == 2);
+  for (const auto& r : act) {
+    CHECK(r.pid == ::getpid());
+    CHECK(r.stopping == (r.journal.filename() == a->path().filename()));
+  }
+  REQUIRE(a->finish({}, 0, 1, 1, "cancelled"));
+  auto stop = a->path().parent_path() / "active" / (a->path().stem().string() + ".stop");
+  CHECK_FALSE(std::filesystem::exists(stop));
+  CHECK(metrics::active_runs(p.path()).size() == 1);
+  // Not active any more: nothing to stop.
+  CHECK_FALSE(metrics::request_stop(p.path(), a->path()));
+  // An orphaned stop file (the run was killed) is cleaned up.
+  REQUIRE(core::write_file(stop, "1\n"));
+  (void)metrics::active_runs(p.path());
+  CHECK_FALSE(std::filesystem::exists(stop));
 }
