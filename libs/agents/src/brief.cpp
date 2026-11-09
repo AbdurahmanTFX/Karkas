@@ -84,7 +84,8 @@ kk::Result<std::string> make_brief(const fs::path& root, const core::Schema& sch
   out += "Fill every [fill] line before you hand it over: the subagent knows only this text.\n\n";
   out += fmt::format("Task: {}\n", task.empty() ? std::string("[fill: what to build or fix, and why — one paragraph]") : std::string(task));
   out += "Spec: [fill: concrete numbers and behaviour — sizes, colours, timings, limits, edge cases; what good looks like, "
-         "what to avoid; the facts you already found (files, lines, causes)]\n";
+         "what to avoid; the facts you already found (files, lines, causes). Visual work: sizes in px, colours as RGB, "
+         "durations in ms, easing, counts, positions, font size and weight]\n";
   out += "Done when: [fill: observable checks] — and every guarantee below holds, the tests pass.\n\n";
 
   out += fmt::format("Block: {} ({}, thread {}{}) — {}\n", b->id, b->kind_name(), b->thread.value.empty() ? "main" : b->thread.value,
@@ -149,8 +150,9 @@ kk::Result<std::string> make_brief(const fs::path& root, const core::Schema& sch
                                                       : "the project's own build, then `" + cfg.test_command + "`")
                           : "the block's contract tests";
   out += fmt::format("Build and test: kk_run_tests {} ({}); kk_check must show 0 errors.\n", b->id, tests);
-  out += "Visual result (drawing, effects, fonts, layout): render a preview image or a screenshot, look at it and improve "
-         "it before you report.\n";
+  out += "Visual result (drawing, effects, fonts, layout): render a preview image (the project's code, or a faithful "
+         "mock-up of the same drawing), look at it, improve it, and give its path in the report — the work is accepted by "
+         "that image.\n";
   out += "Only this task: another bug you notice is not fixed — record it with kk_note_bug and list it in the report.\n";
   out += "Report: files changed, test results, bugs noted, what you could not do, open questions — a few lines.\n";
   return out;
@@ -218,6 +220,7 @@ kk::Result<std::string> make_review(const fs::path& root, const core::Schema& sc
     out += fmt::format("Tests: status {}{} — run kk_run_tests {} if nothing ran since the change.\n", row->status,
                        row->failed_tests > 0 ? fmt::format(", {} failing", row->failed_tests) : "", b->id);
   }
+  out += "Visual work: open the preview image named in the report and judge it against the spec yourself.\n";
   out += "Accept only if every guarantee holds, only the block's files changed (or the rest is justified), no frozen api "
          "changed and the tests pass; otherwise send it back with concrete corrections.\n";
   return out;

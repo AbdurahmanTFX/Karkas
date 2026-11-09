@@ -21,8 +21,9 @@ source of truth and the code follows them. MCP server "karkas" (without it: `kar
 - Done means: kk_check shows 0 errors and kk_run_tests passes.
 - kk_view ends with the model line of the block. On another model, hand larger work on that block
   (new functions, a whole leaf) to the named subagent: start the brief with kk_brief, fill every
-  [fill] line with concrete numbers and checks, and accept the work only after kk_review. Small
-  fixes and visual work you do yourself (kk_guide: Models and delegation).
+  [fill] line with concrete numbers and checks, and accept the work only after kk_review (visual
+  work: a visual spec in numbers, and you look at the preview image it delivers). Fixes of a few
+  lines you do yourself (kk_guide: Models and delegation).
 - Imported project (own CMakeLists.txt): add new files to its build yourself; kk_run_tests runs
   `[test] command` of karkas.toml.
 

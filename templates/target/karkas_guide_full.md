@@ -40,10 +40,9 @@ This is part of the method, not a hint. kk_view ends with the model line of the 
 kk_model_for <block> explains it.
 - The line names a subagent (karkas-strong, karkas-medium, karkas-cheap, ...). If this session
   runs that model, do the work here. If not, larger work on that block (new functions, a whole
-  leaf, its contract tests) goes to the subagent (Agent tool, subagent_type karkas-<tier>) with
-  the block id, the task, its inv lines and the facts you have; a fix of a few lines or work
-  judged by eye you do yourself. Hand out independent blocks at once and wait for their reports
-  instead of polling.
+  leaf, its contract tests, visual work included) goes to the subagent (Agent tool,
+  subagent_type karkas-<tier>); a fix of a few lines you do yourself. Hand out independent blocks
+  at once and wait for their reports instead of polling.
 - The brief is the subagent's only context, and a smaller model does exactly what it says.
   Start it with kk_brief <block>: Karkas fills in the card, the files, the guarantees, the api the
   block may use, the project rules, how to test and what not to touch. Your part is the [fill]
@@ -53,9 +52,12 @@ kk_model_for <block> explains it.
 - When it reports, run kk_review <block> and read the diff against the guarantees and the
   brief: every inv line holds, only the block's files changed, the tests pass. Send it back with
   concrete corrections; fix only small things yourself.
-- Work judged by eye (graphics, effects, fonts, layout): put the visual spec in the brief, then
-  look at the result before you accept it — render a preview image or a screenshot and read it.
-  Not good enough: send it back with concrete corrections, or do it yourself.
+- Work judged by eye (graphics, effects, fonts, layout) is delegated too, with a visual spec in
+  numbers: sizes in px, colours as RGB, durations in ms, easing, counts, positions, font size and
+  weight, what it must not look like. The subagent delivers a preview image (rendered with the
+  project's code, or a faithful mock-up of the same drawing) and names its path. You open the
+  image yourself and accept only what looks right; otherwise send it back with concrete
+  corrections in numbers.
 - You keep the design, the schema changes, the review and the integration.
 - Not a Claude model: do the work here and tell the user. Missing subagents: `karkas gen agents`.
 

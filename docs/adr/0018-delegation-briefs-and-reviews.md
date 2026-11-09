@@ -42,3 +42,12 @@ agent now does only the task it was given. A bug it notices on the way is record
 kk_note_bug (summary, where, evidence) — an open ticket, origin `agent`, for the user (karkas
 ticket list, the GUI) — and named in its report; a subagent reports it to its main session. The
 rule is in both guides, the MCP instructions, the subagent prompt and every kk_brief.
+
+## Amendment (2026-11-09): visual work is delegated too, accepted by its preview image
+
+The rule "work judged by eye stays with the session" made Sonnet do every visual feature itself
+(Blobby round 3: no kk_brief, no subagent). Visual work now goes to the subagent like any larger
+work, with a visual spec in numbers in the brief (sizes in px, colours as RGB, durations in ms,
+easing, counts, positions, font size and weight). The subagent delivers a preview image and
+names its path; the delegating model opens it and accepts only what looks right. kk_brief and
+kk_review say so; only fixes of a few lines stay with the session.
