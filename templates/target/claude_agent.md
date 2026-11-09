@@ -20,4 +20,6 @@ project and a task: implement it, write its contract tests, fix a bug in it, or 
   (or a screenshot), look at it and improve it before you report.
 - The main session reviews your diff against the card (inv lines, files, tests) before it
   accepts it: keep to the block and say what you could not do.
-- Report in a few lines: files changed, test results, warnings left, open questions.
+- Only your task. Another bug you notice: do not fix it — record it with kk_note_bug and list it
+  in your report.
+- Report in a few lines: files changed, test results, warnings left, bugs noted, open questions.

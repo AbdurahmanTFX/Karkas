@@ -284,6 +284,13 @@
 - Tests: brief of a wavkit leaf (files, guarantees, neighbour api, tests), review in a git copy
   (inside and outside changes, diff), edit scripts (quotes, failures stop with the line).
 
+## Addition — stay on the task (docs/adr/0018, amendment)
+- kk_note_bug: a bug noticed on the way becomes an open ticket (origin agent) and is named in the
+  report, not fixed. Rule in both guides, MCP instructions, subagent prompt and kk_brief.
+- Bug hunt rerun of B on the optimised Karkas (before this rule): Sonnet 5/5 for $0.26 (was $0.45;
+  A $0.28), Haiku 5/5 for $0.057 (was 4/5 for $0.086; A $0.085). In both runs the replay session
+  also fixed the network bug, so the network session was stopped.
+
 ## Stage 10 — benchmarks (harness)
 - bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
   (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip

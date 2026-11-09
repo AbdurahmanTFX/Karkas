@@ -151,7 +151,8 @@ kk::Result<std::string> make_brief(const fs::path& root, const core::Schema& sch
   out += fmt::format("Build and test: kk_run_tests {} ({}); kk_check must show 0 errors.\n", b->id, tests);
   out += "Visual result (drawing, effects, fonts, layout): render a preview image or a screenshot, look at it and improve "
          "it before you report.\n";
-  out += "Report: files changed, test results, what you could not do, open questions — a few lines.\n";
+  out += "Only this task: another bug you notice is not fixed — record it with kk_note_bug and list it in the report.\n";
+  out += "Report: files changed, test results, bugs noted, what you could not do, open questions — a few lines.\n";
   return out;
 }
 

@@ -33,3 +33,12 @@ commands and waiting on its own background scripts.
 - The delegating model's effort goes into the part that needs judgement (numbers, look, checks)
   instead of collecting context; the subagent gets a complete, uniform brief.
 - A review is one call instead of git status + git diff + reading cards + kk_check.
+
+## Amendment (2026-11-09): stay on the task; bugs found on the way are noted, not fixed
+
+In the bug hunt rerun the replay session also fixed the network bug it noticed in PlayerInput,
+both on Sonnet and on Haiku: the next session then searched for a bug that was already gone. An
+agent now does only the task it was given. A bug it notices on the way is recorded with
+kk_note_bug (summary, where, evidence) — an open ticket, origin `agent`, for the user (karkas
+ticket list, the GUI) — and named in its report; a subagent reports it to its main session. The
+rule is in both guides, the MCP instructions, the subagent prompt and every kk_brief.

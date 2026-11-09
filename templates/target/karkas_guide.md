@@ -16,6 +16,8 @@ source of truth and the code follows them. MCP server "karkas" (without it: `kar
 - A new block, link, port or function is a schema change: kk_propose_change, then the user
   approves it (`karkas approve C-NNNN`; approve yourself only when the user said so). Never edit
   block.ksl or a frozen api silently.
+- Do only the task you were given. Another bug you notice on the way is not yours to fix: record
+  it with kk_note_bug (what, where, evidence), name it in your report and go on.
 - Done means: kk_check shows 0 errors and kk_run_tests passes.
 - kk_view ends with the model line of the block. On another model, hand larger work on that block
   (new functions, a whole leaf) to the named subagent: start the brief with kk_brief, fill every

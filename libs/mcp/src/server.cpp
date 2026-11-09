@@ -85,6 +85,15 @@ std::vector<Tool> make_tools(const ServerOptions& o) {
        {{"type", "object"}, {"properties", {{"target", str_prop("block id or link a->b; empty = all")}}}}},
       {"kk_drift", "Schema/code drift report (KSL errors and D01-D09).",
        {{"type", "object"}, {"properties", {{"block", str_prop("block id; empty = project")}}}}},
+      {"kk_note_bug",
+       "Record a bug you noticed that is not your task — do not fix it. It becomes an open ticket for the user (karkas ticket "
+       "list); name it in your report and go on with your own task.",
+       {{"type", "object"},
+        {"properties",
+         {{"summary", str_prop("one line: what is wrong, as a user would see it or as the code shows it")},
+          {"where", str_prop("block, or file:line")},
+          {"evidence", str_prop("why you think so: the line of code, a value, a test")}}},
+        {"required", {"summary"}}}},
       {"kk_ticket_view", "A ticket. With 'at' it returns the path view an agent at that block would get.",
        {{"type", "object"},
         {"properties", {{"id", str_prop("ticket id, e.g. T-0042")}, {"at", str_prop("block id or root for the path view")}}},
@@ -276,6 +285,19 @@ std::optional<std::string> Server::handle(std::string_view line) {
         if (name == "kk_status") return out(idx_.status(sarg(args, "block")));
         if (name == "kk_probes") return out(idx_.probes(sarg(args, "target")));
         if (name == "kk_drift") return out(idx_.drift(sarg(args, "block")));
+        if (name == "kk_note_bug") {
+          auto summary = std::string(core::trim(sarg(args, "summary")));
+          if (summary.empty()) return response(id, text_result("summary is required", true));
+          std::vector<std::string> facts;
+          if (auto w = std::string(core::trim(sarg(args, "where"))); !w.empty()) facts.push_back("found at " + w);
+          if (auto e = std::string(core::trim(sarg(args, "evidence"))); !e.empty()) facts.push_back("evidence " + e);
+          core::TicketStore store(idx_.root());
+          auto t = store.create(core::TicketKind::Bug, "agent", summary, facts);
+          if (!t) return response(id, text_result(t.error().message, true));
+          return response(id, text_result(fmt::format("noted {} (open, for the user). Do not fix it now: name it in your "
+                                                      "report and go on with your task.\n", t->id),
+                                          false));
+        }
         if (name == "kk_ticket_view" || name == "kk_ticket_append") {
           core::TicketStore store(idx_.root());
           std::string tid = sarg(args, "id");

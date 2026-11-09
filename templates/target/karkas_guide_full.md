@@ -76,6 +76,12 @@ kk_model_for <block> explains it.
 - Code calling a block that its card does not link to is drift (D02): fix the schema (change)
   or the code. kk_drift lists all drift.
 
+## Stay on your task
+Do only the task you were given. A bug you notice on the way that is not your task: do not fix
+it. Record it with kk_note_bug (what is wrong, where, the evidence), name it in your report, and
+go on. It becomes an open ticket; the user (or the session that gave you the task) decides when
+and by whom it is fixed. A subagent reports such finds to its main session the same way.
+
 ## Bugs
 Descend from the symptom: kk_overview, the suspect group (kk_view), its children, down to a
 leaf. Rule blocks out with facts (kk_status, kk_probes, tests); if there is a ticket, append
