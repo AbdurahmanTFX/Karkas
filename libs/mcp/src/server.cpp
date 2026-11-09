@@ -127,6 +127,21 @@ std::vector<Tool> make_tools(const ServerOptions& o) {
                                         "composer", "ask"}},
                               {"description", "default: worker for a leaf, architect for a group or the project"}}}}}}});
   }
+  if (o.brief) {
+    t.push_back({"kk_brief",
+                 "The brief for the subagent of a block: everything Karkas knows (card, files, guarantees, the api it may use, "
+                 "rules, how to test, what not to touch) and [fill] lines for the task, the spec with concrete numbers and the "
+                 "checks. Fill them, add what you found, then hand it over.",
+                 {{"type", "object"},
+                  {"properties", {{"block", str_prop("leaf to hand over")}, {"task", str_prop("optional: the task, as a start")}}},
+                  {"required", {"block"}}}});
+  }
+  if (o.review) {
+    t.push_back({"kk_review",
+                 "Before accepting a subagent's work on a block: its guarantees as a checklist, the changed files (outside the "
+                 "block flagged), the diff of its files, its issues and test status.",
+                 {{"type", "object"}, {"properties", {{"block", str_prop("block whose work you review")}}}, {"required", {"block"}}}});
+  }
   if (o.run_tests) {
     t.push_back({"kk_run_tests", "Build and run the tests of a block subtree (no model involved); returns a compact summary.",
                  {{"type", "object"}, {"properties", {{"block", str_prop("block id; empty = all")}}}}});
@@ -279,6 +294,8 @@ std::optional<std::string> Server::handle(std::string_view line) {
         if (name == "kk_propose_change") return out(opts_.propose_change(sarg(args, "reason"), sarg(args, "diff")));
         if (name == "kk_changes") return out(opts_.changes(sarg(args, "id")));
         if (name == "kk_model_for") return out(opts_.model_for(sarg(args, "block"), sarg(args, "role")));
+        if (name == "kk_brief") return out(opts_.brief(sarg(args, "block"), sarg(args, "task")));
+        if (name == "kk_review") return out(opts_.review(sarg(args, "block")));
         return error(id, kMethodNotFound, "unknown tool: " + name);
       };
       // Every call is logged (with its time) so a session can be followed in .karkas/karkas.log.

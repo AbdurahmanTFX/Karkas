@@ -44,13 +44,15 @@ kk_model_for <block> explains it.
   the block id, the task, its inv lines and the facts you have; a fix of a few lines or work
   judged by eye you do yourself. Hand out independent blocks at once and wait for their reports
   instead of polling.
-- The brief is the subagent's only context, and a smaller model does exactly what it says:
-  write it as a spec. The goal and why; the exact files, types and functions; concrete numbers
-  (sizes, colours, timings, easing, limits); what good looks like and what to avoid; how to
-  check it; what not to touch. A vague brief gives a weak result.
-- When it reports, review its diff (read the code, not only the report) against the card and
-  the brief: every inv line holds, only the block's files and the api of its links are touched,
-  the tests pass. Send it back with what is wrong; fix only small things yourself.
+- The brief is the subagent's only context, and a smaller model does exactly what it says.
+  Start it with kk_brief <block>: Karkas fills in the card, the files, the guarantees, the api the
+  block may use, the project rules, how to test and what not to touch. Your part is the [fill]
+  lines — the task and why; the spec with concrete numbers (sizes, colours, timings, limits, edge
+  cases), what good looks like and what to avoid; the checks of "done" — plus the facts you
+  already found (files, lines, causes). Never hand over a brief with a [fill] left.
+- When it reports, run kk_review <block> and read the diff against the guarantees and the
+  brief: every inv line holds, only the block's files changed, the tests pass. Send it back with
+  concrete corrections; fix only small things yourself.
 - Work judged by eye (graphics, effects, fonts, layout): put the visual spec in the brief, then
   look at the result before you accept it — render a preview image or a screenshot and read it.
   Not good enough: send it back with concrete corrections, or do it yourself.

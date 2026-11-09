@@ -502,4 +502,78 @@ kk::VoidResult undo_edit(const fs::path& root, const AppliedEdit& e) {
   return {};
 }
 
+namespace {
+
+// Words of a script line; "double quotes" keep spaces, \" is a quote inside them.
+std::vector<std::string> script_words(std::string_view line) {
+  std::vector<std::string> out;
+  std::string cur;
+  bool quoted = false;
+  bool any = false;
+  for (std::size_t i = 0; i < line.size(); ++i) {
+    char c = line[i];
+    if (quoted && c == '\\' && i + 1 < line.size() && line[i + 1] == '"') {
+      cur += '"';
+      ++i;
+    } else if (c == '"') {
+      quoted = !quoted;
+      any = true;
+    } else if (!quoted && (c == ' ' || c == '\t')) {
+      if (any || !cur.empty()) out.push_back(cur);
+      cur.clear();
+      any = false;
+    } else {
+      cur += c;
+    }
+  }
+  if (any || !cur.empty()) out.push_back(cur);
+  return out;
+}
+
+}  // namespace
+
+EditScriptResult apply_edit_script(const std::filesystem::path& root, std::string_view script) {
+  EditScriptResult res;
+  int n = 0;
+  for (const auto& raw : core::split(script, '\n')) {
+    ++n;
+    auto line = std::string(core::trim(raw));
+    if (line.empty() || line.starts_with("#")) continue;
+    auto w = script_words(line);
+    auto fail = [&](const std::string& why) {
+      res.error = fmt::format("line {}: {}", n, why);
+      return res;
+    };
+    auto rest = [&](std::size_t from) {
+      std::vector<std::string> r(w.begin() + static_cast<long>(std::min(from, w.size())), w.end());
+      return core::join(r, " ");
+    };
+    auto s = core::load_schema(root);
+    if (!s) return fail(s.error().str());
+    kk::Result<EditOp> op = kk::fail("edit", "unknown command (add-group, move, rename, purpose, remove)");
+    const std::string& cmd = w[0];
+    if (cmd == "add-group" && w.size() >= 3) {
+      auto pos = w[1].rfind('.');
+      op = op_add_block(*s, pos == std::string::npos ? "root" : w[1].substr(0, pos),
+                        pos == std::string::npos ? w[1] : w[1].substr(pos + 1), core::BlockKind::Group, rest(2), "");
+    } else if (cmd == "move" && w.size() == 3) {
+      op = op_move(*s, w[1], w[2]);
+    } else if (cmd == "rename" && w.size() == 3) {
+      op = op_rename(*s, w[1], w[2]);
+    } else if (cmd == "purpose" && w.size() >= 3) {
+      op = op_set_purpose(*s, w[1], rest(2));
+    } else if (cmd == "remove" && w.size() == 2) {
+      op = op_remove_block(*s, w[1]);
+    } else if (cmd == "add-group" || cmd == "move" || cmd == "rename" || cmd == "purpose" || cmd == "remove") {
+      return fail("wrong number of arguments: " + line);
+    }
+    if (!op) return fail(op.error().message);
+    auto a = apply_edit(root, *op);
+    if (!a) return fail(a.error().message);
+    ++res.applied;
+    res.titles.push_back(op->title);
+  }
+  return res;
+}
+
 }  // namespace kk::agents

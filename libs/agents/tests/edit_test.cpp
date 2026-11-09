@@ -151,3 +151,23 @@ TEST_CASE("edit: move a block under another group and set its purpose") {
   CHECK(core::contains(test::read(p / "blocks/mix/block.ksl"), "purpose sums the tracks into one stream"));
   no_errors(p);
 }
+
+TEST_CASE("edit: a script of edits in one go, stops at the first failing line") {
+  test::FixtureCopy p("wavkit");
+  auto r = agents::apply_edit_script(p.path(), "# regroup\n"
+                                               "add-group audio \"audio processing: \\\"dsp\\\" and mixing\"\n"
+                                               "move dsp audio\n"
+                                               "move mix audio\n"
+                                               "purpose audio.mix \"sums the tracks into one stream\"\n");
+  CHECK(r.error.empty());
+  CHECK(r.applied == 4);
+  CHECK(core::contains(test::read(p / "blocks/audio/block.ksl"), "audio processing: \"dsp\" and mixing"));
+  CHECK(core::contains(test::read(p / "blocks/audio/mix/block.ksl"), "purpose sums the tracks into one stream"));
+  no_errors(p);
+  auto bad = agents::apply_edit_script(p.path(), "move audio.dsp root\nmove nowhere audio\nmove stream audio\n");
+  CHECK(bad.applied == 1);
+  CHECK(bad.error.starts_with("line 2: "));
+  CHECK(std::filesystem::exists(p / "blocks/stream/block.ksl"));  // line 3 was not run
+  CHECK(agents::apply_edit_script(p.path(), "teleport x y\n").error.starts_with("line 1: unknown command"));
+  CHECK(agents::apply_edit_script(p.path(), "move x\n").error.starts_with("line 1: wrong number of arguments"));
+}

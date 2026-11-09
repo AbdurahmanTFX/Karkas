@@ -4,6 +4,7 @@
 #include <iostream>
 
 #include "app.hpp"
+#include "kk/agents/brief.hpp"
 #include "kk/agents/changes.hpp"
 #include "kk/agents/router.hpp"
 #include "kk/core/config.hpp"
@@ -72,6 +73,18 @@ AutoRegister reg([](CLI::App& cli, App& app) {
       if (!cfg || !schema) return {};
       auto c = agents::model_for(*cfg, *schema, ix->snapshot(), ix->runs(), block);
       return c ? agents::model_choice_line(*c) : std::string();
+    };
+    o.brief = [root, ix = idx.get()](const std::string& block, const std::string& task) -> kk::Result<std::string> {
+      auto cfg = core::load_config(root);
+      if (!cfg) return std::unexpected(cfg.error());
+      auto schema = core::load_schema(root);
+      if (!schema) return std::unexpected(schema.error());
+      return agents::make_brief(root, *schema, *cfg, ix->snapshot(), ix->runs(), block, task);
+    };
+    o.review = [root, ix = idx.get()](const std::string& block) -> kk::Result<std::string> {
+      auto schema = core::load_schema(root);
+      if (!schema) return std::unexpected(schema.error());
+      return agents::make_review(root, *schema, ix->snapshot(), block);
     };
     mcp::Server server(*idx, o);
     std::ios::sync_with_stdio(false);

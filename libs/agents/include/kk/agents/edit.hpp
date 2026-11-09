@@ -56,6 +56,17 @@ struct AppliedEdit {
   std::vector<std::string> files;
 };
 
+// A script of edits, one per line ("#" comments; quotes keep spaces together):
+//   add-group <id> <purpose>   move <id> <group|root>   rename <id> <name>
+//   purpose <id> <text>        remove <id>
+// Applied in order, each checked like a single edit; stops at the first failing line.
+struct EditScriptResult {
+  int applied = 0;
+  std::vector<std::string> titles;
+  std::string error;  // "line 7: ..." when a line failed (the edits before it stay applied)
+};
+EditScriptResult apply_edit_script(const std::filesystem::path& root, std::string_view script);
+
 // Preview text: the card diff (and the folder move of a rename).
 std::string preview_edit(const std::filesystem::path& root, const EditOp& op);
 // Applies the edit; nothing changes when the result breaks the schema checks.

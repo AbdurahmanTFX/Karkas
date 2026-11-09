@@ -1,13 +1,16 @@
 // karkas edit — deterministic schema edits from the command line (the operations of the GUI,
-// stage 9): add-group, move, rename, purpose, remove. Each edit is checked and applied at once;
+// stage 9): add-group, move, rename, purpose, remove, batch. Each edit is checked and applied at once;
 // --dry-run shows the card diff only (ADR 0015).
 #include <fmt/format.h>
 
 #include <iostream>
+#include <iterator>
 
 #include "app.hpp"
 #include "kk/agents/edit.hpp"
 #include "kk/core/schema.hpp"
+#include "kk/core/paths.hpp"
+#include "kk/core/text.hpp"
 
 namespace kk::cli {
 namespace {
@@ -74,6 +77,25 @@ AutoRegister reg([](CLI::App& cli, App& app) {
   purpose->callback([root] {
     auto r = root();
     run_edit(r, agents::op_set_purpose(load(r), id, text), dry_run);
+  });
+
+  static std::string script;
+  auto* batch = cmd->add_subcommand("batch", "apply a script of edits in one go (one per line; - = stdin)");
+  batch->add_option("script", script, "file with lines: add-group <id> \"purpose\" | move <id> <group|root> | "
+                                      "rename <id> <name> | purpose <id> \"text\" | remove <id>")->required();
+  batch->callback([root] {
+    auto r = root();
+    std::string text;
+    if (script == "-") {
+      text.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
+    } else {
+      auto t = core::read_file(script);
+      if (!t) die(t.error().message);
+      text = *t;
+    }
+    auto res = agents::apply_edit_script(r, text);
+    std::cout << fmt::format("applied {} edits\n", res.applied);
+    if (!res.error.empty()) die(res.error);
   });
 
   auto* remove = cmd->add_subcommand("remove", "remove a block without children (imported files stay on disk)");

@@ -274,6 +274,16 @@
 - Experiments (outside the repository, karkas-bench/blobby2): bug hunt with 5 injected bugs and
   hidden tests — Sonnet: A 5/5 $0.28, B 5/5 $0.45; Haiku: A 5/5 $0.085, B 4/5 $0.086.
 
+## Addition — briefs and reviews for delegation, batch edits (docs/adr/0018)
+- kk_brief / `karkas brief`: the deterministic part of a subagent's brief plus [fill] lines (task,
+  spec with concrete numbers, done-when) that the delegating model must complete.
+- kk_review / `karkas review`: guarantees checklist, changes outside the block flagged, the diff of
+  the block's files, its issues and test status.
+- `karkas edit batch`: a script of schema edits in one process.
+- Guide: never hand over a brief with a [fill] left; accept only after kk_review.
+- Tests: brief of a wavkit leaf (files, guarantees, neighbour api, tests), review in a git copy
+  (inside and outside changes, diff), edit scripts (quotes, failures stop with the line).
+
 ## Stage 10 — benchmarks (harness)
 - bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
   (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip
