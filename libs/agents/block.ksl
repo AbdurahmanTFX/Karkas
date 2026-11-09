@@ -14,4 +14,5 @@ call    libs.code:check_drift
 call    libs.metrics:cost_usd
 use     libs.core
 inv     the orchestrator never receives source code
+inv     a stopped agent is never retried or escalated; its ticket stays open
 inv     a worker writes only impl/ and tests/unit/ of its own leaf

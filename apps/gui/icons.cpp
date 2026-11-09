@@ -233,6 +233,25 @@ const std::array<Sdf, static_cast<std::size_t>(Icon::Count)>& shapes() {
                         U(seg(p, {0.22f, 0.52f}, {0.40f, 0.52f}, 0.035f), seg(p, {0.50f, 0.52f}, {0.70f, 0.52f}, 0.035f)));
         return S(c, U(lines, U(seg(p, {0.22f, 0.68f}, {0.40f, 0.68f}, 0.035f), seg(p, {0.50f, 0.68f}, {0.74f, 0.68f}, 0.035f))));
       },
+      // Stop (a square)
+      [](V p) { return box(p, {0.22f, 0.22f}, {0.78f, 0.78f}, 0.06f); },
+      // Trash
+      [](V p) {
+        float can = S(box(p, {0.22f, 0.30f}, {0.78f, 0.92f}, 0.06f), U(seg(p, {0.40f, 0.44f}, {0.40f, 0.80f}, 0.035f),
+                                                                       seg(p, {0.60f, 0.44f}, {0.60f, 0.80f}, 0.035f)));
+        float lid = U(seg(p, {0.12f, 0.20f}, {0.88f, 0.20f}, 0.05f), box(p, {0.38f, 0.06f}, {0.62f, 0.18f}, 0.03f));
+        return U(can, lid);
+      },
+      // Send (paper plane)
+      [](V p) {
+        float plane = poly(p, {{0.06f, 0.46f}, {0.94f, 0.10f}, {0.62f, 0.92f}, {0.46f, 0.58f}});
+        return S(plane, seg(p, {0.46f, 0.58f}, {0.94f, 0.10f}, 0.03f));
+      },
+      // Chat (speech bubble with lines)
+      [](V p) {
+        float bubble = U(box(p, {0.06f, 0.12f}, {0.94f, 0.70f}, 0.12f), poly(p, {{0.22f, 0.62f}, {0.44f, 0.62f}, {0.20f, 0.90f}}));
+        return S(bubble, U(seg(p, {0.24f, 0.32f}, {0.76f, 0.32f}, 0.04f), seg(p, {0.24f, 0.50f}, {0.60f, 0.50f}, 0.04f)));
+      },
   };
   return s;
 }

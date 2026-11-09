@@ -22,19 +22,6 @@ namespace kk::gui {
 
 namespace {
 
-// A docked panel without the dock tab bar (the shell draws its own headers and tabs).
-bool begin_panel(const char* name, ImU32 bg, ImVec2 padding = ImVec2(10, 8)) {
-  ImGuiWindowClass wc;
-  wc.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags_NoTabBar;
-  ImGui::SetNextWindowClass(&wc);
-  ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::col(bg));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
-  bool open = ImGui::Begin(name, nullptr, ImGuiWindowFlags_NoCollapse);
-  ImGui::PopStyleVar();
-  ImGui::PopStyleColor();
-  return open;
-}
-
 std::string upper_ascii(std::string s) {
   for (auto& c : s) {
     if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
@@ -52,30 +39,6 @@ Icon kind_icon(const std::string& kind, bool open = false) {
 const ImVec4 kFolderColor = rgb(220, 182, 122);
 const ImVec4 kEntryColor = rgb(137, 209, 133);
 const ImVec4 kSharedColor = rgb(197, 134, 192);
-
-// Text of a KSL card with the directive words colored (like a code editor).
-void card_text(const std::string& text) {
-  ImGui::PushFont(theme::mono_font());
-  for (const auto& line : core::split(text, '\n', false)) {
-    if (line.empty()) {
-      ImGui::NewLine();
-      continue;
-    }
-    if (line[0] == '#') {
-      ImGui::TextColored(rgb(106, 153, 85), "%s", line.c_str());
-      continue;
-    }
-    auto sp = line.find(' ');
-    std::string head = line.substr(0, sp);
-    std::string rest = sp == std::string::npos ? "" : line.substr(sp);
-    ImGui::TextColored(head[0] == '@' ? rgb(197, 134, 192) : rgb(86, 156, 214), "%s", head.c_str());
-    if (!rest.empty()) {
-      ImGui::SameLine(0, 0);
-      ImGui::TextUnformatted(rest.c_str());
-    }
-  }
-  ImGui::PopFont();
-}
 
 // A flat clickable item of the status bar.
 bool status_item(const std::string& id, const std::string& text, ImVec4 color, const char* tooltip = nullptr) {
@@ -127,12 +90,13 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
   }
   draw_side_bar(m);
   draw_settings_window(m);
+  draw_chat_window(m);
   if (m == nullptr) {
-    if (begin_panel("###editor", theme::kEditorBg)) ui::muted("%s", mp ? mp->message.c_str() : tr("indexing..."));
+    if (ui::begin_docked("###editor", theme::kEditorBg)) ui::muted("%s", mp ? mp->message.c_str() : tr("indexing..."));
     ImGui::End();
-    if (begin_panel("###Inspector", theme::kSideBg)) ui::panel_title(tr("INSPECTOR"));
+    if (ui::begin_docked("###Inspector", theme::kSideBg)) ui::panel_title(tr("INSPECTOR"));
     ImGui::End();
-    if (begin_panel("###panel", theme::kSideBg)) ImGui::TextUnformatted("");
+    if (ui::begin_docked("###panel", theme::kSideBg)) ImGui::TextUnformatted("");
     ImGui::End();
     return true;
   }
@@ -140,7 +104,15 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
   draw_inspector(*m);
   draw_bottom(*m);
   draw_dialogs(*m);
-  return !m->active.empty();
+  return !m->active.empty() || (chat_ && chat_->busy());
+}
+
+void Ui::set_project_root(std::filesystem::path root) {
+  root_ = std::move(root);
+  reload_models();
+  cleared_ = load_cleared(root_);
+  chat_ = std::make_unique<Chat>(root_, find_karkas_cli(), wake_);
+  chat_serial_ = ~0ULL;
 }
 
 void Ui::go_to(const Model& m, const std::string& id) {
@@ -167,6 +139,10 @@ void Ui::draw_menu() {
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) show_picker();
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_N)) show_picker(true);
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Comma)) show_settings_ = !show_settings_;
+  if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O)) {
+    show_chat_ = !show_chat_;
+    chat_focus_ = show_chat_;
+  }
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_F)) {
     side_ = SideView::Search;
     focus_search_ = true;
@@ -208,6 +184,10 @@ void Ui::draw_menu() {
     if (ImGui::MenuItem(with_icon(Icon::Search, tr("Search")).c_str(), "Ctrl+Shift+F", side_ == SideView::Search)) side_ = SideView::Search;
     if (ImGui::MenuItem(with_icon(Icon::Changes, tr("Schema changes")).c_str(), nullptr, side_ == SideView::Changes)) {
       side_ = SideView::Changes;
+    }
+    if (ImGui::MenuItem(with_icon(Icon::Chat, tr("Orchestrator chat")).c_str(), "Ctrl+Shift+O", show_chat_)) {
+      show_chat_ = !show_chat_;
+      chat_focus_ = show_chat_;
     }
     ImGui::Separator();
     bool all = req_.all_levels;
@@ -253,10 +233,14 @@ void Ui::draw_activity_bar(const Model* m) {
       bool hot = ImGui::IsItemHovered();
       bool on = side_ == v;
       if (v == SideView::Settings) on = show_settings_;
+      if (v == SideView::Chat) on = show_chat_;
       if (ImGui::IsItemClicked()) {
         if (v == SideView::Search && side_ != v) focus_search_ = true;
         if (v == SideView::Settings) {
           show_settings_ = !show_settings_;  // a separate window, not a side bar view
+        } else if (v == SideView::Chat) {
+          show_chat_ = !show_chat_;  // a separate window too
+          chat_focus_ = show_chat_;
         } else {
           side_ = v;
         }
@@ -283,6 +267,7 @@ void Ui::draw_activity_bar(const Model* m) {
     button(SideView::Explorer, Icon::Files, tr("Explorer"), 0);
     button(SideView::Search, Icon::Search, tr("Search"), 0);
     button(SideView::Changes, Icon::Changes, tr("Schema changes"), pending);
+    button(SideView::Chat, Icon::Chat, tr("Orchestrator chat"), 0);
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - w - 4);
     button(SideView::Settings, Icon::Gear, tr("Settings"), 0);
   }
@@ -325,6 +310,12 @@ void Ui::draw_status_bar(const Model* m) {
           bottom_select_ = "agents";
         }
       }
+      if (chat_ && chat_->busy()) {
+        float a = static_cast<float>(0.6 + 0.4 * std::sin(pulse_ * 5.0));
+        std::string t = chat_->current_ticket();
+        std::string label = t.empty() ? std::string(tr("orchestrator: working")) : fmt::format(fmt::runtime(tr("orchestrator: {}")), t);
+        if (status_item("st_chat", with_icon(Icon::Chat, label), rgb(240, 200, 30, a), tr("Open the orchestrator chat"))) show_chat_ = true;
+      }
       status_item("st_engine", m->engine + " · " + fmt::format(fmt::runtime(tr("index {:.0f} ms")), m->index_ms), muted,
                   tr("Layout engine and the time of the last index update"));
       if (!m->message.empty()) status_item("st_msg", m->message, muted);
@@ -352,7 +343,7 @@ void Ui::draw_status_bar(const Model* m) {
 
 void Ui::draw_side_bar(const Model* m) {
   tree_hover_.clear();
-  if (!begin_panel("Side###side", theme::kSideBg, ImVec2(8, 8))) {
+  if (!ui::begin_docked("Side###side", theme::kSideBg, ImVec2(8, 8))) {
     ImGui::End();
     return;
   }
@@ -708,7 +699,7 @@ void Ui::open_file_tab(const std::string& file) {
 }
 
 void Ui::draw_editor(const Model& m) {
-  if (!begin_panel("Editor###editor", theme::kEditorBg, ImVec2(0, 0))) {
+  if (!ui::begin_docked("Editor###editor", theme::kEditorBg, ImVec2(0, 0))) {
     ImGui::End();
     return;
   }
@@ -831,7 +822,7 @@ void Ui::draw_file_tab(const Model& m, const std::string& file) {
 // --- inspector ------------------------------------------------------------------------------------
 
 void Ui::draw_inspector(const Model& m) {
-  if (!begin_panel("Inspector###Inspector", theme::kSideBg, ImVec2(10, 8))) {
+  if (!ui::begin_docked("Inspector###Inspector", theme::kSideBg, ImVec2(10, 8))) {
     ImGui::End();
     return;
   }
@@ -923,7 +914,7 @@ void Ui::draw_inspector(const Model& m) {
   if (ui::section((std::string(tr("CARD (KSL)")) + "###card").c_str())) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::col(theme::kEditorBg));
     ImGui::BeginChild("cardtext", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
-    card_text(m.card_text);
+    ui::ksl_text(m.card_text);
     ImGui::EndChild();
     ImGui::PopStyleColor();
   }
@@ -971,168 +962,6 @@ void Ui::draw_inspector(const Model& m) {
     ImGui::PopFont();
   }
   ImGui::EndChild();
-  ImGui::End();
-}
-
-// --- bottom panel -----------------------------------------------------------------------------------
-
-void Ui::draw_bottom(const Model& m) {
-  if (!begin_panel("Panel###panel", theme::kSideBg, ImVec2(10, 4))) {
-    ImGui::End();
-    return;
-  }
-  int errors = 0;
-  int warnings = 0;
-  for (const auto& d : m.snap->drift) (d.severity == "E" ? errors : warnings)++;
-  auto tab = [&](const char* key, Icon ic, const std::string& text) {
-    ImGuiTabItemFlags f = bottom_select_ == key ? ImGuiTabItemFlags_SetSelected : 0;
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 5));
-    bool r = ImGui::BeginTabItem((with_icon(ic, text) + "###" + key).c_str(), nullptr, f);
-    ImGui::PopStyleVar();
-    return r;
-  };
-  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 5));
-  bool tabs = ImGui::BeginTabBar("##panel_tabs");
-  ImGui::PopStyleVar();
-  if (tabs) {
-    if (tab("tickets", Icon::Ticket, fmt::format("{} {}", tr("Tickets"), m.snap->tickets.size()))) {
-      if (m.snap->tickets.empty()) {
-        ui::muted("%s", tr("no tickets yet: karkas task / karkas debug create them"));
-      } else if (ImGui::BeginTable("t", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Resizable,
-                            ImVec2(ImGui::GetContentRegionAvail().x * 0.48f, 0))) {
-        ImGui::TableSetupScrollFreeze(0, 1);
-        for (const char* h : {"id", "kind", "status", "title"}) ImGui::TableSetupColumn(tr(h));
-        ImGui::TableHeadersRow();
-        for (const auto& t : m.snap->tickets) {
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          if (ImGui::Selectable(t.id.c_str(), req_.ticket == t.id, ImGuiSelectableFlags_SpanAllColumns)) req_.ticket = t.id;
-          ImGui::TableNextColumn();
-          ImGui::TextUnformatted(t.kind.c_str());
-          ImGui::TableNextColumn();
-          ImGui::TextColored(t.status == "closed" ? rgb(115, 201, 145) : rgb(230, 180, 60), "%s", t.status.c_str());
-          ImGui::TableNextColumn();
-          ImGui::TextUnformatted(t.title.c_str());
-        }
-        ImGui::EndTable();
-        ImGui::SameLine();
-        ImGui::BeginChild("ticket", ImVec2(0, 0), ImGuiChildFlags_Borders);
-        if (m.ticket_text.empty()) {
-          ui::muted("%s", tr("(select a ticket)"));
-        } else {
-          card_text(m.ticket_text);
-        }
-        ImGui::EndChild();
-      }
-      ImGui::EndTabItem();
-    }
-    if (tab("agents", Icon::Agent, m.active.empty() ? std::string(tr("Agents")) : fmt::format("{} {}", tr("Agents"), m.active.size()))) {
-      for (const auto& a : m.active) {
-        status_dot("", true, pulse_);
-        ImGui::Text("%s  %s  (%s)  %s", a.role.c_str(), a.block.c_str(), a.model.c_str(), a.ticket.c_str());
-      }
-      if (m.active.empty()) ui::muted("%s", tr("no agent is working now"));
-      ImGui::Spacing();
-      if (ImGui::BeginTable("runs", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Resizable)) {
-        ImGui::TableSetupScrollFreeze(0, 1);
-        for (const char* h : {"role", "block", "tier", "outcome", "tokens in/out", "cache read", "usd"}) ImGui::TableSetupColumn(tr(h));
-        ImGui::TableHeadersRow();
-        for (auto it = m.runs.rbegin(); it != m.runs.rend() && it - m.runs.rbegin() < 50; ++it) {
-          ImGui::TableNextRow();
-          for (const auto& cell : {it->role, it->block, it->tier, it->outcome, fmt::format("{}/{}", it->input_tokens, it->output_tokens),
-                                   std::to_string(it->cache_read_tokens), fmt::format("{:.4f}", it->cost_usd)}) {
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(cell.c_str());
-          }
-        }
-        ImGui::EndTable();
-      }
-      ImGui::EndTabItem();
-    }
-    if (tab("build", Icon::Hammer, tr("Build & tests"))) {
-      if (m.snap->tests.empty()) ui::muted("%s", tr("no test results yet: karkas test"));
-      if (ImGui::BeginTable("tests", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Resizable)) {
-        ImGui::TableSetupScrollFreeze(0, 1);
-        for (const char* h : {"block", "contract", "unit", "integration", "failures"}) ImGui::TableSetupColumn(tr(h));
-        ImGui::TableHeadersRow();
-        for (const auto& t : m.snap->tests) {
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          ImGui::TextColored(t.fresh ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : rgb(140, 140, 140), "%s%s%s", t.block.c_str(),
-                             t.fresh ? "" : " ", t.fresh ? "" : tr("(stale)"));
-          for (const auto& c : {t.contract, t.unit, t.integration}) {
-            ImGui::TableNextColumn();
-            if (c.total > 0) {
-              ImGui::TextColored(c.pass == c.total ? rgb(115, 201, 145) : rgb(241, 76, 76), "%s %d/%d", icon(c.pass == c.total ? Icon::Check : Icon::Close),
-                                 c.pass, c.total);
-            }
-          }
-          ImGui::TableNextColumn();
-          ImGui::TextUnformatted(t.build_failed ? tr("build failed") : (t.failures.empty() ? "" : t.failures.front().c_str()));
-        }
-        ImGui::EndTable();
-      }
-      ImGui::EndTabItem();
-    }
-    if (tab("costs", Icon::Coins, tr("Costs"))) {
-      double total = 0;
-      std::int64_t in = 0, cr = 0, cw = 0;
-      std::map<std::string, double> by_block, by_model, by_ticket;
-      for (const auto& r : m.runs) {
-        total += r.cost_usd;
-        in += r.input_tokens;
-        cr += r.cache_read_tokens;
-        cw += r.cache_write_tokens;
-        by_block[r.block] += r.cost_usd;
-        by_model[r.model] += r.cost_usd;
-        if (!r.ticket.empty()) by_ticket[r.ticket] += r.cost_usd;
-      }
-      double share = in + cr + cw > 0 ? 100.0 * static_cast<double>(cr) / static_cast<double>(in + cr + cw) : 0.0;
-      ImGui::Text(tr("total $%.4f · %zu runs · cache read share %.1f%%"), total, m.runs.size(), share);
-      ImGui::Spacing();
-      if (ImGui::BeginTable("costs", 3, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerV)) {
-        ImGui::TableNextRow();
-        for (const auto& [name, v] : {std::pair{"by block", &by_block}, std::pair{"by model", &by_model}, std::pair{"by ticket", &by_ticket}}) {
-          ImGui::TableNextColumn();
-          ui::panel_title(tr(name));
-          for (const auto& [k, c] : *v) {
-            ImGui::TextUnformatted(k.c_str());
-            ImGui::SameLine(ImGui::GetColumnWidth() - ImGui::CalcTextSize("$0.0000").x - 4);
-            ImGui::Text("$%.4f", c);
-          }
-        }
-        ImGui::EndTable();
-      }
-      ImGui::EndTabItem();
-    }
-    std::string drift_label = m.snap->drift.empty() ? std::string(tr("Drift")) : fmt::format("{} {}·{}", tr("Drift"), errors, warnings);
-    if (tab("drift", Icon::Wave, drift_label)) {
-      if (m.snap->drift.empty()) ui::muted("%s", tr("no drift"));
-      for (std::size_t i = 0; i < m.snap->drift.size(); ++i) {
-        const auto& d = m.snap->drift[i];
-        bool err = d.severity == "E";
-        ImGui::PushID(static_cast<int>(i));
-        ImGui::TextColored(err ? rgb(241, 76, 76) : rgb(230, 180, 60), "%s", icon(err ? Icon::Error : Icon::Warning));
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", d.code.c_str());
-        ImGui::SameLine();
-        ImGui::TextUnformatted(d.message.c_str());
-        if (!d.block.empty()) {
-          ImGui::SameLine();
-          ImGui::TextDisabled("%s", d.block.c_str());
-        }
-        if (!d.file.empty()) {
-          ImGui::SameLine();
-          std::string where = d.line > 0 ? fmt::format("{}:{}", d.file, d.line) : d.file;
-          if (ImGui::TextLink(where.c_str())) w_.open_in_editor(d.file, d.line);
-        }
-        ImGui::PopID();
-      }
-      ImGui::EndTabItem();
-    }
-    ImGui::EndTabBar();
-  }
-  bottom_select_.clear();
   ImGui::End();
 }
 

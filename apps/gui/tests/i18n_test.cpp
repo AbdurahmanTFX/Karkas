@@ -26,7 +26,7 @@ TEST_CASE("every tr()/title() text in the GUI sources has a Russian translation"
     return out;
   };
   int checked = 0;
-  for (const char* f : {"ui.cpp", "ui_shell.cpp", "ui_models.cpp", "worker.cpp", "picker.cpp"}) {
+  for (const char* f : {"ui.cpp", "ui_shell.cpp", "ui_models.cpp", "ui_panels.cpp", "ui_chat.cpp", "worker.cpp", "picker.cpp"}) {
     auto text = kk::core::read_file(std::string(KK_GUI_SRC) + "/" + f);
     REQUIRE(text);
     for (std::sregex_iterator it(text->begin(), text->end(), call), end; it != end; ++it) {

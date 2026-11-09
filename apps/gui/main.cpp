@@ -1,6 +1,6 @@
 // karkas-gui (14): Dear ImGui (docking) + GLFW + OpenGL 3.3 + imgui-node-editor.
 //   karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]
-//              [--lang en|ru] [--block-scale F] [--settings] [--script "..."] [--drag x1,y1,x2,y2]
+//              [--lang en|ru] [--block-scale F] [--settings] [--chat] [--script "..."] [--drag x1,y1,x2,y2]
 //              [--frames N --screenshot out.png]   (headless checks)
 // Without a project (started outside one) the window opens with "Open project".
 #include <GLFW/glfw3.h>
@@ -35,7 +35,8 @@ namespace {
 
 void usage() {
   std::cerr << "usage: karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]\n"
-               "                  [--lang en|ru] [--block-scale F] [--settings] [--script \"...\"] [--drag x1,y1,x2,y2]\n"
+               "                  [--lang en|ru] [--block-scale F] [--settings] [--chat] [--script \"...\"]\n"
+               "                  [--drag x1,y1,x2,y2]\n"
                "                  [--frames N] [--screenshot out.png] [--version]\n";
 }
 
@@ -72,6 +73,7 @@ int main(int argc, char** argv) {
   float block_scale = 0;
   bool all_levels = false;
   bool open_settings = false;
+  bool open_chat = false;
   std::string script_text;  // headless checks: scripted input (script.hpp)
   int frames = 0;
   for (int i = 1; i < argc; ++i) {
@@ -84,6 +86,7 @@ int main(int argc, char** argv) {
     else if (a == "--lang") lang = next();
     else if (a == "--block-scale") block_scale = std::strtof(next().c_str(), nullptr);
     else if (a == "--settings") open_settings = true;
+    else if (a == "--chat") open_chat = true;
     else if (a == "--script") script_text += next() + ";";
     else if (a == "--drag") script_text += "drag " + kk::core::replace_all(next(), ",", " ") + ";";
     else if (a == "--frames") frames = std::atoi(next().c_str());
@@ -208,10 +211,11 @@ int main(int argc, char** argv) {
     std::optional<fs::path> next_project;
     {
       kk::gui::Worker worker(*root, *cfg, [] { glfwPostEmptyEvent(); });
-      kk::gui::Ui ui(worker, settings, persist);
+      kk::gui::Ui ui(worker, settings, persist, [] { glfwPostEmptyEvent(); });
       ui.set_project_root(*root);
       if (first_project) {
         if (open_settings) ui.open_settings();
+        if (open_chat) ui.open_chat();
         ui.request().scope = scope;
         ui.request().selected = select;
         ui.request().all_levels = all_levels;

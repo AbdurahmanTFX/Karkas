@@ -1,11 +1,25 @@
 #include "widgets.hpp"
 
+#include <imgui_internal.h>
+
 #include <cstdarg>
 
 #include "kk/core/text.hpp"
 #include "theme.hpp"
 
 namespace kk::gui::ui {
+
+bool begin_docked(const char* name, ImU32 bg, ImVec2 padding) {
+  ImGuiWindowClass wc;
+  wc.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags_NoTabBar;
+  ImGui::SetNextWindowClass(&wc);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::col(bg));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
+  bool open = ImGui::Begin(name, nullptr, ImGuiWindowFlags_NoCollapse);
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor();
+  return open;
+}
 
 bool icon_button(const char* id, Icon icon_id, const char* tooltip, bool on, const char* text) {
   std::string label = text != nullptr && *text != '\0' ? with_icon(icon_id, text) : std::string(icon(icon_id));
@@ -82,6 +96,32 @@ void diff_text(const std::string& text) {
       c = ImVec4(0.55f, 0.70f, 0.95f, 1.0f);
     }
     ImGui::TextColored(c, "%s", line.c_str());
+  }
+  ImGui::PopFont();
+}
+
+void ksl_text(const std::string& text) {
+  ImGui::PushFont(theme::mono_font());
+  const ImVec4 comment(106 / 255.0f, 153 / 255.0f, 85 / 255.0f, 1.0f);
+  const ImVec4 record(197 / 255.0f, 134 / 255.0f, 192 / 255.0f, 1.0f);
+  const ImVec4 directive(86 / 255.0f, 156 / 255.0f, 214 / 255.0f, 1.0f);
+  for (const auto& line : core::split(text, '\n', false)) {
+    if (line.empty()) {
+      ImGui::NewLine();
+      continue;
+    }
+    if (line[0] == '#') {
+      ImGui::TextColored(comment, "%s", line.c_str());
+      continue;
+    }
+    auto sp = line.find(' ');
+    std::string head = line.substr(0, sp);
+    std::string rest = sp == std::string::npos ? "" : line.substr(sp);
+    ImGui::TextColored(head[0] == '@' ? record : directive, "%s", head.c_str());
+    if (!rest.empty()) {
+      ImGui::SameLine(0, 0);
+      ImGui::TextUnformatted(rest.c_str());
+    }
   }
   ImGui::PopFont();
 }

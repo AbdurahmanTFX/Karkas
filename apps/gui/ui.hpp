@@ -4,6 +4,7 @@
 // code files), inspector, bottom panel (tickets, agents, build & tests, costs, drift) and a
 // status bar; plus the edit dialogs (14.6). ui_shell.cpp holds the shell, ui.cpp the schema.
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -12,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "chat.hpp"
+#include "cleared.hpp"
 #include "kk/core/config.hpp"
 #include "picker.hpp"
 #include "settings.hpp"
@@ -32,8 +35,9 @@ struct LinkDesc {
 
 class Ui {
  public:
-  // `persist`: save settings changes to ~/.config/karkas/gui.json.
-  Ui(Worker& w, GuiSettings& settings, bool persist);
+  // `persist`: save settings changes to ~/.config/karkas/gui.json; `wake` redraws the window
+  // from another thread (the orchestrator chat).
+  Ui(Worker& w, GuiSettings& settings, bool persist, std::function<void()> wake = {});
   ~Ui();
   Ui(const Ui&) = delete;
   Ui& operator=(const Ui&) = delete;
@@ -43,15 +47,16 @@ class Ui {
   Request& request() { return req_; }
   [[nodiscard]] bool quit_requested() const { return quit_; }
   void open_settings() { show_settings_ = true; }
+  void open_chat() {
+    show_chat_ = true;
+    chat_focus_ = true;
+  }
   // A project chosen in "Open project" (main switches to it); empty when none.
   std::optional<std::filesystem::path> take_open_request() { return std::exchange(open_request_, std::nullopt); }
-  void set_project_root(std::filesystem::path root) {
-    root_ = std::move(root);
-    reload_models();
-  }
+  void set_project_root(std::filesystem::path root);
 
  private:
-  enum class SideView { Explorer, Search, Changes, Settings };
+  enum class SideView { Explorer, Search, Changes, Settings, Chat };
 
   // shell (ui_shell.cpp)
   void draw_menu();
@@ -78,7 +83,21 @@ class Ui {
   void draw_file_tab(const Model& m, const std::string& file);
   void open_file_tab(const std::string& file);
   void draw_inspector(const Model& m);
+  // bottom panel and stopping agents (ui_panels.cpp, ADR 0019)
   void draw_bottom(const Model& m);
+  void bottom_tickets(const Model& m);
+  void bottom_agents(const Model& m);
+  void bottom_tests(const Model& m);
+  void bottom_costs(const Model& m);
+  void bottom_drift(const Model& m);
+  // "Clear" (with a confirmation) and "Restore (N)" at the right of a panel's first line.
+  void panel_actions(const char* key, int shown, int hidden, const std::function<void()>& clear_all,
+                     const std::function<void()>& restore);
+  void cleared_changed();
+  void interrupt_process(int pid);  // SIGINT, like Ctrl+C in the terminal of the command
+  // the orchestrator chat (ui_chat.cpp, ADR 0019)
+  void draw_chat_window(const Model* m);
+  void chat_entry(const Model* m, const ChatEntry& e, std::size_t i);
   void show_picker(bool create = false);
   void go_to(const Model& m, const std::string& id);  // open the level of a block and select it
   ImVec4 color_of(const Model& m, const std::string& id) { return colors_.get(*m.snap, m.serial, id); }
@@ -110,6 +129,7 @@ class Ui {
   std::set<std::string> active_blocks_;
   double pulse_ = 0;
   bool quit_ = false;
+  std::function<void()> wake_;
   std::filesystem::path root_;  // the open project
   std::unique_ptr<ProjectPicker> picker_;
   bool picker_open_ = false;
@@ -136,6 +156,17 @@ class Ui {
   std::map<std::string, std::string> editor_loaded_;            // text shown per file
   std::string select_tab_;     // tab to bring forward next frame ("#schema" or a file)
   std::string bottom_select_;  // bottom panel tab to bring forward next frame
+  Cleared cleared_;            // rows removed from the bottom panels (display only)
+  std::map<int, double> interrupted_;  // pid → time SIGINT was sent (Kill appears after a while)
+  // orchestrator chat
+  std::unique_ptr<Chat> chat_;
+  bool show_chat_ = false;
+  bool chat_focus_ = false;
+  int chat_mode_ = 0;  // 0 task, 1 bug
+  char chat_input_[4096] = {};
+  std::uint64_t chat_serial_ = ~0ULL;
+  std::vector<ChatEntry> chat_cache_;
+  bool chat_scroll_ = false;
   // address bar
   bool editing_path_ = false;
   bool focus_path_ = false;

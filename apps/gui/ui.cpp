@@ -81,7 +81,8 @@ constexpr float kGrip = 11.0f;
 
 }  // namespace
 
-Ui::Ui(Worker& w, GuiSettings& settings, bool persist) : w_(w), settings_(settings), persist_(persist) {
+Ui::Ui(Worker& w, GuiSettings& settings, bool persist, std::function<void()> wake)
+    : w_(w), settings_(settings), persist_(persist), wake_(std::move(wake)) {
   ed::Config cfg;
   cfg.SettingsName = nullptr;  // positions and sizes live in .karkas/layout (14.2), not imgui.ini
   ed_ = ed::CreateEditor(&cfg);

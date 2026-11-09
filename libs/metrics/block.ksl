@@ -6,6 +6,7 @@ est     M
 fn      cost_usd(Config, provider, model, Tokens) -> Result<double>
 fn      cost_report(Config, runs, by) -> Result<string>
 fn      active_runs(root) -> ActiveRun[]
+fn      request_stop(root, journal) -> Result<void>
 call    libs.index:runs
 use     libs.core
 inv     a cloud model without a price is an error, never zero

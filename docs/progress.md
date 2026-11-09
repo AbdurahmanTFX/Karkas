@@ -291,6 +291,22 @@
   A $0.28), Haiku 5/5 for $0.057 (was 4/5 for $0.086; A $0.085). In both runs the replay session
   also fixed the network bug, so the network session was stopped.
 
+## Addition — stopping agents, clearing panels, orchestrator chat (docs/adr/0019)
+- Stopping: process flag (`core::request_cancel`, SIGINT/SIGTERM in the agent commands; a second
+  signal quits at once) and per-run stop files (`metrics::request_stop`); the loop ends with
+  `cancelled`, curl aborts the request in flight, back-off gives up; no retry or escalation, the
+  ticket gets a note and is `open` again, exit 130. Active markers carry the pid.
+- GUI agents tab: Stop (this agent), Stop command (SIGINT to its process), Kill after 5 s.
+- Bottom panels: × per row and "Clear list" (tickets, runs/costs, test results) with Restore;
+  display only (`.karkas/cleared.json`), journals/tickets/karkas.log untouched; newer activity
+  shows again.
+- Orchestrator chat (Ctrl+Shift+O): messages run `karkas task` / `karkas debug` / `/<agent command>`
+  as a child process; progress streams in; result with next steps (ticket, continue, approve
+  C-NNNN); Stop / Kill; history in `.karkas/chat.jsonl`.
+- Tests: cancel scopes, retries, stop files, loop and engine (stopped worker, SIGINT during a
+  navigator), cleared rows, chat with a fake `karkas`. Checked by hand: SIGINT during a hanging
+  model request (< 0.1 s, exit 130), GUI under Xvfb (chat task, Stop, clearing).
+
 ## Stage 10 — benchmarks (harness)
 - bench/wavkit: task description spec.md (exact CLI and formats), five S2 extensions
   (s2_tasks.txt), five S3 bugs as exact-text patches (ring wraparound, double gain, no clip

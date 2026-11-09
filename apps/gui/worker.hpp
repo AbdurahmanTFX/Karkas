@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 
+#include "cleared.hpp"
 #include "kk/agents/edit.hpp"
 #include "kk/core/config.hpp"
 #include "kk/core/model.hpp"
@@ -87,7 +88,11 @@ class Worker {
   // The folder of a block: its card folder, or the folder of its code for imported blocks.
   void open_block_folder(const std::string& block);
   void reindex();
-  void reload_config();  // karkas.toml changed (models chosen in the GUI)
+  void reload_config();
+  // Asks one agent run to stop (its stop file; ADR 0019).
+  void stop_run(const fs::path& journal);
+  // Saves the rows removed from the bottom panels (.karkas/cleared.json).
+  void save_cleared(Cleared c);  // karkas.toml changed (models chosen in the GUI)
   [[nodiscard]] const fs::path& root() const { return root_; }
 
  private:

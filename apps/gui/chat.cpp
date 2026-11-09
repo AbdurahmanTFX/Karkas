@@ -349,8 +349,10 @@ void Chat::reader(int out_fd, int err_fd, pid_t pid) {
       e.kind = ChatEntry::Kind::Progress;
       e.text = line.substr(std::string("· ").size());
     } else {
+      // Log lines of the CLI: the time stamp says nothing in a chat that is happening now.
+      static const std::regex stamp(R"(^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(\.\d+)? )");
       e.kind = ChatEntry::Kind::Log;
-      e.text = line;
+      e.text = std::regex_replace(line, stamp, "");
     }
     std::lock_guard lk(mu_);
     if (e.kind == ChatEntry::Kind::Progress && e.text.starts_with("created ")) {

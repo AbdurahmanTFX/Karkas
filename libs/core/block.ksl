@@ -6,5 +6,6 @@ fn      load_schema(path) -> Result<Schema>
 fn      check_schema(Schema) -> Issue[]
 fn      parse_records(text, file) -> Result<Record[]>
 fn      load_config(path) -> Result<Config>
+fn      request_cancel() -> void
 inv     rewriting an unchanged canonical card gives the same bytes
 inv     every KSL error carries file, line, column

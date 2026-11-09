@@ -122,6 +122,19 @@ void Worker::reload_config() {
   });
 }
 
+void Worker::stop_run(const fs::path& journal) {
+  post([this, journal] {
+    auto r = metrics::request_stop(root_, journal);
+    message_ = r ? tr("stop requested: ") + journal.filename().string() : r.error().message;
+  });
+}
+
+void Worker::save_cleared(Cleared c) {
+  post([this, c = std::move(c)] {
+    if (auto r = gui::save_cleared(root_, c); !r) message_ = r.error().message;
+  });
+}
+
 void Worker::approve_change(const std::string& id) {
   post([this, id] {
     auto e = agents::Engine::create(root_, cfg_);
