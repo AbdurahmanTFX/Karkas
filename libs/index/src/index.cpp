@@ -931,7 +931,7 @@ Snapshot Index::snapshot() {
   }
   {
     auto s = db_.q("SELECT block, contract_pass, contract_total, unit_pass, unit_total, integration_pass, "
-                   "integration_total, build_failed, fresh, failures FROM test_results ORDER BY block");
+                   "integration_total, build_failed, fresh, failures, ts FROM test_results ORDER BY block");
     while (s.step()) {
       TestRow t;
       t.block = s.text(0);
@@ -941,6 +941,7 @@ Snapshot Index::snapshot() {
       t.build_failed = s.i64(7) != 0;
       t.fresh = s.i64(8) != 0;
       t.failures = core::split(s.text(9), '\n');
+      t.ts = s.i64(10);
       snap.tests.push_back(std::move(t));
     }
   }

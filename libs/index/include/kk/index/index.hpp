@@ -86,6 +86,7 @@ struct TestRow {
   bool build_failed = false;
   bool fresh = false;  // matches the current code
   std::vector<std::string> failures;
+  std::int64_t ts = 0;  // when the tests ran
 };
 
 struct Snapshot {
