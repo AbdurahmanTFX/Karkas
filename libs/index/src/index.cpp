@@ -255,6 +255,21 @@ std::string block_code_hash(const std::vector<CodeFile>& files, std::string_view
   return combine_hashes(std::move(items));
 }
 
+std::string block_test_hash(const core::Schema& schema, const std::vector<CodeFile>& files, std::string_view block) {
+  std::set<std::string> deps;
+  for (const auto& l : schema.links()) {
+    if (l.src_block == block) deps.insert(l.dst_block);
+    if (l.dst_block == block) deps.insert(l.src_block);
+  }
+  std::vector<std::pair<std::string, std::string>> items;
+  items.emplace_back(std::string(block), block_code_hash(files, block));
+  for (const auto& d : deps) {
+    if (d == block) continue;
+    if (auto h = block_api_hash(files, d); !h.empty()) items.emplace_back(d + ":api", h);
+  }
+  return combine_hashes(std::move(items));
+}
+
 std::string block_api_hash(const std::vector<CodeFile>& files, std::string_view block) {
   std::vector<std::pair<std::string, std::string>> items;
   for (const auto& f : files) {
@@ -521,7 +536,7 @@ kk::Result<UpdateStats> Index::update(const UpdateOptions& opts) {
     std::string api_h = b.has_code() ? facts.api_hash[b.id] : "";
     std::string frozen;
     if (auto it = state->frozen_api.find(b.id); it != state->frozen_api.end()) frozen = it->second;
-    auto code_h = block_code_hash(files, b.id);
+    auto code_h = block_test_hash(*schema, files, b.id);
     auto status = b.has_code() ? compute_status(b, by_block[b.id], *state, drift_blocks.contains(b.id), api_h, code_h)
                                : (drift_blocks.contains(b.id) ? core::BlockStatus::Drift : core::BlockStatus::Design);
     ins_block.bind(1, b.id)
@@ -610,7 +625,7 @@ kk::Result<UpdateStats> Index::update(const UpdateOptions& opts) {
       "INSERT OR REPLACE INTO test_results(block, contract_pass, contract_total, unit_pass, unit_total, "
       "integration_pass, integration_total, build_failed, fresh, failures, ts) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
   for (const auto& [id, t] : state->tests) {
-    bool fresh = t.code_hash == block_code_hash(files, id);
+    bool fresh = t.code_hash == block_test_hash(*schema, files, id);
     ins_test.bind(1, id).bind(2, t.contract.pass).bind(3, t.contract.total).bind(4, t.unit.pass)
         .bind(5, t.unit.total).bind(6, t.integration.pass).bind(7, t.integration.total)
         .bind(8, t.build_failed ? 1 : 0).bind(9, fresh ? 1 : 0).bind(10, core::join(t.failures, "\n")).bind(11, t.ts);

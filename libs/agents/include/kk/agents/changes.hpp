@@ -1,6 +1,7 @@
 #pragma once
 // Proposed schema changes .karkas/changes/C-NNNN.ksl (10.7) and their application.
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,10 @@ kk::Result<ApplyResult> apply_diff(const std::filesystem::path& root, const std:
 // cards that applying would write.
 kk::Result<ApplyResult> check_diff(const std::filesystem::path& root, const std::vector<core::DiffLine>& diff);
 
+// Dry run of propose_change: the same parse and checks, nothing stored. Lets a worker's report
+// be refused while the model can still correct the proposal in the same run.
+kk::Result<void> check_proposal(const std::filesystem::path& root, std::string_view diff_text);
+
 // Parses an agent's diff, runs check_diff and stores it as a pending change C-NNNN. Refused
 // (error listing the problems) when it breaks the schema checks or changes nothing.
 kk::Result<core::Change> propose_change(const std::filesystem::path& root, std::string from, std::string reason,
@@ -47,5 +52,10 @@ kk::Result<core::Change> propose_change(const std::filesystem::path& root, std::
 
 // A unified-diff-like text of the card changes, for showing before confirmation (14.6).
 std::string preview_diff(const std::filesystem::path& root, const std::vector<core::DiffLine>& diff);
+
+// The cards a diff would write (block id → canonical card text; "" when the card is removed),
+// with nothing written: karkas-gui draws them as ghost blocks, ports and links (ADR 0021).
+kk::Result<std::map<std::string, std::string>> cards_after(const std::filesystem::path& root,
+                                                           const std::vector<core::DiffLine>& diff);
 
 }  // namespace kk::agents

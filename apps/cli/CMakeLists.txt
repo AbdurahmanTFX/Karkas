@@ -1,6 +1,6 @@
 file(GLOB KK_CLI_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 add_executable(karkas ${KK_CLI_SOURCES})
-target_link_libraries(karkas PRIVATE CLI11::CLI11 spdlog::spdlog)
+target_link_libraries(karkas PRIVATE CLI11::CLI11 spdlog::spdlog kk_templates)
 foreach(lib core index code runner llm metrics agents mcp layout)
   if(TARGET kk_${lib})
     target_link_libraries(karkas PRIVATE kk_${lib})

@@ -121,7 +121,7 @@ kk::VoidResult RunJournal::step(std::string_view kind, std::string_view payload_
     payload = std::string(payload_json);
   }
   json line = {{"type", "step"}, {"n", ++n_}, {"kind", kind}, {"ts", core::unix_now()}, {"data", payload}};
-  return core::append_file(path_, line.dump() + "\n");
+  return core::append_file(path_, line.dump(-1, ' ', false, json::error_handler_t::replace) + "\n");
 }
 
 kk::Result<index::RunRow> RunJournal::finish(const Tokens& t, double cost, std::int64_t duration_ms, int steps,
@@ -286,6 +286,107 @@ kk::Result<std::string> cost_report(const core::Config& cfg, const std::vector<i
                                 "input", "output", "cache_write", "cache_read", "cached", "usd");
   for (const auto& [k, a] : groups) out += row(k, a);
   out += row("total", total);
+  return out;
+}
+
+}  // namespace kk::metrics
+
+namespace kk::metrics {
+
+namespace {
+
+bool ended_badly(const std::string& outcome) {
+  static const std::set<std::string> bad = {"failed", "max_steps", "budget", "timeout", "error", "cancelled", "escalated"};
+  return bad.contains(outcome);
+}
+
+struct Traffic {
+  int turns = 0, whole = 0, seen = 0;
+  std::int64_t shown = 0, whole_chars = 0, answers = 0;
+};
+
+Traffic read_traffic(const std::filesystem::path& file) {
+  Traffic t;
+  auto text = core::read_file(file);
+  if (!text) return t;
+  for (const auto& line : core::split(*text, '\n')) {
+    auto j = nlohmann::json::parse(line, nullptr, false);
+    if (!j.is_object()) continue;
+    if (j.contains("shown")) {
+      ++t.turns;
+      auto n = j.value("shown", std::int64_t{0});
+      t.shown += n;
+      if (j.value("whole", false)) {
+        ++t.whole;
+        t.whole_chars += n;
+      }
+      if (j.value("seen", false)) ++t.seen;
+    }
+    if (j.contains("answer")) t.answers += j.value("answer", std::int64_t{0});
+  }
+  return t;
+}
+
+}  // namespace
+
+std::string stats_report(const std::vector<index::RunRow>& runs, const std::string& ticket, const std::filesystem::path& project_root) {
+  std::string out;
+  if (ticket.empty()) {
+    struct Acc {
+      int runs = 0, ok = 0, steps = 0, escalated = 0;
+      double usd = 0;
+    };
+    std::map<std::pair<std::string, std::string>, Acc> by;
+    for (const auto& r : runs) {
+      auto& a = by[{r.role, r.tier}];
+      ++a.runs;
+      a.ok += ended_badly(r.outcome) ? 0 : 1;
+      a.steps += r.steps;
+      a.usd += r.cost_usd;
+      a.escalated += r.attempt > 1 ? 1 : 0;
+    }
+    out += fmt::format("{:<20} {:<16} {:>5} {:>9} {:>6} {:>9} {:>9}\n", "role", "tier", "runs", "ended ok", "steps", "usd", "retries");
+    for (const auto& [k, a] : by) {
+      out += fmt::format("{:<20} {:<16} {:>5} {:>8}% {:>6.1f} {:>9.4f} {:>9}\n", k.first, k.second, a.runs,
+                         a.runs == 0 ? 0 : 100 * a.ok / a.runs, a.runs == 0 ? 0.0 : static_cast<double>(a.steps) / a.runs, a.usd,
+                         a.escalated);
+    }
+    return out;
+  }
+  int n = 0, steps = 0;
+  double usd = 0;
+  Traffic total;
+  std::map<std::string, int> by_role;
+  for (const auto& r : runs) {
+    if (r.ticket != ticket) continue;
+    ++n;
+    steps += r.steps;
+    usd += r.cost_usd;
+    ++by_role[r.role];
+    auto stem = r.journal;
+    if (auto slash = stem.find_last_of('/'); slash != std::string::npos) stem = stem.substr(slash + 1);
+    if (stem.ends_with(".jsonl")) stem.resize(stem.size() - 6);
+    auto t = read_traffic(project_root / ".karkas" / "mcp" / "traffic" / (stem + ".jsonl"));
+    total.turns += t.turns;
+    total.whole += t.whole;
+    total.seen += t.seen;
+    total.shown += t.shown;
+    total.whole_chars += t.whole_chars;
+    total.answers += t.answers;
+    out += fmt::format("{:<14} {:<16} {:<14} steps={:<3} {:<22} usd={:.4f}{}\n", r.role, r.block.empty() ? "root" : r.block, r.tier, r.steps,
+                       r.outcome, r.cost_usd,
+                       t.turns > 0 ? fmt::format("  turns={} whole={} chars={}", t.turns, t.whole, t.shown) : std::string());
+  }
+  if (n == 0) return "no runs of " + ticket + "\n";
+  std::vector<std::string> roles;
+  for (const auto& [role, c] : by_role) roles.push_back(fmt::format("{} {}", c, role));
+  out += fmt::format("total: {} runs ({}), {} steps, usd={:.4f}\n", n, core::join(roles, ", "), steps, usd);
+  if (total.turns > 0) {
+    out += fmt::format("mcp traffic: {} turns, {} of them whole ({} shorter by seen), {} chars shown ({}% in whole turns), {} chars "
+                       "answered\n",
+                       total.turns, total.whole, total.seen, total.shown, total.shown == 0 ? 0 : 100 * total.whole_chars / total.shown,
+                       total.answers);
+  }
   return out;
 }
 

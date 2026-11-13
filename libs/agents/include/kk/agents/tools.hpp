@@ -19,6 +19,13 @@ Tool tool_def(std::string_view name);
 struct SchemaCallbacks {
   std::function<std::string(const std::string& block, const std::string& question)> ask;
   std::function<std::string(const std::string& block)> run_tests;
+  // Why a block may not be picked again in this run ("not_here: ..."), empty if it may: a
+  // child that already answered is not sent the same ticket twice in one descent.
+  std::function<std::string(const std::string& block)> excluded;
+  // Full check of a proposed KSL diff (the same as a worker's proposal); empty if it is fine.
+  std::function<std::string(const std::string& diff)> check_change;
+  // A feature's orchestrator may plan: dispatch / propose_change take `next` (ADR 0026).
+  bool plans = false;
 };
 
 class SchemaToolHost final : public IToolHost {
@@ -44,8 +51,16 @@ class LeafToolHost final : public IToolHost {
   [[nodiscard]] std::vector<std::string> reads() const override { return reads_; }
   [[nodiscard]] const std::set<std::string>& written() const { return written_; }
   [[nodiscard]] const std::string& last_test_text() const { return last_test_; }
+  [[nodiscard]] bool api_written() const { return api_written_; }
+  // Auto (ADR 0026): a worker's card diff is approved at once and the worker goes on in the same run
+  // with the new card; an error (no Auto, the limit of the run) ends the run with the report as before.
+  using ApproveNow = std::function<kk::Result<std::string>(const std::string& reason, const std::string& diff)>;
+  void set_approve_now(ApproveNow fn) { approve_now_ = std::move(fn); }
+  [[nodiscard]] bool approved_in_run() const { return approved_in_run_; }
 
  private:
+  ApproveNow approve_now_;
+  bool approved_in_run_ = false;
   Sandbox sb_;
   Role role_;
   ITestService& tests_;
@@ -53,6 +68,7 @@ class LeafToolHost final : public IToolHost {
   std::vector<std::string> reads_;
   std::set<std::string> written_;
   std::string last_test_;
+  bool api_written_ = false;
 };
 
 // Architect: writes cards and api/ headers within its scope (13.1).

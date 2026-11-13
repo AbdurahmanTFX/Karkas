@@ -10,20 +10,33 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "chat.hpp"
+#include "feed.hpp"
 #include "cleared.hpp"
 #include "kk/core/config.hpp"
+#include "kk/llm/mcp_bridge.hpp"
 #include "picker.hpp"
+#include "selectable.hpp"
 #include "settings.hpp"
 #include "ui_common.hpp"
 #include "worker.hpp"
 
 namespace ax::NodeEditor {
 struct EditorContext;
-}
+}  // namespace ax::NodeEditor
+
+namespace kk::gui {
+// Fits the blocks of `editor` into the screen part [free_min, free_max] of its canvas
+// [view_min, view_max] (panels cover the rest), zooming in at most to `max_zoom` (canvas_fit.cpp).
+void fit_canvas(ax::NodeEditor::EditorContext* editor, ImVec2 view_min, ImVec2 view_max, ImVec2 free_min, ImVec2 free_max, float max_zoom);
+// Forgets what the schema canvas keeps between frames (another project is opened).
+void reset_canvas_caches();
+}  // namespace kk::gui
+
 class TextEditor;
 
 namespace kk::gui {
@@ -67,6 +80,30 @@ class Ui {
   void side_search(const Model& m);
   void side_changes(const Model& m);
   void draw_settings_window(const Model* m);
+  void draw_windows_menu();
+  // Panels over the schema (ADR 0021): the schema keeps the whole work area; the side bar, the
+  // inspector and the bottom panel lie on its edges and are resized at their inner border, so
+  // showing, hiding or resizing one never changes the schema's size.
+  struct Area {
+    ImVec2 min{0, 0}, max{0, 0};
+    [[nodiscard]] float w() const { return max.x - min.x; }
+    [[nodiscard]] float h() const { return max.y - min.y; }
+  };
+  void layout_panels();
+  // A panel window fixed to `r`; `edge` ('R', 'L', 'T') is its inner border, where it is
+  // resized; the new size is kept in `frac` (a part of the work area).
+  bool begin_panel(const char* name, const Area& r, char edge, ImU32 bg, ImVec2 padding, float* frac);
+  bool begin_editor_window();
+  void order_windows();  // the schema at the back, the panels over it, floating windows on top
+  void fit_view();       // fit the blocks into the part of the schema that no panel covers
+  [[nodiscard]] bool bottom_visible() const;
+  [[nodiscard]] bool tab_visible(const char* key) const;
+  void set_tab_visible(const char* key, bool on);
+  Area work_, side_area_, insp_area_, bottom_area_, free_area_;
+  float chrome_h_ = 0.0f;  // the editor's tab bar and toolbar over the schema (last frame)
+  ImVec2 canvas_min_{0, 0}, canvas_max_{0, 0};
+  std::string editor_tab_ = "#schema";  // "#schema" or the open file shown
+  bool panel_dragged_ = false;
   // models and APIs per level / block (ui_models.cpp, ADR 0011)
   void settings_models(const Model* m);
   void reload_models();
@@ -80,7 +117,8 @@ class Ui {
   [[nodiscard]] std::string effective_model(const Model& m, const std::string& block) const;
   void draw_editor(const Model& m);
   void draw_schema_toolbar(const Model& m);
-  void draw_file_tab(const Model& m, const std::string& file);
+  void draw_file_header(const Model& m, const std::string& file);  // path and "open in the editor"
+  void draw_file_body(const Model& m, const std::string& file);    // the code
   void open_file_tab(const std::string& file);
   void draw_inspector(const Model& m);
   // bottom panel and stopping agents (ui_panels.cpp, ADR 0019)
@@ -95,9 +133,26 @@ class Ui {
                      const std::function<void()>& restore);
   void cleared_changed();
   void interrupt_process(int pid);  // SIGINT, like Ctrl+C in the terminal of the command
-  // the orchestrator chat (ui_chat.cpp, ADR 0019)
+  // the orchestrator chat (ui_chat.cpp, ADR 0019) and the live feed of agent runs (ADR 0021)
   void draw_chat_window(const Model* m);
   void chat_entry(const Model* m, const ChatEntry& e, std::size_t i);
+  void chat_dialog(const Model* m);
+  void chat_live(const Model* m);
+  void live_step(const FeedRun& run, const FeedStep& s, std::size_t i);
+  void change_buttons(const Model* m, const std::string& change);  // show on schema, edit, approve, reject
+  void set_auto(bool on);  // [agents] auto_approve in karkas.toml
+  // [agents] mode (ADR 0024): "api" or "mcp"; mode mcp writes the Claude Code subagents if missing.
+  void set_mode(const std::string& mode);
+  void fit_mcp_models();  // [mcp.*] maps fitted to the API ones (Claude tiers of the same strength)
+  // Turns of agents waiting for their MCP client (read at most once a second).
+  const std::vector<llm::McpTurn>& mcp_waiting();
+  std::vector<llm::McpTurn> mcp_waiting_;
+  double mcp_polled_ = -10.0;
+  void mode_switch(const char* id);  // "API | MCP" toggles
+ public:
+  // Opens the chat window on the live feed of one run (journal file name; "" = follow the active run).
+  void open_live(const std::string& journal);
+ private:
   void show_picker(bool create = false);
   void go_to(const Model& m, const std::string& id);  // open the level of a block and select it
   ImVec4 color_of(const Model& m, const std::string& id) { return colors_.get(*m.snap, m.serial, id); }
@@ -113,6 +168,12 @@ class Ui {
   // Default size of a block at scale 1 (the text fits at font scale 1) and its size now.
   std::pair<float, float> base_size(const Model& m, const std::string& id) const;
   std::pair<float, float> node_size(const Model& m, const std::string& id) const;
+  // Ports of a block from a per-model map (the snapshot keeps them in one flat list).
+  const std::vector<const index::PortRow*>& ports_of(const Model& m, const std::string& id) const;
+  mutable std::uint64_t ports_serial_ = ~0ULL;
+  mutable std::unordered_map<std::string, std::vector<const index::PortRow*>> ports_cache_;
+  mutable std::uint64_t node_serial_ = ~0ULL;
+  mutable std::unordered_map<std::string, std::size_t> node_index_;
   void save_view(const Model& m, bool reset_sizes = false, const std::string& reset_one = "");
   void set_all_levels(const Model& m, bool on);
   void propose_unlink(std::vector<LinkDesc> links);  // KSL preview, then removal
@@ -167,6 +228,23 @@ class Ui {
   std::uint64_t chat_serial_ = ~0ULL;
   std::vector<ChatEntry> chat_cache_;
   bool chat_scroll_ = false;
+  int chat_tab_ = 0;               // 0 dialog, 1 live feed of the agents
+  int chat_tab_select_ = -1;       // tab to bring forward next frame
+  bool chat_window_focus_ = false;
+  std::unique_ptr<JournalFeed> feed_;
+  ui::TextSelect chat_sel_;        // mouse selection of the chat's texts
+  std::string live_journal_;       // run shown in the live feed
+  bool live_follow_ = true;        // follow the newest active run
+  std::size_t live_seen_ = 0;      // steps shown last frame (scroll down on new ones)
+  std::set<std::string> live_open_;  // expanded steps ("journal#index")
+  float live_list_w_ = 0.0f;
+  // schema changes (side bar) and their ghost on the schema (ADR 0021)
+  bool ghost_on_ = true;          // draw the selected change on the schema
+  std::string ghost_shown_;       // change whose level was opened (navigate once per selection)
+  bool change_editing_ = false;
+  std::string change_edit_id_;
+  std::string change_edit_buf_;
+  std::string edit_change_next_;  // "Edit" pressed in the chat: open this change in edit mode
   // address bar
   bool editing_path_ = false;
   bool focus_path_ = false;
@@ -175,10 +253,23 @@ class Ui {
   // highlighting (hover, Shift+click)
   std::set<std::string> pinned_;  // blocks whose links stay lit
   std::vector<LinkDesc> menu_links_;  // links of the line whose menu is open
+  std::string menu_line_key_;          // its key (for "Straighten the line")
+  int suppress_bg_menu_ = 0;           // frames in which the editor's background menu is ignored
+  // Lines bent by the user (ADR 0022): the points a line passes through, as (u, v) in the frame of
+  // its ends, by the line's key; kept in .karkas/bends.json.
+  std::map<std::string, std::vector<ImVec2>> bends_;
+  std::uint64_t bends_version_ = 0;  // bumped on every change: the plan of lines is made again
+  std::string bend_drag_key_;    // the line whose bend is dragged
+  int bend_drag_index_ = -1;     // that bend
+  std::string bend_drag_label_;  // the handle pressed (the same id keeps it pressed)
+  void load_bends();
+  void save_bends();
   std::string hover_unit_;        // block under the mouse on the schema (last frame)
   std::string tree_hover_;        // block under the mouse in the tree (this frame)
   std::string hover_frame_;       // opened group whose path bar is under the mouse
   bool fit_on_apply_ = false;     // fit the view when the next layout arrives (open/close)
+  bool canvas_hovered_ = false;   // the mouse is over the schema canvas (it sets its own cursor)
+  bool drag_from_node_ = false;   // the left drag started on a block (move cursor)
   // block resizing
   std::string resizing_;
   std::pair<float, float> resize_start_{0, 0};

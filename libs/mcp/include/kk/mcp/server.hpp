@@ -37,6 +37,26 @@ struct ServerOptions {
   std::function<kk::Result<std::string>(const std::string& block)> review;
   // One line appended to kk_view: the model of the block and its subagent ("" = nothing).
   std::function<std::string(const std::string& block)> model_hint;
+  // Agents of the program, started and served from the client (docs/adr/0024).
+  // kk_task / kk_debug: a ticket for the same agents as `karkas task` / `karkas debug`; kind
+  // "feature" or "bug". kk_ticket_run: run (or continue) a ticket.
+  std::function<kk::Result<std::string>(const std::string& kind, const std::string& text, const std::vector<std::string>& facts)>
+      start_ticket;
+  std::function<kk::Result<std::string>(const std::string& id, bool force)> run_ticket;
+  // kk_implement: `karkas implement <target>` in the background — its testers and workers wait for
+  // the client in mode "mcp", so the client must not run it in its own foreground (it would wait
+  // on itself).
+  std::function<kk::Result<std::string>(const std::string& target)> implement;
+  // kk_agent_next / kk_agent_act: the client is the model of the agents in mode "mcp".
+  // after: the turn of `run` the client answered last; the next turn then shows only what is new.
+  // seen: runs the client served already; a new run of the same role leaves out what it has (ADR 0026).
+  std::function<std::string(const std::string& run, int wait_s, bool list, const std::string& after,
+                            const std::vector<std::string>& seen)>
+      agent_next;
+  std::function<kk::Result<std::string>(const std::string& turn, const std::string& text, const std::string& calls_json, int wait_s)>
+      agent_act;
+  // The instructions of initialize (they depend on the mode); unset = the default text.
+  std::function<std::string()> instructions;
 };
 
 class Server {

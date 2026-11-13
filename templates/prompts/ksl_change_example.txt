@@ -23,3 +23,13 @@ Example: the start of a new project (groups have only purpose and kind; every gr
 + kind    leaf
 + thread  main
 + inv     a click outside every button changes nothing
+Example: changing an existing card line (a '~' never goes before a card line: remove the old, add the new).
+~ @block rules.effects
+- purpose the two timed effects of collected items, each with its own timer
++ purpose the three timed effects of collected items, each with its own timer
++ fn      start_slow()
++ fn      slow_left() -> float
+Example: a tunable number for a feature (written into api/ by the program on approval).
+~ @block config
++ const kPaceEvery int 10 // points per pace step
++ const kPaceStep float 0.05f // pace gained per step

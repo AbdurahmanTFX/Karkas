@@ -110,7 +110,7 @@ TEST_CASE("import: the imported schema passes the checks and indexes as implemen
   CHECK(again->blocks.empty());
 }
 
-TEST_CASE("import: a library without main() gets an empty entry; --exclude skips folders") {
+TEST_CASE("import: a library without main() gets an empty entry, --exclude skips folders") {
   test::TempDir dir("imp");
   test::write(dir / "project.ksl", "@project lib\nidea    a library\n");
   test::write(dir / "include/lib/parser.hpp", "#pragma once\n// Parses the input.\nint parse(const char* text);\n");

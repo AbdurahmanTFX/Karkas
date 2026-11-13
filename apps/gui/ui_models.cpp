@@ -85,10 +85,15 @@ bool Ui::tier_combo(const char* id, const std::string& current, const char* none
     }
     ImGui::Separator();
     for (const auto& [name, t] : cfg_.models) {
-      if (ImGui::Selectable(tier_label(name).c_str(), current == name)) {
+      // Mode MCP: only tiers a Claude Code subagent can run.
+      bool usable = !cfg_.mcp() || !t.claude_model().empty();
+      std::string label = tier_label(name) + (usable ? "" : std::string("  — ") + tr("not a Claude model: not in mode MCP"));
+      ImGui::BeginDisabled(!usable);
+      if (ImGui::Selectable(label.c_str(), current == name)) {
         *out = name;
         changed = current != name;
       }
+      ImGui::EndDisabled();
     }
     ImGui::EndCombo();
   }
@@ -96,13 +101,15 @@ bool Ui::tier_combo(const char* id, const std::string& current, const char* none
 }
 
 void Ui::set_pin(const std::string& section, const std::string& key, const std::string& tier) {
-  auto r = core::write_config_value(root_, section, key, tier.empty() ? std::nullopt : std::optional<std::string>(tier));
+  // The maps of the active mode: [levels] or [mcp.levels] (ADR 0024).
+  const std::string written = cfg_.map_section(section);
+  auto r = core::write_config_value(root_, written, key, tier.empty() ? std::nullopt : std::optional<std::string>(tier));
   reload_models();
   // Still pinned after erasing it from the project: the user file pins it; override with "".
   if (r && tier.empty() && section != "roles") {
     bool still = section == "levels" ? cfg_.levels.contains(std::atoi(key.c_str())) : cfg_.block_tiers.contains(key);
     if (still) {
-      r = core::write_config_value(root_, section, key, std::string());
+      r = core::write_config_value(root_, written, key, std::string());
       reload_models();
     }
   }
@@ -338,6 +345,26 @@ void Ui::settings_models(const Model* m) {
   ImGui::PopTextWrapPos();
   ImGui::Spacing();
   float combo_w = ImGui::GetFontSize() * 20;
+
+  // Where the agents' model answers come from (ADR 0024).
+  ImGui::SeparatorText(tr("Agents' model: API or MCP"));
+  mode_switch("set_mode");
+  ImGui::PushTextWrapPos(0);
+  if (cfg_.mcp()) {
+    ui::muted("%s", tr("MCP: the same agents (orchestrator, navigators, workers, testers) with the same prompts, tools and checks; "
+                       "Claude Code connected to `karkas mcp` is their model and answers every turn — its subagent karkas-<tier> for "
+                       "the tier of each level. The maps below are those of mode MCP ([mcp.levels], [mcp.blocks], [mcp.roles])."));
+    if (ui::icon_button("fit_mcp", Icon::Sliders, tr("Set the MCP models from the API ones: per level, role and block the Claude tier of the "
+                                                     "same strength (the weakest API tier → cheap, the strongest → strong)"),
+                        false, tr("Fit to the API models"))) {
+      fit_mcp_models();
+    }
+  } else {
+    ui::muted("%s", tr("API: Karkas calls the models of the APIs below itself (keys from the environment). The maps below are those of "
+                       "mode API ([levels], [blocks], [roles]); mode MCP keeps its own."));
+  }
+  ImGui::PopTextWrapPos();
+  ImGui::Spacing();
 
   // APIs ([models.*])
   ImGui::SeparatorText(tr("APIs and models"));

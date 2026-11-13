@@ -92,7 +92,8 @@ std::string AnthropicProvider::request_json(const Request& in, bool for_count) {
   Request req = limit_cache_marks(in);
   json j;
   j["model"] = req.model;
-  if (!for_count) j["max_tokens"] = req.max_tokens;
+  // The Messages API needs a limit: 0 ("no limit" in karkas.toml) becomes a generous default.
+  if (!for_count) j["max_tokens"] = req.max_tokens > 0 ? req.max_tokens : 16000;
   if (!req.tools.empty()) {
     json tools = json::array();
     for (const auto& t : req.tools) {
@@ -126,7 +127,9 @@ std::string AnthropicProvider::request_json(const Request& in, bool for_count) {
   }
   // Sampling parameters (temperature/top_p/top_k) are never sent: API version
   // 2026-10-21 rejects them (docs/adr/0005).
-  return j.dump();
+  // Invalid UTF-8 (a source file in another encoding, a model's output) must not abort the
+  // process: it is replaced by U+FFFD.
+  return j.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
 kk::Result<Response> AnthropicProvider::parse_response(const std::string& body) {

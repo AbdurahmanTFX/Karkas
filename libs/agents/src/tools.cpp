@@ -10,6 +10,7 @@
 #include "kk/agents/changes.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
+#include "kk/templates.hpp"
 
 namespace kk::agents {
 
@@ -19,6 +20,17 @@ namespace fs = std::filesystem;
 namespace {
 
 json str(const char* d) { return {{"type", "string"}, {"description", d}}; }
+// The plan of a feature: the blocks that follow the first one, in order (orchestrator).
+json plan_steps() {
+  return {{"type", "array"},
+          {"maxItems", 8},
+          {"description", "blocks that follow, in order: {block, difficulty S|M|L, why}"},
+          {"items",
+           {{"type", "object"},
+            {"properties", {{"block", {{"type", "string"}}}, {"difficulty", {{"type", "string"}, {"enum", {"S", "M", "L"}}}},
+                            {"why", {{"type", "string"}, {"maxLength", 160}}}}},
+            {"required", {"block", "difficulty", "why"}}}}};
+}
 json obj(json props, std::vector<std::string> required = {}) {
   json j = {{"type", "object"}, {"properties", std::move(props)}};
   if (!required.empty()) j["required"] = required;
@@ -42,35 +54,44 @@ const std::map<std::string, std::pair<std::string, json>>& defs() {
       {"status", {"Statuses, failing tests and drift of a block (or of the project).", obj({{"block", str("block id, optional")}})}},
       {"probes", {"Probe summaries (numbers, not logs) for a block or a link a->b.", obj({{"target", str("block id or a->b")}})}},
       {"dispatch",
-       {"Send the ticket down to a child block with your trail entry.",
+       {"Send the ticket down to a child block with your trail entry. A feature over several blocks: list the blocks "
+        "that follow in next, in order; the program sends them one after another.",
         obj({{"block", str("child block id")},
              {"suspect", {{"type", "array"}, {"items", {{"type", "string"}}}}},
              {"ruled_out", {{"type", "array"}, {"items", {{"type", "string"}}}}},
              {"difficulty", {{"type", "string"}, {"enum", {"S", "M", "L"}}}},
              {"why", {{"type", "string"}, {"maxLength", 160}}},
-             {"new_facts", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 2}}}},
+             {"new_facts", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 2}}},
+             {"next", plan_steps()}},
             {"block", "difficulty", "why"})}},
       {"ask", {"Ask one short question to the agent of a child block; you get only its answer (<= 80 tokens).",
                obj({{"block", str("child block id")}, {"question", str("one question")}}, {"block", "question"})}},
       {"run_tests", {"Build and run the tests of a block subtree; returns a compact summary.", obj({{"block", str("block id")}}, {"block"})}},
       {"propose_change",
-       {"Propose new blocks, ports or links as a KSL diff (needs human approval).",
+       {"Propose new blocks, ports, links or constants as a KSL diff (approved by the human, or at once in Auto). next: "
+        "the blocks to send after the approval, in order.",
         obj({{"reason", str("one line")},
-             {"diff", str("KSL diff: '+ @block x.y' then '+ purpose ...' lines; '~ @block z' then '+ line' / '- line'")}},
+             {"diff", str("KSL diff: '+ @block x.y' then '+ purpose ...' lines; '~ @block z' then '+ line' / '- line'; "
+                          "'+ const <name> <C++ type> <value> # note' adds a constant to the api/ of the selected block")},
+             {"next", plan_steps()}},
             {"reason", "diff"})}},
-      {"close", {"Close the ticket without work (duplicate, not a bug, done already).",
+      {"ksl_reference", {"The whole KSL syntax of cards and change diffs, with an example change.", obj(json::object())}},
+      {"close", {"Close the ticket: no work needed (duplicate, not a bug, done already) or the work is complete.",
                  obj({{"verdict", {{"type", "string"}, {"enum", {"done", "not_a_bug", "duplicate", "wont_fix"}}}},
                       {"note", {{"type", "string"}, {"maxLength", 200}}}},
                      {"verdict"})}},
+      {"escalate", {"Give the ticket to the human when no agent can go on (for example a change of a type in a "
+                    "frozen api/ that no card diff expresses). Say exactly what the human must do.",
+                    obj({{"note", {{"type", "string"}, {"maxLength", 300}}}}, {"note"})}},
       {"report_leaf",
        {"Finish your work and report to the level above.",
         obj({{"status", {{"type", "string"},
-                         {"enum", {"fixed", "done", "failed", "needs_contract_change", "needs_info", "not_here"}}}},
+                         {"enum", {"fixed", "done", "failed", "needs_contract_change", "needs_info", "not_here", "needs_tester"}}}},
              {"cause", {{"type", "string"}, {"maxLength", 200}}},
              {"fix", {{"type", "string"}, {"maxLength", 200}}},
              {"files", {{"type", "array"}, {"items", {{"type", "string"}}}}},
              {"tests", {{"type", "string"}, {"maxLength", 120}}},
-             {"api", {{"type", "string"}, {"enum", {"unchanged", "change_requested"}}}},
+             {"api", {{"type", "string"}, {"enum", {"unchanged", "changed", "change_requested"}}}},
              {"proposal", str("KSL diff if a contract change is requested")}},
             {"status"})}},
       {"report_navigator", {"The cause is outside your block: send the ticket back up.",
@@ -170,12 +191,16 @@ SchemaToolHost::SchemaToolHost(index::Index& idx, Role role, std::string scope, 
     : idx_(idx), role_(role), scope_(std::move(scope)), cb_(std::move(cb)) {}
 
 std::vector<Tool> SchemaToolHost::tools() const {
-  std::vector<std::string> names = {"view", "neighbors", "dependents", "path", "search", "history", "status", "probes", "dispatch"};
+  std::vector<std::string> names = {"view", "neighbors", "dependents", "path", "search", "history", "status", "dispatch"};
+  // Probe summaries only when the project has any: an empty tool is a step spent for nothing.
+  if (!idx_.snapshot().probes.empty()) names.insert(names.end() - 1, "probes");
   if (cb_.ask) names.push_back("ask");
   if (cb_.run_tests) names.push_back("run_tests");
   if (role_ == Role::Orchestrator) {
     names.push_back("propose_change");
+    names.push_back("ksl_reference");
     names.push_back("close");
+    names.push_back("escalate");
   } else {
     names.push_back("report_navigator");
   }
@@ -184,11 +209,41 @@ std::vector<Tool> SchemaToolHost::tools() const {
   return out;
 }
 
+// The `next` steps of a plan: known blocks inside the project, each once, none that answered in this
+// run, at most 8. Empty when fine.
+namespace {
+std::string plan_error(index::Index& idx, const SchemaCallbacks& cb, const json& in, const std::string& first) {
+  if (!in.contains("next") || in["next"].is_null()) return {};
+  if (!in["next"].is_array()) return "next must be a list of {block, difficulty, why}";
+  if (!cb.plans) return "next is for a feature planned by the orchestrator; dispatch one block";
+  if (in["next"].size() > 8) return "at most 8 blocks in next; plan the rest after them";
+  auto snap = idx.snapshot();
+  std::set<std::string> seen;
+  if (!first.empty()) seen.insert(first);
+  for (const auto& step : in["next"]) {
+    if (!step.is_object()) return "each step of next is {block, difficulty, why}";
+    std::string b = sget(step, "block");
+    if (snap.block(b) == nullptr) return fmt::format("next: unknown block '{}'", b);
+    if (!seen.insert(b).second) return fmt::format("next: {} is planned twice", b);
+    auto d = sget(step, "difficulty");
+    if (d != "S" && d != "M" && d != "L") return fmt::format("next: difficulty of {} must be S, M or L", b);
+    if (cb.excluded) {
+      if (auto why = cb.excluded(b); !why.empty()) return fmt::format("next: {} already answered in this run ({})", b, why);
+    }
+  }
+  return {};
+}
+}  // namespace
+
 ToolOutcome SchemaToolHost::call(const ToolCall& c) {
   bool bad = false;
   auto in = parse_input(c, bad);
   if (bad) return err("invalid JSON input");
   if (auto q = query_tool(idx_, c.name, in, scope_)) return *q;
+  if (c.name == "ksl_reference" && role_ == Role::Orchestrator) {
+    return ok(std::string(templates::get("prompts/ksl_reference.txt").value_or("")) + "\n" +
+              std::string(templates::get("prompts/ksl_change_example.txt").value_or("")));
+  }
   if (c.name == "dispatch") {
     auto snap = idx_.snapshot();
     std::string b = sget(in, "block");
@@ -197,10 +252,20 @@ ToolOutcome SchemaToolHost::call(const ToolCall& c) {
     if (b == scope || !index::Snapshot::under(scope, b)) {
       return err(fmt::format("dispatch must name a block inside {}", scope.empty() ? "the project" : scope));
     }
+    if (cb_.excluded) {
+      if (auto why = cb_.excluded(b); !why.empty()) {
+        return err(fmt::format("{} already answered in this run ({}); sending it the same ticket again changes nothing. "
+                               "Pick another block{}.",
+                               b, why,
+                               role_ == Role::Orchestrator ? ", propose_change, escalate to the human or close"
+                                                           : ", or report not_here"));
+      }
+    }
     auto diff = sget(in, "difficulty");
     if (diff != "S" && diff != "M" && diff != "L") return err("difficulty must be S, M or L");
     if (sget(in, "why").size() > 200) return err("why must be at most 20 words");
     if (in.contains("new_facts") && in["new_facts"].is_array() && in["new_facts"].size() > 2) return err("at most 2 new facts");
+    if (auto why = plan_error(idx_, cb_, in, b); !why.empty()) return err(why);
     return done("dispatched to " + b);
   }
   if (c.name == "ask" && cb_.ask) return ok(cb_.ask(sget(in, "block"), sget(in, "question")));
@@ -209,9 +274,19 @@ ToolOutcome SchemaToolHost::call(const ToolCall& c) {
     auto d = parse_diff(sget(in, "diff"));
     if (!d) return err(d.error().message);
     if (d->empty()) return err("the diff is empty");
-    return done("change proposed; it waits for human approval");
+    // The same checks as a worker's proposal: a diff that changes no card or breaks the
+    // schema is refused here, so the model corrects it now and not the human at approval.
+    if (cb_.check_change) {
+      if (auto why = cb_.check_change(sget(in, "diff")); !why.empty()) return err("the change cannot be proposed: " + why);
+    }
+    if (auto why = plan_error(idx_, cb_, in, ""); !why.empty()) return err(why);
+    return done("change proposed");
   }
   if (c.name == "close" && role_ == Role::Orchestrator) return done("closed");
+  if (c.name == "escalate" && role_ == Role::Orchestrator) {
+    if (core::trim(sget(in, "note")).empty()) return err("say what the human must do in note");
+    return done("given to the human");
+  }
   if (c.name == "report" && role_ == Role::Navigator) {
     if (sget(in, "status") != "not_here") return err("a navigator reports only status=not_here");
     return done("sent back up");
@@ -220,6 +295,70 @@ ToolOutcome SchemaToolHost::call(const ToolCall& c) {
 }
 
 // --- leaf tools ---------------------------------------------------------------------------
+
+namespace {
+
+// "no such file: x; impl/ has: a.cpp, b.cpp" — what is there instead, so the agent does not guess.
+std::string missing(const Sandbox& sb, const fs::path& abs, const char* what, const std::string& asked) {
+  std::string out = fmt::format("no such {}: {}", what, asked);
+  std::error_code ec;
+  for (auto dir = abs.parent_path(); !dir.empty() && dir != dir.parent_path(); dir = dir.parent_path()) {
+    if (!sb.resolve_read(sb.display(dir)).has_value()) break;  // left the sandbox
+    if (!fs::is_directory(dir, ec)) continue;
+    std::vector<std::string> names;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+      auto n = e.path().filename().string();
+      if (n.starts_with(".")) continue;
+      names.push_back(e.is_directory(ec) ? n + "/" : n);
+    }
+    std::sort(names.begin(), names.end());
+    if (names.size() > 30) {
+      auto more = names.size() - 30;
+      names.resize(30);
+      names.push_back(fmt::format("and {} more", more));
+    }
+    auto where = sb.display(dir);
+    out += fmt::format("; {} has: {}", where == "." ? std::string("your folder") : where,
+                       names.empty() ? std::string("nothing yet") : core::join(names, ", "));
+    break;
+  }
+  return out;
+}
+
+// A failed build whose errors are all in files this agent may not change: say so, or it spends its
+// steps on other blocks' errors (free-AI log: testers looping on stale impl/ of other leaves).
+std::string build_hint(const Sandbox& sb, const std::string& summary) {
+  bool mine = false;
+  bool cmake = false;
+  std::vector<std::string> elsewhere;
+  for (const auto& line : core::split(summary, '\n')) {
+    if (line.starts_with("CMake Error at CMakeLists.txt")) {
+      cmake = true;
+      continue;
+    }
+    auto colon = line.find(':');
+    if (colon == std::string::npos || colon == 0) continue;
+    std::string file = line.substr(0, colon);
+    if (file.front() == '/' || !core::contains(file, "/")) continue;  // system headers, linker lines
+    auto abs = core::normalize(sb.project() / file);
+    if (sb.resolve_write(sb.display(abs)).has_value()) {
+      mine = true;
+      break;
+    }
+    if (std::find(elsewhere.begin(), elsewhere.end(), file) == elsewhere.end() && elsewhere.size() < 6) elsewhere.push_back(file);
+  }
+  if (mine) return "";
+  std::string out;
+  if (!elsewhere.empty()) {
+    out += fmt::format("None of these errors is in a file you may change ({}). Do not fix or work around them: do your own part, "
+                       "and if it cannot be checked, report it with these files named in cause.\n",
+                       core::join(elsewhere, ", "));
+  }
+  if (cmake) out += "CMakeLists.txt is generated by Karkas from the schema; it is not yours to edit.\n";
+  return out;
+}
+
+}  // namespace
 
 LeafToolHost::LeafToolHost(Sandbox sandbox, Role role, ITestService& tests, std::vector<std::string> test_labels)
     : sb_(std::move(sandbox)), role_(role), tests_(tests), labels_(std::move(test_labels)) {}
@@ -240,13 +379,22 @@ ToolOutcome LeafToolHost::call(const ToolCall& c) {
     auto p = sb_.resolve_read(sget(in, "path"));
     if (!p) return err(p.error().message);
     if (fs::is_directory(*p)) return err("this is a folder; use list_dir");
+    if (std::error_code ec; !fs::exists(*p, ec)) return err(missing(sb_, *p, "file", sget(in, "path")));
     auto text = core::read_file(*p);
     if (!text) return err("cannot read " + sget(in, "path"));
     reads_.push_back(sb_.display(*p));
     int offset = in.value("offset", 0);
     int limit = in.value("limit", 0);
     if (offset > 0 || limit > 0) {
-      auto lines = core::split(*text, '\n', false);
+      // Raw lines: core::split trims, and a model copies these lines into edit_file's `old`, which
+      // must match the file with its indentation (flappy T-0014: a tester got its code unindented).
+      std::vector<std::string> lines;
+      for (std::size_t start = 0; start <= text->size();) {
+        auto end = text->find('\n', start);
+        if (end == std::string::npos) end = text->size();
+        lines.push_back(text->substr(start, end - start));
+        start = end + 1;
+      }
       std::string out;
       int from_line = std::max(1, offset);
       int to_line = limit > 0 ? from_line + limit - 1 : static_cast<int>(lines.size());
@@ -254,7 +402,7 @@ ToolOutcome LeafToolHost::call(const ToolCall& c) {
       return ok(out);
     }
     constexpr std::size_t kMax = 64 * 1024;
-    if (text->size() > kMax) return ok(text->substr(0, kMax) + "\n... (truncated; use offset/limit)");
+    if (text->size() > kMax) return ok(core::truncate_utf8(*text, kMax) + "\n... (truncated; use offset/limit)");
     return ok(*text);
   }
   if (c.name == "list_dir") {
@@ -262,7 +410,12 @@ ToolOutcome LeafToolHost::call(const ToolCall& c) {
     auto p = sb_.resolve_read(path.empty() ? "." : path);
     if (!p) return err(p.error().message);
     std::error_code ec;
-    if (!fs::is_directory(*p, ec)) return err("not a folder");
+    if (!fs::exists(*p, ec)) {
+      // The own folder of an integration tester exists only after its first file.
+      if (sb_.display(*p) == ".") return ok("(empty: nothing is written here yet)\n");
+      return err(missing(sb_, *p, "folder", path));
+    }
+    if (!fs::is_directory(*p, ec)) return err(fmt::format("{} is a file, not a folder: use read_file", path));
     std::vector<std::string> entries;
     for (const auto& e : fs::directory_iterator(*p, ec)) {
       auto n = e.path().filename().string();
@@ -326,6 +479,17 @@ ToolOutcome LeafToolHost::call(const ToolCall& c) {
     } else {
       content = sget(in, "content");
     }
+    if (sb_.is_own_api(*p)) {
+      if (sb_.api_access() == ApiAccess::ValuesOnly) {
+        auto before = core::read_file(*p).value_or("");
+        if (!api_values_or_new_constants(before, content)) {
+          return err("api/ is the frozen contract: only values of its constants may change and new constexpr constants be "
+                     "added (a removed or changed declaration, a new type, field or function is a contract change: "
+                     "report needs_contract_change with a KSL proposal)");
+        }
+      }
+      api_written_ = true;
+    }
     if (auto r = core::write_file(*p, content); !r) return err(r.error().message);
     written_.insert(sb_.display(*p));
     return ok(fmt::format("wrote {} ({} bytes)", sb_.display(*p), content.size()));
@@ -333,15 +497,51 @@ ToolOutcome LeafToolHost::call(const ToolCall& c) {
   if (c.name == "build" || c.name == "test") {
     auto r = tests_.build_and_test(labels_, c.name == "build");
     if (!r) return err(r.error().message);
-    if (c.name == "build") return ok(r->build_ok ? "build ok\n" : "build failed\n" + r->build_summary + "\n");
+    if (c.name == "build") return ok(r->build_ok ? "build ok\n" : "build failed\n" + r->build_summary + "\n" + build_hint(sb_, r->build_summary));
     last_test_ = r->text;
+    if (!r->build_ok) return ok(r->text + build_hint(sb_, r->build_summary));
+    if (r->text.starts_with("tests none found")) {
+      return ok(r->text + fmt::format("No test of {} exists yet. Karkas compiles every tests/**/*.cpp of the block into one test "
+                                      "program (doctest: #include <doctest/doctest.h>, TEST_CASE, CHECK; no main(), no CMake "
+                                      "file) at the next build() or test(): write the test first.\n",
+                                      sb_.block()));
+    }
     return ok(r->text);
   }
   if (c.name == "report") {
     std::string st = sget(in, "status");
-    static const std::vector<std::string> worker = {"fixed", "done", "failed", "needs_contract_change", "needs_info", "not_here"};
-    if (std::find(worker.begin(), worker.end(), st) == worker.end()) return err("unknown status " + st);
+    static const std::vector<std::string> worker = {"fixed",      "done",     "failed",      "needs_contract_change",
+                                                    "needs_info", "not_here", "needs_tester"};
+    if (st.empty()) {
+      return err(fmt::format("report needs status, one of: {}", core::join(worker, ", ")));
+    }
+    if (std::find(worker.begin(), worker.end(), st) == worker.end()) {
+      return err(fmt::format("unknown status '{}'; use one of: {}", st, core::join(worker, ", ")));
+    }
     if (role_ == Role::Tester && st != "done" && st != "failed") return err("a tester reports status done or failed");
+    // A proposal that cannot become a @change (a unified diff of api/, a '~ line' edit, a diff that
+    // changes no card or breaks the schema) is refused here so the model fixes it in the same run.
+    if (st == "needs_contract_change") {
+      auto prop = sget(in, "proposal");
+      if (!prop.empty()) {
+        if (auto ok = check_proposal(sb_.project(), prop); !ok) {
+          return err("proposal cannot become a @change (" + ok.error().message +
+                     "). Card diff syntax: '~ @block <id>' selects the block, '+ <card line>' adds a line, "
+                     "'- <card line>' removes one; to change a line send '- old line' then '+ new line' "
+                     "('~' never goes before a card line). Or leave proposal empty and name the missing "
+                     "declaration in cause and fix.");
+        }
+        // Auto: approved now, and the worker goes on with the new card in this same run (no round
+        // through the orchestrator and a second whole run of this worker).
+        if (approve_now_ && role_ == Role::Worker) {
+          if (auto r = approve_now_(sget(in, "cause"), prop)) {
+            sb_.set_api_access(ApiAccess::Full);
+            approved_in_run_ = true;
+            return ok(*r);
+          }
+        }
+      }
+    }
     return done("reported " + st);
   }
   return err("unknown tool " + c.name);

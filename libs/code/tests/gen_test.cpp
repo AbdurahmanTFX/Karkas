@@ -43,6 +43,20 @@ TEST_CASE("gen cmake: deterministic, one target per block, links from the schema
   CHECK(w->written.empty());  // unchanged
 }
 
+TEST_CASE("gen cmake: a tests/ folder holding only .gitkeep gives no test program and no empty test") {
+  test::FixtureCopy p("wavkit");
+  // mix has tests/unit/.gitkeep and one contract test: a contract test, no unit test.
+  auto a = code::gen_cmake(schema_of(p.path()));
+  CHECK(core::contains(a, "add_test(NAME mix/contract COMMAND mix_tests"));
+  CHECK_FALSE(core::contains(a, "add_test(NAME mix/unit"));
+  std::filesystem::remove(p / "blocks/mix/tests/contract/mix_contract.cpp");
+  auto b = code::gen_cmake(schema_of(p.path()));
+  CHECK_FALSE(core::contains(b, "mix_tests"));
+  // Every glob covers the extensions has_cpp counts.
+  CHECK(core::contains(b, "/blocks/stream/ring/tests/*.cc\""));
+  CHECK(core::contains(b, "/blocks/stream/ring/impl/*.cxx\""));
+}
+
 TEST_CASE("gen mocks: classes inheriting the neighbor interfaces with call records") {
   test::FixtureCopy p("wavkit");
   std::filesystem::remove(p / "blocks/stream/pump/mocks/io_reader_mock.hpp");
@@ -133,6 +147,32 @@ TEST_CASE("build: the reference project builds with the generated CMake, tests p
   REQUIRE(idx);
   REQUIRE((*idx)->update());
   CHECK(core::contains((*idx)->probes("stream"), "probe stream.pump->stream.ring fill"));
+
+  // The composition root has unit tests too: its impl/ without main.cpp, linked with the leaves.
+  test::write(p / "blocks/app/tests/unit/app_test.cpp",
+              "#include <doctest/doctest.h>\n\nint run_app(int argc, char** argv);\n\n"
+              "TEST_CASE(\"app: the composition root links without main.cpp\") { CHECK(&run_app != nullptr); }\n");
+  // A standalone test with a main() of its own is a program of its own, not a second main() in
+  // the doctest program (flappy-karkas: "multiple definition of main" stopped the whole build).
+  test::write(p / "blocks/app/tests/unit/test_gate.cpp",
+              "#include <cstdio>\nint run_app(int argc, char** argv);\n"
+              "int main() { std::puts(\"gate ok\"); return &run_app != nullptr ? 0 : 1; }\n");
+  REQUIRE(code::write_cmake(schema_of(p.path())));
+  // Test files removed after the CMakeLists.txt was written: the configure goes on without that
+  // test program instead of failing for the whole project ("No SOURCES given to target").
+  std::filesystem::remove(p / "blocks/mix/tests/contract/mix_contract.cpp");
+  auto again = runner::build(bo);
+  REQUIRE(again);
+  REQUIRE_MESSAGE(again->ok, again->summary);
+  auto app_tests = runner::test({p.path(), build_dir, {"app"}, 120s, {}, {}});
+  REQUIRE(app_tests);
+  CHECK_MESSAGE(core::contains(app_tests->text, "tests app unit 2/2"), app_tests->text);
+  // A tests/ folder with only .gitkeep is no test program at all.
+  auto cm = code::gen_cmake(schema_of(p.path()));
+  CHECK_FALSE(core::contains(cm, "add_executable(mix_tests"));
+  CHECK(core::contains(cm, "add_executable(app_tests ${_app_tests} ${_app_lib})"));
+  CHECK(core::contains(cm, "list(REMOVE_ITEM _app_tests \"${CMAKE_CURRENT_SOURCE_DIR}/blocks/app/tests/unit/test_gate.cpp\")"));
+  CHECK(core::contains(cm, "add_test(NAME app/unit:test_gate COMMAND app_test_gate)"));
 
   // A leaf without a link physically cannot include another leaf's api (5.5).
   auto mix = p / "blocks/mix/impl/mix.cpp";

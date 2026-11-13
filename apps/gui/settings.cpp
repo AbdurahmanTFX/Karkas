@@ -32,6 +32,27 @@ GuiSettings load_settings() {
     s.ui_scale = std::clamp(j.value("ui_scale", 1.0f), 0.8f, 1.6f);
     s.links_by_block = j.value("link_colors", std::string("block")) != "kind";
     s.blocks_by_block = j.value("block_colors", std::string("block")) != "status";
+    s.tickets_list_w = j.value("tickets_list_w", 0.0f);
+    s.changes_list_h = j.value("changes_list_h", 0.0f);
+    s.show_side = j.value("show_side", true);
+    s.show_inspector = j.value("show_inspector", true);
+    s.show_bottom = j.value("show_bottom", true);
+    s.chat_steps = j.value("chat_steps", true);
+    s.show_activity = j.value("show_activity", true);
+    s.show_status = j.value("show_status", true);
+    // 0.08 was the floor of a size read while the layout was being rebuilt: not a user's size.
+    auto frac = [&](const char* key, float def, float lo, float hi) {
+      float v = j.value(key, def);
+      return v <= 0.0801f ? def : std::clamp(v, lo, hi);
+    };
+    s.side_frac = frac("side_frac", 0.19f, 0.12f, 0.6f);
+    s.inspector_frac = frac("inspector_frac", 0.26f, 0.12f, 0.6f);
+    s.bottom_frac = frac("bottom_frac", 0.28f, 0.10f, 0.8f);
+    if (j.contains("hidden_tabs") && j["hidden_tabs"].is_array()) {
+      for (const auto& t : j["hidden_tabs"]) {
+        if (t.is_string()) s.hidden_tabs.push_back(t.get<std::string>());
+      }
+    }
     if (j.contains("recent") && j["recent"].is_array()) {
       for (const auto& r : j["recent"]) {
         if (r.is_string()) s.recent.push_back(r.get<std::string>());
@@ -55,7 +76,19 @@ bool save_settings(const GuiSettings& s) {
             {"ui_scale", s.ui_scale},
             {"link_colors", s.links_by_block ? "block" : "kind"},
             {"block_colors", s.blocks_by_block ? "block" : "status"},
-            {"recent", s.recent}};
+            {"recent", s.recent},
+            {"tickets_list_w", s.tickets_list_w},
+            {"changes_list_h", s.changes_list_h},
+            {"show_side", s.show_side},
+            {"show_inspector", s.show_inspector},
+            {"show_bottom", s.show_bottom},
+            {"hidden_tabs", s.hidden_tabs},
+            {"chat_steps", s.chat_steps},
+            {"show_activity", s.show_activity},
+            {"show_status", s.show_status},
+            {"side_frac", s.side_frac},
+            {"inspector_frac", s.inspector_frac},
+            {"bottom_frac", s.bottom_frac}};
   return core::write_file(settings_path(), j.dump(2) + "\n").has_value();
 }
 

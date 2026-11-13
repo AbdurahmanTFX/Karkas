@@ -24,8 +24,10 @@ function(kk_add_tests name)
   add_executable(kk_${name}_tests ${ARG_SOURCES})
   target_link_libraries(kk_${name}_tests PRIVATE kk_${name} kk_test_support ${ARG_DEPS})
   kk_set_warnings(kk_${name}_tests)
+  # A test that ran no case failed to run (a ';' in a TEST_CASE name cuts the name CTest passes
+  # back, and such tests "passed" with 0 cases): FAIL_REGULAR_EXPRESSION makes it visible.
   doctest_discover_tests(kk_${name}_tests
     TEST_PREFIX "${name}/"
-    PROPERTIES LABELS ${name}
+    PROPERTIES LABELS ${name} FAIL_REGULAR_EXPRESSION "test cases: *0 *[|]"
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
 endfunction()

@@ -5,7 +5,10 @@
 
 #include <chrono>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
+#include <thread>
 
 #include "kk/core/text.hpp"
 #include "kk/core/tickets.hpp"
@@ -155,6 +158,72 @@ std::vector<Tool> make_tools(const ServerOptions& o) {
     t.push_back({"kk_run_tests", "Build and run the tests of a block subtree (no model involved); returns a compact summary.",
                  {{"type", "object"}, {"properties", {{"block", str_prop("block id; empty = all")}}}}});
   }
+  // The program's own agents (ADR 0024): the same protocol as `karkas task`; in mode "mcp" this
+  // client is their model.
+  if (o.start_ticket) {
+    t.push_back({"kk_task",
+                 "Give a feature or change to Karkas's agents, exactly like `karkas task`: a ticket is created and the "
+                 "orchestrator, the navigators, a worker and a tester take it down the schema to the block. In mode mcp you are "
+                 "their model: serve their turns with kk_agent_next / kk_agent_act until the ticket ends.",
+                 {{"type", "object"}, {"properties", {{"text", str_prop("what to do, in the user's words")}}}, {"required", {"text"}}}});
+    t.push_back({"kk_debug",
+                 "Give a bug to Karkas's agents, exactly like `karkas debug`: a bug ticket goes down the schema to the block "
+                 "with the cause; its worker adds a test that reproduces it and fixes it. In mode mcp serve the turns.",
+                 {{"type", "object"},
+                  {"properties",
+                   {{"text", str_prop("the symptom")},
+                    {"facts", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "facts you already have"}}}}},
+                  {"required", {"text"}}}});
+  }
+  if (o.run_ticket) {
+    t.push_back({"kk_ticket_run", "Run a ticket again or continue it (like `karkas ticket run`), with the same agents.",
+                 {{"type", "object"},
+                  {"properties",
+                   {{"id", str_prop("ticket id, e.g. T-0012")},
+                    {"force", {{"type", "boolean"}, {"description", "run even if nothing changed since its last result"}}}}},
+                  {"required", {"id"}}}});
+  }
+  if (o.implement) {
+    t.push_back({"kk_implement",
+                 "Implement the leaves and then the composition root, like `karkas implement <target>`, started in the "
+                 "background: testers write the contract tests, workers the code. In mode mcp serve their turns.",
+                 {{"type", "object"},
+                  {"properties", {{"target", str_prop("block id, or \"all\" (default)")}}}}});
+  }
+  if (o.agent_next) {
+    t.push_back({"kk_agent_next",
+                 "The turns Karkas's agents wait for (mode mcp: you are their model). With list=true: who waits — ticket, role, "
+                 "block, tier and the subagent of that tier — nothing is taken. Otherwise the oldest waiting turn (of `run` when "
+                 "given) is taken and shown whole: the agent's system prompt, its tools and its messages — or, with `after` = "
+                 "the turn of that run you answered last, only what is new since your answer. Answer it with kk_agent_act.",
+                 {{"type", "object"},
+                  {"properties",
+                   {{"run", str_prop("serve this run only (its id from the list)")},
+                    {"after", str_prop("with run: the turn of this run you answered last; you get only what is new since then")},
+                    {"seen", {{"type", "array"}, {"items", {{"type", "string"}}},
+                              {"description", "runs you served already in this session: a new run of the same role comes without "
+                                              "the system prompt, tools and unchanged context you have"}}},
+                    {"list", {{"type", "boolean"}, {"description", "only list what waits"}}},
+                    {"wait_s", {{"type", "integer"}, {"description", "wait up to this many seconds for a turn (default 20, max 300)"}}}}}}});
+  }
+  if (o.agent_act) {
+    t.push_back({"kk_agent_act",
+                 "Your answer to one turn of an agent: calls of the agent's own tools (Karkas runs them in its sandbox) and "
+                 "optional text. Returns the next turn of the same run (the results of your calls) or how the run ended.",
+                 {{"type", "object"},
+                  {"properties",
+                   {{"turn", str_prop("the turn id from kk_agent_next")},
+                    {"calls",
+                     {{"type", "array"},
+                      {"items",
+                       {{"type", "object"},
+                        {"properties", {{"name", {{"type", "string"}}}, {"input", {{"type", "object"}}}}},
+                        {"required", {"name"}}}},
+                      {"description", "tool calls of the agent, in order: [{\"name\": \"read_file\", \"input\": {\"path\": \"...\"}}]"}}},
+                    {"text", str_prop("optional: your thoughts, as the model's text")},
+                    {"wait_s", {{"type", "integer"}, {"description", "wait up to this many seconds for the next turn (default 60, max 300)"}}}}},
+                  {"required", {"turn"}}}});
+  }
   return t;
 }
 
@@ -233,7 +302,7 @@ std::optional<std::string> Server::handle(std::string_view line) {
           {"protocolVersion", version},
           {"capabilities", {{"tools", {{"listChanged", false}}}}},
           {"serverInfo", {{"name", "karkas"}, {"version", opts_.version}}},
-          {"instructions", std::string(core::trim(template_text("prompts/mcp_instructions.txt")))}};
+          {"instructions", opts_.instructions ? opts_.instructions() : std::string(core::trim(template_text("prompts/mcp_instructions.txt")))}};
       return response(id, result);
     }
     if (method == "ping") return response(id, json::object());
@@ -251,6 +320,40 @@ std::optional<std::string> Server::handle(std::string_view line) {
           return response(id, text_result(template_text("prompts/ksl_reference.txt") + "\n" +
                                               template_text("prompts/ksl_change_example.txt"),
                                           false));
+        }
+        // The program's agents (ADR 0024) need no index; their turns may be answered on other
+        // threads, so they never touch it.
+        auto result = [&](const kk::Result<std::string>& r) {
+          return response(id, r ? text_result(*r, false) : text_result(r.error().message, true));
+        };
+        if (name == "kk_task" || name == "kk_debug") {
+          std::vector<std::string> facts;
+          if (args.contains("facts") && args["facts"].is_array()) {
+            for (const auto& f : args["facts"]) {
+              if (f.is_string()) facts.push_back(f.get<std::string>());
+            }
+          }
+          return result(opts_.start_ticket(name == "kk_task" ? "feature" : "bug", sarg(args, "text"), facts));
+        }
+        if (name == "kk_ticket_run") return result(opts_.run_ticket(sarg(args, "id"), args.value("force", false)));
+        if (name == "kk_implement") {
+          auto target = sarg(args, "target");
+          return result(opts_.implement(target.empty() ? std::string("all") : target));
+        }
+        if (name == "kk_agent_next") {
+          int wait = std::clamp(args.value("wait_s", 20), 0, 300);
+          std::vector<std::string> seen;
+          if (args.contains("seen") && args["seen"].is_array()) {
+            for (const auto& r : args["seen"]) {
+              if (r.is_string()) seen.push_back(r.get<std::string>());
+            }
+          }
+          return response(id, text_result(opts_.agent_next(sarg(args, "run"), wait, args.value("list", false), sarg(args, "after"), seen), false));
+        }
+        if (name == "kk_agent_act") {
+          int wait = std::clamp(args.value("wait_s", 60), 0, 300);
+          std::string calls = args.contains("calls") ? args["calls"].dump() : "[]";
+          return result(opts_.agent_act(sarg(args, "turn"), sarg(args, "text"), calls, wait));
         }
         if (auto st = idx_.update({false, opts_.analyzer}); !st) {
           return response(id, text_result("index update failed: " + st.error().str(), true));
@@ -337,13 +440,26 @@ std::optional<std::string> Server::handle(std::string_view line) {
 }
 
 int Server::serve(std::istream& in, std::ostream& out) {
+  auto mu = std::make_shared<std::mutex>();
+  auto write = [&out, mu](const std::string& s) {
+    std::lock_guard lock(*mu);
+    out << s << '\n';
+    out.flush();
+  };
   std::string line;
   while (std::getline(in, line)) {
     if (line.empty() || line == "\r") continue;
-    if (auto r = handle(line)) {
-      out << *r << '\n';
-      out.flush();
+    // A turn of an agent waits for its model or its engine for up to minutes: it is answered on
+    // its own thread, so other calls — another subagent's turns — go on meanwhile (ADR 0024).
+    bool slow = line.find("\"tools/call\"") != std::string::npos &&
+                (line.find("\"kk_agent_next\"") != std::string::npos || line.find("\"kk_agent_act\"") != std::string::npos);
+    if (slow) {
+      std::thread([this, line, write] {
+        if (auto r = handle(line)) write(*r);
+      }).detach();
+      continue;
     }
+    if (auto r = handle(line)) write(*r);
   }
   return 0;
 }

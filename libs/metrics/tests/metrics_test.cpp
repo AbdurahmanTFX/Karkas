@@ -146,3 +146,32 @@ TEST_CASE("metrics: a stop request reaches its run only, and goes away with it (
   (void)metrics::active_runs(p.path());
   CHECK_FALSE(std::filesystem::exists(stop));
 }
+
+TEST_CASE("metrics: stats per role and tier, and the runs and MCP traffic of a ticket (ADR 0026)") {
+  kk::test::TempDir d{"stats"};
+  std::vector<kk::index::RunRow> runs(3);
+  runs[0].ticket = "T-0001";
+  runs[0].role = "orchestrator";
+  runs[0].tier = "strong";
+  runs[0].steps = 1;
+  runs[0].outcome = "dispatch";
+  runs[0].journal = "20261113-100000-000-orchestrator-root.jsonl";
+  runs[1] = runs[0];
+  runs[1].role = "worker";
+  runs[1].block = "stream.ring";
+  runs[1].tier = "cheap";
+  runs[1].steps = 4;
+  runs[1].outcome = "max_steps";
+  runs[1].journal = "20261113-100010-000-worker-stream.ring.jsonl";
+  runs[2] = runs[1];
+  runs[2].outcome = "done";
+  runs[2].attempt = 2;
+  kk::test::write(d.path() / ".karkas/mcp/traffic/20261113-100010-000-worker-stream.ring.jsonl",
+                  "{\"turn\":\"x-001\",\"shown\":20000,\"whole\":true,\"seen\":false}\n{\"turn\":\"x-001\",\"answer\":300}\n"
+                  "{\"turn\":\"x-002\",\"shown\":1000,\"whole\":false,\"seen\":false}\n");
+  auto all = kk::metrics::stats_report(runs, "", d.path());
+  CHECK(kk::core::contains(all, "worker               cheap                2       50%"));
+  auto one = kk::metrics::stats_report(runs, "T-0001", d.path());
+  CHECK(kk::core::contains(one, "total: 3 runs (1 orchestrator, 2 worker), 9 steps"));
+  CHECK(kk::core::contains(one, "mcp traffic: 4 turns, 2 of them whole (0 shorter by seen), 42000 chars shown (95% in whole turns)"));
+}

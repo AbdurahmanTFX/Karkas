@@ -83,6 +83,13 @@ kk::VoidResult request_stop(const fs::path& project_root, const fs::path& journa
 // "YYYY-MM-DD" or a unix timestamp → unix seconds (UTC).
 kk::Result<std::int64_t> parse_since(std::string_view s);
 
+// karkas stats (ADR 0026). Without a ticket: per role and tier, runs, how many ended well (done,
+// fixed, a decision, an answer), mean steps, cost and escalations — the data to route by. With a
+// ticket: its runs in order, totals, and in mode mcp the traffic of its turns (whole turns, deltas,
+// turns made shorter by `seen`) from <project>/.karkas/mcp/traffic.
+std::string stats_report(const std::vector<index::RunRow>& runs, const std::string& ticket,
+                         const std::filesystem::path& project_root);
+
 // karkas cost [--by block|role|model|ticket] (16.3). Fails when a cloud model in the
 // runs has no price in the config.
 kk::Result<std::string> cost_report(const core::Config& cfg, const std::vector<index::RunRow>& runs,

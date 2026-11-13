@@ -37,6 +37,13 @@ std::unique_ptr<agents::Engine> engine(App& app) {
   setup_logging(app, root, false);
   auto cfg = core::load_config(root);
   if (!cfg) die(cfg.error().str());
+  if (cfg->mcp()) {
+    // An MCP client that runs this command in its own foreground waits on itself: the agents'
+    // turns wait for that very client (free-AI log: `karkas approve` in OpenCode's shell, the
+    // architects cancelled after its 60 s timeout, twice).
+    std::cerr << "· mode mcp: the agents' turns wait for an MCP client (kk_agent_next / kk_agent_act). A client that runs "
+                 "this command itself must run it in the background (or use kk_implement / kk_ticket_run), or it waits on itself.\n";
+  }
   agents::EngineOptions o;
   o.analyzer = analyzer();
   o.progress = [](const std::string& m) { std::cerr << "· " << m << "\n"; };
@@ -93,7 +100,7 @@ AutoRegister reg([](CLI::App& cli, App& app) {
   ask->add_option("--ticket", id, "append the answer to this ticket");
   ask->callback([&app] { out(engine(app)->ask(block, question, id)); });
 
-  auto* ticket = cli.add_subcommand("ticket", "tickets: list | show <id> [--path [--at <block>]] | run <id>");
+  auto* ticket = cli.add_subcommand("ticket", "tickets: list | show <id> [--path [--at <block>]] | run <id> [--force] | close <id>");
   ticket->require_subcommand(1);
   auto* list = ticket->add_subcommand("list", "all tickets");
   list->callback([&app] {
@@ -127,9 +134,30 @@ AutoRegister reg([](CLI::App& cli, App& app) {
     }
     std::cout << core::path_view(*t, where);
   });
+  auto* close = ticket->add_subcommand("close", "close a ticket by hand (its cause was resolved outside the agents)");
+  close->add_option("id", id, "T-NNNN")->required();
+  close->add_option("--note", text, "why it is closed");
+  close->callback([&app] {
+    core::TicketStore store(app.root());
+    auto lock = store.lock(id, "karkas ticket close");
+    if (!lock) die(lock.error().str());
+    auto t = store.load(id);
+    if (!t) die(t.error().str());
+    if (t->status.value == "closed") {
+      std::cout << id << " is closed already\n";
+      return;
+    }
+    if (auto r = store.add_result(id, {{"status", "closed", {}, 0}, {"note", text.empty() ? "closed by a human" : text, {}, 0}}); !r) {
+      die(r.error().str());
+    }
+    if (auto r = store.set_status(id, core::TicketStatus::Closed); !r) die(r.error().str());
+    std::cout << id << " closed\n";
+  });
   auto* run = ticket->add_subcommand("run", "continue an open ticket");
   run->add_option("id", id, "T-NNNN")->required();
-  run->callback([&app] { out(engine(app)->run_ticket(id)); });
+  static bool force = false;
+  run->add_flag("--force", force, "run even if the last run is blocked on a human and nothing changed since");
+  run->callback([&app] { out(engine(app)->run_ticket(id, force)); });
 
   auto* change = cli.add_subcommand("change", "schema changes: list | show <id> | reject <id>");
   change->require_subcommand(1);

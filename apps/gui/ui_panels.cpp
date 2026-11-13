@@ -4,10 +4,12 @@
 // (docs/adr/0019).
 #include <fmt/format.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <csignal>
+#include <map>
 #include <set>
 
 #include "i18n.hpp"
@@ -32,6 +34,14 @@ void remove_column() { ImGui::TableSetupColumn("##rm", ImGuiTableColumnFlags_Wid
 
 bool remove_button(const std::string& id) {
   return ui::icon_button(("rm" + id).c_str(), Icon::Close, tr("Remove from this list (the files and logs are kept)"));
+}
+
+ImVec4 ticket_status_color(const std::string& s) {
+  if (s == "closed") return rgb(115, 201, 145);
+  if (s == "escalated") return rgb(241, 120, 90);
+  if (s == "waiting") return rgb(230, 180, 60);
+  if (s == "open") return rgb(160, 160, 160);
+  return rgb(90, 170, 255);  // descending, fixing, verifying: agents at work
 }
 
 std::string elapsed(std::int64_t since) {
@@ -90,7 +100,7 @@ void Ui::panel_actions(const char* key, int shown, int hidden, const std::functi
 }
 
 void Ui::draw_bottom(const Model& m) {
-  if (!ui::begin_docked("Panel###panel", theme::kSideBg, ImVec2(10, 4))) {
+  if (!begin_panel("Panel###panel", bottom_area_, 'T', theme::kSideBg, ImVec2(10, 4), &settings_.bottom_frac)) {
     ImGui::End();
     return;
   }
@@ -110,27 +120,34 @@ void Ui::draw_bottom(const Model& m) {
   bool tabs = ImGui::BeginTabBar("##panel_tabs");
   ImGui::PopStyleVar();
   if (tabs) {
-    if (tab("tickets", Icon::Ticket, fmt::format("{} {}", tr("Tickets"), tickets))) {
+    if (tab_visible("tickets") && tab("tickets", Icon::Ticket, fmt::format("{} {}", tr("Tickets"), tickets))) {
       bottom_tickets(m);
       ImGui::EndTabItem();
     }
-    if (tab("agents", Icon::Agent, m.active.empty() ? std::string(tr("Agents")) : fmt::format("{} {}", tr("Agents"), m.active.size()))) {
+    if (tab_visible("agents") &&
+        tab("agents", Icon::Agent, m.active.empty() ? std::string(tr("Agents")) : fmt::format("{} {}", tr("Agents"), m.active.size()))) {
       bottom_agents(m);
       ImGui::EndTabItem();
     }
-    if (tab("build", Icon::Hammer, tr("Build & tests"))) {
+    if (tab_visible("build") && tab("build", Icon::Hammer, tr("Build & tests"))) {
       bottom_tests(m);
       ImGui::EndTabItem();
     }
-    if (tab("costs", Icon::Coins, tr("Costs"))) {
+    if (tab_visible("costs") && tab("costs", Icon::Coins, tr("Costs"))) {
       bottom_costs(m);
       ImGui::EndTabItem();
     }
     std::string drift_label = m.snap->drift.empty() ? std::string(tr("Drift")) : fmt::format("{} {}·{}", tr("Drift"), errors, warnings);
-    if (tab("drift", Icon::Wave, drift_label)) {
+    if (tab_visible("drift") && tab("drift", Icon::Wave, drift_label)) {
       bottom_drift(m);
       ImGui::EndTabItem();
     }
+    // Hide the whole panel (the Windows menu shows it again).
+    if (ImGui::TabItemButton((std::string(icon(Icon::Close)) + "###panel_hide").c_str(), ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip)) {
+      settings_.show_bottom = false;
+      settings_changed();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Hide this panel (Windows menu shows it again)"));
     ImGui::EndTabBar();
   }
   bottom_select_.clear();
@@ -149,7 +166,13 @@ void Ui::bottom_tickets(const Model& m) {
       rows.push_back(&t);
     }
   }
-  ui::muted("%s", fmt::format(fmt::runtime(tr("{} tickets")), rows.size()).c_str());
+  std::map<std::string, double> ticket_cost;  // every run of the ticket, also cleared ones
+  double cost_total = 0;
+  for (const auto& r : m.runs) {
+    if (!r.ticket.empty()) ticket_cost[r.ticket] += r.cost_usd;
+  }
+  for (const auto* t : rows) cost_total += ticket_cost[t->id];
+  ui::muted("%s", fmt::format(fmt::runtime(tr("{} tickets · ${:.4f}")), rows.size(), cost_total).c_str());
   panel_actions(
       "tickets", static_cast<int>(rows.size()), hidden,
       [&] {
@@ -166,18 +189,65 @@ void Ui::bottom_tickets(const Model& m) {
                                : tr("no tickets yet: write to the orchestrator (chat), or karkas task / karkas debug"));
     return;
   }
-  if (ImGui::BeginTable("t", 5, table_flags(), ImVec2(ImGui::GetContentRegionAvail().x * 0.48f, 0))) {
+  // The list and the selected ticket side by side; the splitter between them is dragged.
+  float avail_w = ImGui::GetContentRegionAvail().x;
+  float avail_h = ImGui::GetContentRegionAvail().y;
+  constexpr float kMinList = 260.0f;
+  constexpr float kMinText = 240.0f;
+  float& list_w = settings_.tickets_list_w;
+  if (list_w <= 0) list_w = avail_w * 0.62f;
+  list_w = std::clamp(list_w, kMinList, std::max(kMinList, avail_w - kMinText));
+  ImGui::BeginChild("tlist", ImVec2(list_w, avail_h));
+  const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerH |
+                                ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX;
+  // The title keeps at least kTitleMin: time, cost and kind are shown only when they fit
+  // beside it (the selected ticket's details show them all).
+  float status_w = 0;
+  for (const auto* t : rows) status_w = std::max(status_w, ImGui::CalcTextSize(tr_ticket_status(t->status)).x);
+  float dot_w = ImGui::CalcTextSize(icon(Icon::Dot)).x + 4;
+  const float id_w = ImGui::CalcTextSize("T-0000").x + 4;
+  const float kind_w = std::max(ImGui::CalcTextSize(tr("feature")).x, ImGui::CalcTextSize(tr("bug")).x) + 4;
+  const float st_w = status_w + dot_w + 4;
+  const float time_w = ImGui::CalcTextSize("00.00 00:00").x + 4;
+  const float cost_w = ImGui::CalcTextSize("0.0000").x + 4;
+  const float pad = ImGui::GetStyle().CellPadding.x * 2 + 2;
+  constexpr float kTitleMin = 170.0f;
+  float room = list_w - (id_w + st_w + ImGui::GetFrameHeight() * 1.2f + pad * 4) - ImGui::GetStyle().ScrollbarSize;
+  auto fits = [&](float w) {
+    if (room - (w + pad) < kTitleMin) return false;
+    room -= w + pad;
+    return true;
+  };
+  const bool show_time = fits(time_w);
+  const bool show_cost = fits(cost_w);
+  const bool show_kind = fits(kind_w);
+  const int title_col = show_kind ? 3 : 2;
+  if (ImGui::BeginTable("t", 4 + (show_time ? 1 : 0) + (show_cost ? 1 : 0) + (show_kind ? 1 : 0), flags, ImVec2(0, 0))) {
     ImGui::TableSetupScrollFreeze(0, 1);
-    for (const char* h : {"id", "kind", "status", "title"}) ImGui::TableSetupColumn(tr(h));
+    ImGui::TableSetupColumn("id", ImGuiTableColumnFlags_WidthFixed, id_w);
+    if (show_kind) ImGui::TableSetupColumn(tr("kind"), ImGuiTableColumnFlags_WidthFixed, kind_w);
+    ImGui::TableSetupColumn(tr("status"), ImGuiTableColumnFlags_WidthFixed, st_w);
+    ImGui::TableSetupColumn(tr("title"), ImGuiTableColumnFlags_WidthStretch);
+    if (show_time) ImGui::TableSetupColumn(tr("time"), ImGuiTableColumnFlags_WidthFixed, time_w);
+    if (show_cost) ImGui::TableSetupColumn("$", ImGuiTableColumnFlags_WidthFixed, cost_w);
     remove_column();
     ImGui::TableHeadersRow();
+    ImGuiTable* table = ImGui::GetCurrentTable();
     for (const auto* t : rows) {
       ImGui::PushID(t->id.c_str());
-      ImGui::TableNextRow();
+      bool sel = req_.ticket == t->id;
+      // The selected row opens up: its whole title, wrapped in the title column.
+      float title_w = table != nullptr ? table->Columns[title_col].WidthGiven : 200.0f;
+      float line = ImGui::GetTextLineHeight();
+      float row_h = sel ? std::max(line, ImGui::CalcTextSize(t->title.c_str(), nullptr, false, title_w).y) : line;
+      ImGui::TableNextRow(0, row_h + ImGui::GetStyle().CellPadding.y * 2);
       ImGui::TableNextColumn();
-      if (ImGui::Selectable(t->id.c_str(), req_.ticket == t->id, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) {
-        req_.ticket = t->id;
+      if (ImGui::Selectable(t->id.c_str(), sel, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap,
+                            ImVec2(0, row_h))) {
+        req_.ticket = sel ? std::string() : t->id;  // a second click folds the row again
       }
+      bool hot = ImGui::IsItemHovered();
+      ui::hand_on_hover();
       bool remove = false;
       if (ImGui::BeginPopupContextItem("ctx")) {
         ImGui::TextDisabled("%s", t->id.c_str());
@@ -187,15 +257,42 @@ void Ui::bottom_tickets(const Model& m) {
           chat_focus_ = true;
           std::snprintf(chat_input_, sizeof chat_input_, "/ticket run %s", t->id.c_str());
         }
+        if (ImGui::MenuItem(with_icon(Icon::Copy, tr("Copy")).c_str())) ImGui::SetClipboardText((t->id + " " + t->title).c_str());
         if (ImGui::MenuItem(with_icon(Icon::Close, tr("Remove from this list")).c_str())) remove = true;
         ImGui::EndPopup();
       }
+      if (show_kind) {
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(tr(t->kind.c_str()));
+      }
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(t->kind.c_str());
+      ui::status_pill(tr_ticket_status(t->status), ticket_status_color(t->status));
       ImGui::TableNextColumn();
-      ImGui::TextColored(t->status == "closed" ? rgb(115, 201, 145) : rgb(230, 180, 60), "%s", t->status.c_str());
-      ImGui::TableNextColumn();
-      ImGui::TextUnformatted(t->title.c_str());
+      if (sel) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + title_w);
+        ImGui::TextUnformatted(t->title.c_str());
+        ImGui::PopTextWrapPos();
+      } else {
+        auto shown = ui::ellipsize(t->title, title_w);
+        ImGui::TextUnformatted(shown.c_str());
+        if (hot && shown != t->title) ImGui::SetItemTooltip("%s", t->title.c_str());
+      }
+      if (show_time) {
+        ImGui::TableNextColumn();
+        // When it was done (closed) or asked (created); both in the tooltip.
+        bool closed = t->status == "closed" && t->closed_at > 0;
+        std::string at = when(closed ? t->closed_at : t->created_at);
+        ImGui::TextDisabled("%s", at.c_str());
+        if (ImGui::IsItemHovered()) {
+          std::string tip = fmt::format(fmt::runtime(tr("created {}")), when(t->created_at));
+          if (t->closed_at > 0) tip += "\n" + fmt::format(fmt::runtime(tr("closed {} (after {})")), when(t->closed_at), duration_text(t->closed_at - t->created_at));
+          ImGui::SetTooltip("%s", tip.c_str());
+        }
+      }
+      if (show_cost) {
+        ImGui::TableNextColumn();
+        if (auto it = ticket_cost.find(t->id); it != ticket_cost.end() && it->second > 0) ImGui::TextDisabled("%.4f", it->second);
+      }
       ImGui::TableNextColumn();
       remove = remove_button(t->id) || remove;
       if (remove) {
@@ -206,15 +303,49 @@ void Ui::bottom_tickets(const Model& m) {
       ImGui::PopID();
     }
     ImGui::EndTable();
-    ImGui::SameLine();
-    ImGui::BeginChild("ticket", ImVec2(0, 0), ImGuiChildFlags_Borders);
-    if (m.ticket_text.empty() || req_.ticket.empty()) {
-      ui::muted("%s", tr("(select a ticket)"));
-    } else {
-      ui::ksl_text(m.ticket_text);
+  }
+  ImGui::EndChild();
+  ImGui::SameLine(0, 2);
+  ui::vsplitter("tsplit", &list_w, kMinList, kMinText, avail_w, avail_h);
+  if (ImGui::IsItemDeactivated()) settings_changed();
+  ImGui::SameLine(0, 2);
+  ImGui::BeginChild("ticket", ImVec2(0, avail_h), ImGuiChildFlags_Borders);
+  const index::TicketRow* cur = nullptr;
+  for (const auto* t : rows) {
+    if (t->id == req_.ticket) cur = t;
+  }
+  if (m.ticket_text.empty() || cur == nullptr) {
+    ui::muted("%s", tr("(select a ticket)"));
+  } else {
+    // Actions first (always in reach), then id, kind, status, the title and the ticket.
+    ui::copy_button("tcopy", m.ticket_text);
+    if (cur->status != "closed" && chat_) {
+      ImGui::SameLine(0, 4);
+      if (ui::icon_button("trun", Icon::Play, tr("Run the ticket again (karkas ticket run)"), false, tr("Run again"))) {
+        show_chat_ = true;
+        chat_->send(ChatMode::Task, "/ticket run " + cur->id);
+      }
+      ImGui::SameLine(0, 4);
+      if (ui::icon_button("tclose", Icon::Check, tr("Close the ticket by hand (karkas ticket close)"), false, tr("Close ticket"))) {
+        chat_->send(ChatMode::Task, "/ticket close " + cur->id);
+      }
     }
+    ImGui::PushFont(theme::heading_font());
+    ImGui::TextUnformatted(cur->id.c_str());
+    ImGui::PopFont();
+    ImGui::SameLine();
+    ui::badge(tr(cur->kind.c_str()), with_alpha(theme::accent(1.0f), 0.25f));
+    ImGui::SameLine();
+    ui::status_pill(tr_ticket_status(cur->status), ticket_status_color(cur->status));
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(cur->title.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::Separator();
+    ImGui::BeginChild("ttext", ImVec2(0, 0));
+    ui::ksl_wrapped(m.ticket_text);
     ImGui::EndChild();
   }
+  ImGui::EndChild();
 }
 
 // --- agents ----------------------------------------------------------------------------------
@@ -228,10 +359,18 @@ void Ui::bottom_agents(const Model& m) {
     ImGui::PushID(static_cast<int>(i));
     ImGui::AlignTextToFramePadding();
     status_dot("", true, pulse_);
-    ImGui::Text("%s  %s  (%s)  %s", a.role.c_str(), a.block.c_str(), a.model.c_str(), a.ticket.c_str());
+    std::string label = fmt::format("{}  {}  ({})  {}", a.role, a.block, a.model, a.ticket);
+    if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowOverlap,
+                          ImVec2(ImGui::CalcTextSize(label.c_str()).x, 0))) {
+      open_live(a.journal.filename().string());
+    }
+    ui::hand_on_hover();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Watch every step of this agent"));
     ImGui::SameLine();
-    ui::muted("%s", elapsed(a.started).c_str());
+    ui::muted("%s", fmt::format("{} · {}", when(a.started), elapsed(a.started)).c_str());
     ImGui::SameLine(0, 16);
+    if (ui::icon_button("watch", Icon::Eye, tr("Watch every step of this agent"), false, tr("Watch"))) open_live(a.journal.filename().string());
+    ImGui::SameLine(0, 6);
     if (a.stopping) {
       ImGui::TextColored(rgb(240, 200, 30), "%s", tr("stopping after the current step..."));
     } else if (ui::icon_button("stop", Icon::Stop, tr("Stop this agent: it ends after its current step, its journal is finished, "
@@ -270,7 +409,9 @@ void Ui::bottom_agents(const Model& m) {
       rows.push_back(&*it);
     }
   }
-  ui::muted("%s", fmt::format(fmt::runtime(tr("recent runs: {}")), rows.size()).c_str());
+  double runs_cost = 0;
+  for (const auto* r : rows) runs_cost += r->cost_usd;
+  ui::muted("%s", fmt::format(fmt::runtime(tr("recent runs: {} · ${:.4f}")), rows.size(), runs_cost).c_str());
   panel_actions(
       "runs", static_cast<int>(rows.size()), hidden,
       [&] {
@@ -282,16 +423,26 @@ void Ui::bottom_agents(const Model& m) {
         cleared_changed();
       });
   if (rows.empty()) return;
-  if (ImGui::BeginTable("runs", 8, table_flags())) {
+  if (ImGui::BeginTable("runs", 11, table_flags())) {
     ImGui::TableSetupScrollFreeze(0, 1);
-    for (const char* h : {"role", "block", "tier", "outcome", "tokens in/out", "cache read", "usd"}) ImGui::TableSetupColumn(tr(h));
+    for (const char* h : {"time", "duration", "ticket", "role", "block", "tier", "outcome", "tokens in/out", "cache read", "usd"}) {
+      ImGui::TableSetupColumn(tr(h));
+    }
     remove_column();
     ImGui::TableHeadersRow();
     for (const auto* r : rows) {
       ImGui::PushID(r->journal.empty() ? std::to_string(r->id).c_str() : r->journal.c_str());
       ImGui::TableNextRow();
-      for (const auto& cell : {r->role, r->block, r->tier, r->outcome, fmt::format("{}/{}", r->input_tokens, r->output_tokens),
-                               std::to_string(r->cache_read_tokens), fmt::format("{:.4f}", r->cost_usd)}) {
+      ImGui::TableNextColumn();
+      // The whole row opens the run in the live feed of the chat window.
+      if (ImGui::Selectable(when(r->ts).c_str(), false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap) &&
+          !r->journal.empty()) {
+        open_live(r->journal);
+      }
+      ui::hand_on_hover();
+      for (const auto& cell : {duration_text(r->duration_ms / 1000), r->ticket, r->role, r->block, r->tier, r->outcome,
+                               fmt::format("{}/{}", r->input_tokens, r->output_tokens), std::to_string(r->cache_read_tokens),
+                               fmt::format("{:.4f}", r->cost_usd)}) {
         ImGui::TableNextColumn();
         ImGui::TextUnformatted(cell.c_str());
       }
@@ -333,9 +484,9 @@ void Ui::bottom_tests(const Model& m) {
     ui::muted("%s", hidden > 0 ? tr("the list is cleared; the next test run shows here") : tr("no test results yet: karkas test"));
     return;
   }
-  if (ImGui::BeginTable("tests", 6, table_flags())) {
+  if (ImGui::BeginTable("tests", 7, table_flags())) {
     ImGui::TableSetupScrollFreeze(0, 1);
-    for (const char* h : {"block", "contract", "unit", "integration", "failures"}) ImGui::TableSetupColumn(tr(h));
+    for (const char* h : {"block", "time", "contract", "unit", "integration", "failures"}) ImGui::TableSetupColumn(tr(h));
     remove_column();
     ImGui::TableHeadersRow();
     for (const auto* t : rows) {
@@ -344,6 +495,8 @@ void Ui::bottom_tests(const Model& m) {
       ImGui::TableNextColumn();
       ImGui::TextColored(t->fresh ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : rgb(140, 140, 140), "%s%s%s", t->block.c_str(),
                          t->fresh ? "" : " ", t->fresh ? "" : tr("(stale)"));
+      ImGui::TableNextColumn();
+      ImGui::TextDisabled("%s", when(t->ts).c_str());
       for (const auto& c : {t->contract, t->unit, t->integration}) {
         ImGui::TableNextColumn();
         if (c.total > 0) {

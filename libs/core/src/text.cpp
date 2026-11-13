@@ -103,6 +103,15 @@ bool contains(std::string_view s, std::string_view needle) {
   return s.find(needle) != std::string_view::npos;
 }
 
+std::string truncate_utf8(std::string_view s, std::size_t max_bytes) {
+  if (s.size() <= max_bytes) return std::string(s);
+  std::size_t cut = max_bytes;
+  // A byte with the top two bits 10 is a UTF-8 continuation byte; cut must not land inside a
+  // multi-byte sequence, so step back to the start of it.
+  while (cut > 0 && (static_cast<unsigned char>(s[cut]) & 0xC0u) == 0x80u) --cut;
+  return std::string(s.substr(0, cut));
+}
+
 std::string to_lower(std::string_view s) {
   std::string out(s);
   for (auto& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

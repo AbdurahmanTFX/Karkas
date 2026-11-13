@@ -8,3 +8,7 @@
 # local copy of the spec (the tracked one is docs/SPEC.txt)
 /karkas_spec.txt
 /tests/fixtures/**/.karkas/
+# local notes and benchmark output
+/bugs.txt
+/deepseek_changes.txt
+/bench/results/

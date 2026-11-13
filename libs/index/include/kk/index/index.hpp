@@ -188,6 +188,9 @@ std::string card_text_without_comments(core::Block b);
 std::vector<CodeFile> collect_code_files(const core::Schema& schema);
 // Hash of all code files of a block (freshness of test results).
 std::string block_code_hash(const std::vector<CodeFile>& files, std::string_view block);
+// Hash of what the test results of a block depend on: its own code files and the api/ of
+// every block linked to it. A neighbor's contract change makes earlier results stale.
+std::string block_test_hash(const core::Schema& schema, const std::vector<CodeFile>& files, std::string_view block);
 // Hash of the block's api/ files ("" when it has none); compared with the frozen hash (D05).
 std::string block_api_hash(const std::vector<CodeFile>& files, std::string_view block);
 // Hash of the top-level structure (ids, kinds, purposes, lifted links) for "approve L0".

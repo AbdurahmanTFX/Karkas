@@ -325,9 +325,158 @@
 - Not done: the measurements themselves (need an API key and money: ≥ 3 runs × 3 methods ×
   3 scenarios). The hidden tests must be copied outside the repository first (17.6).
 
+## Addition — contract-change requests without an applicable KSL diff
+- A worker may ask for a contract change while sending a unified diff of `api/` (or nothing)
+  instead of a KSL card diff. `parse_diff` used to fail silently, the descent created an empty
+  @change, approval applied it with no effect and the next run repeated the same descent.
+- The `report` tool refuses a `proposal` that is not a KSL diff (not terminal), so the model
+  corrects it in the same run. The descent turns a proposal into a @change only through
+  `propose_change` (changes a card, passes the schema checks); otherwise the ticket is escalated
+  with the worker's `cause`, `fix` and the rejection reason, and no @change is created.
+  `LeafOutcome::proposal_error` keeps the parse error. The worker prompt spells out the card-diff
+  format and says to leave `proposal` empty when the card is right but `api/` is stale.
+- Tests: refused code diff corrected in the same run, missing proposal, a diff that changes no
+  card; the happy path (valid KSL diff → pending @change) is unchanged.
+
+## Addition — invalid UTF-8 never aborts a run
+- `shorten`/`clip` and the read_file cap cut text at a byte count and could split a code point;
+  the broken string reached `nlohmann::json::dump` in the LLM request (the orchestrator's
+  "recent tickets" context) and aborted `karkas ticket run` (`type_error.316`).
+- `core::truncate_utf8` cuts on a code-point boundary; `shorten`, `clip` and the read_file cap
+  use it. LLM request bodies (Anthropic, OpenAI-compatible) and run journal lines are serialized
+  with `error_handler_t::replace`: invalid UTF-8 from any source (a file in another encoding, a
+  model's output) becomes U+FFFD instead of an exception.
+- Tests: truncate_utf8 with 1–4-byte code points against a UTF-8 validator; both providers
+  serialize a request with a broken byte.
+
 ## Not verified in this environment
 - Real model calls: `karkas llm ping`, cache_read growth, "idea → working wavkit" (stage 7),
   the benchmark runs (stage 10) — they need ANTHROPIC_API_KEY and spend money.
 - MCP Inspector and `claude mcp add karkas -- karkas mcp --project <dir>` (stage 3) — manual.
 - The Graphviz engine — Graphviz is not installed (docs/adr/0002).
 - karkas-gui was checked under Xvfb with screenshots; interactive use on Wayland is manual.
+
+## Addition — report validates a proposal like propose_change
+- Seen on T-0007 (flappy-karkas): a worker sent `~ @block x` then `~ purpose ...`; `report` only parsed it,
+  the descent rejected it later ("'~' selects a record"), no @change was created and the ticket escalated
+  after a full run. `check_proposal` (changes.cpp) is the dry run of `propose_change`; `report` now refuses
+  any proposal that would not become a @change (the model corrects it in the same run) with the line-change
+  syntax (`- old` then `+ new`).
+- worker.txt: states the diff syntax, allows reporting needs_contract_change without build()/test() when the
+  contract change is already clear; ksl_change_example.txt shows a line change.
+
+## Addition — agents see the outcomes of earlier descents; no circles (docs/adr/0020)
+- Found by a DeepSeek-only test on flappy-karkas (report: flappy-karkas/karkas-deepseek-test-2026-11-12).
+- Path views: own decisions keep suspects and fold repeats (`repeats=N`); root and group views end
+  with the earlier descents (`tried ...` with the cause) and the last result.
+- Descent: answered blocks are not sent the ticket again in one run; needs_contract_change without a
+  card diff goes up to the orchestrator (new tool `escalate`); feature leaves return to the
+  orchestrator until it closes; new worker status `needs_tester` hands a contract-test flaw to the
+  tester; the orchestrator's proposal is checked like a worker's.
+- Re-runs: results carry `state`; `ticket run` refuses (no model started) while a change waits or when
+  nothing changed since a blocking result; `--force`; `ticket close`.
+- api/ in tickets: values of a frozen api may change (re-frozen); an api unfrozen by an approved change
+  is updated by the worker; the architect sees the current api/ and keeps its style.
+- Models: `[routing] escalate`, `[effort]` per role, `reasoning_effort` and `reasoning_content` in the
+  OpenAI-compatible provider, tester tier via tier_for, probes tool only with data.
+- Tests: path views (core), api_shape and api access (sandbox), 13 engine scenarios (feature over two
+  leaves, needs_tester, no re-dispatch after not_here, blocked re-run, pending change, escalation
+  chain, unfrozen and frozen api, orchestrator proposal check, ask cut, probes/journal, effort),
+  provider reasoning/effort, config parsing. 259/259 green.
+
+## Addition — GUI: panels over the schema, live feed, ghost of a change, faster canvas (docs/adr/0021)
+
+- Layout: the schema covers the work area; the side bar, inspector and bottom panel lie over it
+  and are resized at their inner border; no docking; the chat floats on top; fit to view uses the
+  free part. Windows menu hides/shows every panel and bottom tab.
+- Chat: browser-like selection of every text (drag over messages, double/triple click, Shift,
+  Ctrl+A/C, menu); Live tab shows every step of any agent run (also from a terminal); Auto mode
+  (`[agents] auto_approve`); proposed changes: show on schema (ghost), edit, approve, reject.
+- Changes panel: rows no longer move under the mouse; hide works; selecting a change opens its
+  level and draws new/removed blocks, ports and links.
+- Canvas: lines attach on the facing side, socket shape per link kind, direction chevrons;
+  per-model caches + level of detail: "All levels" of blobby 52–62 ms → 17–19 ms per frame (debug).
+- Cursors from the desktop theme (theme names resolved by Name=); symbol glyph ranges; times and
+  costs in tickets, runs and agents; tickets show titles first.
+- Tests: 272/272 (`ctest --preset dev`; `index/perf` is timing-sensitive under `-j8`, passes alone).
+
+## Addition — lines can be bent by hand (docs/adr/0022)
+
+- Hover a line: a "+" in the middle of each piece (drag it to bend the line there) and its bend
+  points (drag to move, double click to remove); line menu "Straighten the line", background menu
+  "Straighten every line of this level". Bends follow the blocks (kept relative to the two blocks'
+  centers) and are saved in `.karkas/bends.json`; a bent line leaves its blocks on the side facing
+  its bends and passes under blocks. "All levels" of blobby stays ~19 ms per frame (debug).
+
+## Addition — zoomed out, blocks are cards with their names (docs/adr/0023)
+
+- Below ~8 px of text on screen a block shows only its name, large and centered, on its color;
+  zooming in brings back icon, status, purpose and ports. Pins keep their places (lines do not
+  move); sharp large names from a 28 px raster of the medium font. Tests 272/272; "All levels" of
+  blobby ~18 ms per frame (debug).
+
+## Addition — agents through MCP: the same agents, an MCP client as their model (docs/adr/0024)
+
+- `[agents] mode = "api" | "mcp"` (`karkas mode [api|mcp] [--fit]`, the GUI switch in the chat,
+  the status bar and Settings → Models). In mode mcp the engine's turns go to `.karkas/mcp/turns/`
+  and Claude Code answers them through kk_agent_next / kk_agent_act; kk_task / kk_debug /
+  kk_ticket_run start tickets. Same prompts, tools, sandbox, checks, escalation, journals.
+- Per-mode model maps: [levels]/[roles]/[blocks]/escalate for api, [mcp.*] for mcp (Claude tiers
+  = Claude Code subagents); `--fit` / "Fit to the API models" sets the MCP maps from the API ones
+  by strength. flappy-karkas: mode api, MCP maps fitted (0 strong, 1 cheap, 2 strong).
+- Tests 279/279; `karkas mcp` checked over stdio with a scripted client.
+
+## Addition — agents see why they fail, a client never waits on itself (docs/adr/0025)
+
+- From flappy-karkas T-0013 (mode mcp) and the test-free-AI logs (OpenCode + DeepSeek, $0.48):
+  `.gitkeep` counted as a C++ source broke the configure of the whole project after C-0004
+  (`add_executable` with no sources); CMake errors lost their message; sandbox refusals named
+  nothing readable (42 of 50 integration-tester steps were errors); the entry block had no test
+  program (T-0003: 75 steps of probes); `karkas approve` in the client's own shell waited on
+  that client.
+- Fixed: exact extensions and `if()` guards in the generated CMake, entry unit tests (impl/
+  without main.cpp); CMake message lines in the build summary; sandbox and tool messages that
+  list what is readable / what is there; build hints for errors in others' files and for "tests
+  none found"; doctest named in the worker prompt; kk_implement and the "run it in the
+  background" notice in mode mcp; kk_agent_next(run, after) gives only what is new; stopped
+  results carry `state`; D04 E vs W wording; the tester adds contract tests for a feature's new
+  invariants of a leaf; two proposed changes stay two lines of the path view.
+- Tests 287/287 (`index/perf` timing-sensitive under `-j8`, passes alone).
+
+## Addition — flappy-karkas T-0014 through MCP: five more fixes (docs/adr/0025, addendum)
+
+- Feature "the pace rises with the score, the HUD shows ×1.10" over config, rules.round, view.hud,
+  served through `karkas mcp` (orchestrator, workers and testers of tier strong by this session, cheap
+  by karkas-cheap subagents): done, `kk_check` 0/0, all tests green, contract tests for the four new
+  invariants, the contract autopilot made fit for the faster world.
+- Fixed on the way: standalone tests with their own main() are programs of their own; the api note
+  allows new constants; `needs_tester` in a feature goes back to the orchestrator and keeps the
+  worker's files; `--force` reopens a closed ticket (kk_ticket_run says so first); read_file
+  offset/limit keeps indentation.
+- Cost (client model of T-0013): T-0013 $1.15–1.40, T-0014 $1.95–2.42, of which ~$0.5 came from the
+  two engine defects and one extra card change; 86 % of the reading were whole turns of new runs.
+- Tests 289/289.
+
+## Addition — fewer and cheaper runs per ticket (docs/adr/0026)
+
+- Plans: the orchestrator of a feature gives `next` with dispatch / propose_change; the blocks run one
+  after another and the ticket closes after the last (back to the orchestrator only on a deviation or a
+  block of the approved change nobody sent); a plan waiting for a human goes on after the approval.
+- Auto in the worker's run: a worker's card diff is approved by its report and the worker goes on.
+- Mechanical edits on approval: `+ const <name> <type> <value> // note` lines are written into api/;
+  new fn are declared when the header's style and the types allow it.
+- Optional `[agents] review_changes`: the leaves of an orchestrator's change say whether their card is
+  enough before it is approved.
+- Cheaper turns: role prompts without the block name (one cached prefix per role), the KSL reference as
+  a tool, neighbor headers as the declarations the block uses, unit tests as a list, the last result per
+  block; in mode mcp `kk_agent_next(seen=[...])` leaves out the system prompt, tools and unchanged
+  context of a role the client served.
+- Routing: [levels] pick the deciding roles only; leaf work by [roles] and task size
+  (`[routing] levels_for = "all"` for the old pinning).
+- Measurement: MCP traffic per turn (`.karkas/mcp/traffic`) → estimated tokens and cost in the journals
+  and the ticket; `karkas stats [ticket]`.
+- Test infrastructure: a test that runs no case fails (';' in TEST_CASE names had hidden nine tests).
+- Measured on flappy T-0015 (same scope as T-0014): ≈ $0.31–0.34 for the client (T-0014: $1.95–2.42;
+  T-0013 done directly: $0.26–0.40); 8 runs, 2 orchestrator decisions, all leaf work on the cheap tier.
+  A ticket's tester escalates its tier on failure; act-delivered turns are counted in the traffic.
+- Tests 294 (`index/perf` timing-sensitive under `-j8`, passes alone).

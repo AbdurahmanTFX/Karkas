@@ -6,6 +6,7 @@
 #include "kk/core/cancel.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/tickets.hpp"
+#include "kk/core/validate.hpp"
 #include "kk/index/state.hpp"
 #include "kk/metrics/metrics.hpp"
 #include "kk/test/support.hpp"
@@ -142,6 +143,122 @@ TEST_CASE("engine: needs_contract_change becomes a pending @change and the ticke
   REQUIRE_MESSAGE(a, (a ? "" : a.error().str()));
   CHECK(core::contains(test::read(rig.p / "blocks/stream/ring/block.ksl"), "fn      reset() -> void"));
   CHECK(core::contains(rig.ticket_text("T-0001"), "note    C-0001 approved"));
+}
+
+TEST_CASE("engine: a code diff of api/ as proposal is refused by report and the worker corrects it in the same run") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream", "M", "x"));
+  rig.model.tool("dispatch", dispatch("stream.ring", "M", "y"));
+  // First a unified diff of api/ instead of a KSL card diff: report refuses it (not terminal).
+  rig.model.tool("report", {{"status", "needs_contract_change"},
+                            {"cause", "api/ring.hpp does not declare reset() though the card does"},
+                            {"api", "change_requested"},
+                            {"proposal", "--- api/ring.hpp\n+++ api/ring.hpp\n void push();\n+void reset();"}});
+  // Then, as the error says, no proposal and the missing declaration in cause and fix.
+  rig.model.tool("report", {{"status", "needs_contract_change"},
+                            {"cause", "api/ring.hpp does not declare reset() though the card does"},
+                            {"fix", "Add void reset(); to api/ring.hpp"},
+                            {"api", "change_requested"}});
+  // Up to the orchestrator (11.3), which sees the worker's cause and gives the ticket to the human.
+  rig.model.tool("escalate", {{"note", "add void reset(); to api/ring.hpp, then karkas approve api stream.ring"}});
+  auto r = rig.engine->debug("crackle", {});
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() == 5);  // orchestrator, navigator, two worker steps, orchestrator
+  CHECK(core::contains(test::ScriptedModel::request_text(rig.model.calls[3].req), "proposal cannot become a @change"));
+  auto orch = test::ScriptedModel::request_text(rig.model.calls[4].req);
+  CHECK(rig.model.calls[4].tier == "strong");
+  CHECK(core::contains(orch, "Add void reset(); to api/ring.hpp"));
+  CHECK(core::contains(orch, "stream.ring: needs_contract_change"));
+  auto t = rig.ticket_text("T-0001");
+  CHECK(core::contains(t, "status  escalated"));
+  CHECK(core::contains(t, "attempt=1 outcome=needs_contract_change"));
+  CHECK(core::contains(t, "L0 orchestrator at=root outcome=escalated"));
+  CHECK(core::contains(t, "note    add void reset(); to api/ring.hpp, then karkas approve api stream.ring"));
+  // No @change is left behind.
+  agents::ChangeStore changes(rig.p.path());
+  auto cs = changes.list();
+  REQUIRE(cs);
+  CHECK(cs->empty());
+}
+
+TEST_CASE("engine: a KSL proposal that changes no card is refused by report and the worker corrects it in the same run") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream", "M", "x"));
+  rig.model.tool("dispatch", dispatch("stream.ring", "M", "y"));
+  // Parses as KSL, but only selects a block: report refuses it (not terminal).
+  rig.model.tool("report", {{"status", "needs_contract_change"}, {"cause", "ring needs reset"},
+                            {"api", "change_requested"}, {"proposal", "~ @block stream.ring"}});
+  rig.model.tool("report", {{"status", "needs_contract_change"}, {"cause", "ring needs reset"},
+                            {"api", "change_requested"}, {"proposal", "~ @block stream.ring\n+ fn reset() -> void"}});
+  auto r = rig.engine->debug("crackle", {});
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() == 4);
+  CHECK(core::contains(test::ScriptedModel::request_text(rig.model.calls[3].req), "the diff changes no card"));
+  agents::ChangeStore changes(rig.p.path());
+  auto cs = changes.list();
+  REQUIRE(cs);
+  CHECK(cs->size() == 1);
+}
+
+TEST_CASE("engine: '~' before a card line is refused by report with the syntax of a line change") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream", "M", "x"));
+  rig.model.tool("dispatch", dispatch("stream.ring", "M", "y"));
+  rig.model.tool("report", {{"status", "needs_contract_change"}, {"cause", "ring needs reset"},
+                            {"api", "change_requested"}, {"proposal", "~ @block stream.ring\n~ purpose a ring\n+ fn reset() -> void"}});
+  rig.model.tool("report", {{"status", "needs_contract_change"}, {"cause", "ring needs reset"},
+                            {"api", "change_requested"}, {"proposal", "~ @block stream.ring\n+ fn reset() -> void"}});
+  auto r = rig.engine->debug("crackle", {});
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() == 4);
+  auto err = test::ScriptedModel::request_text(rig.model.calls[3].req);
+  CHECK(core::contains(err, "'~' selects a record"));
+  CHECK(core::contains(err, "'- old line' then '+ new line'"));
+  agents::ChangeStore changes(rig.p.path());
+  auto cs = changes.list();
+  REQUIRE(cs);
+  CHECK(cs->size() == 1);
+}
+
+TEST_CASE("engine: needs_contract_change with no proposal goes up to the orchestrator, which cannot send it back") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream", "M", "x"));
+  rig.model.tool("dispatch", dispatch("stream.ring", "M", "y"));
+  rig.model.tool("report", {{"status", "needs_contract_change"}, {"cause", "the card is right but api/ is stale"},
+                            {"fix", "Add void reset(); to api/ring.hpp"}, {"api", "change_requested"}});
+  // The orchestrator tries the same leaf again: refused in this run (the leaf already answered).
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "implement reset"));
+  rig.model.tool("escalate", {{"note", "api/ring.hpp lacks reset(); add it and approve the api"}});
+  auto r = rig.engine->debug("crackle", {});
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() == 5);
+  auto refused = test::ScriptedModel::request_text(rig.model.calls[4].req);
+  CHECK(core::contains(refused, "stream.ring already answered in this run (needs_contract_change"));
+  auto t = rig.ticket_text("T-0001");
+  CHECK(core::contains(t, "status  escalated"));
+  CHECK(core::contains(t, "fact    stream.ring needs_contract_change: the card is right but api/ is stale; Add void reset();"));
+  CHECK(core::contains(t, "api/ring.hpp lacks reset(); add it and approve the api"));
+  CHECK(core::contains(t, "state   "));
+  agents::ChangeStore changes(rig.p.path());
+  auto cs = changes.list();
+  REQUIRE(cs);
+  CHECK(cs->empty());
+  // Running the ticket again with nothing changed starts no model (ADR 0020)...
+  auto calls = rig.model.calls.size();
+  auto again = rig.engine->run_ticket("T-0001");
+  REQUIRE_FALSE(again);
+  CHECK(core::contains(again.error().message, "nothing changed since"));
+  CHECK(core::contains(again.error().message, "--force"));
+  CHECK(rig.model.calls.size() == calls);
+  // ...a human change of the api/ unblocks it.
+  auto api = rig.p / "blocks/stream/ring/api/ring.hpp";
+  test::write(api, test::read(api) + "\n// reset() added by the human\n");
+  rig.model.tool("close", {{"verdict", "done"}, {"note", "api updated by the human"}});
+  auto after = rig.engine->run_ticket("T-0001");
+  REQUIRE_MESSAGE(after, (after ? "" : after.error().str()));
+  CHECK(rig.model.calls.size() == calls + 1);
+  // The orchestrator is told that the project changed since the last result.
+  CHECK(core::contains(test::ScriptedModel::request_text(rig.model.calls.back().req), "changed since the last result"));
 }
 
 TEST_CASE("engine: models pinned per level and per block override the roles (ADR 0011)") {
@@ -320,7 +437,7 @@ TEST_CASE("engine: approve api in a project with its own CMakeLists.txt freezes 
   CHECK(test::read(rig.p / "CMakeLists.txt") == own);
 }
 
-TEST_CASE("engine: a worker stopped by the user ends the descent; the ticket stays open, nothing escalates (ADR 0019)") {
+TEST_CASE("engine: a worker stopped by the user ends the descent, the ticket stays open, nothing escalates (ADR 0019)") {
   Rig rig;
   rig.model.tool("dispatch", dispatch("stream", "M", "frames dropped"));
   rig.model.tool("dispatch", dispatch("stream.ring", "M", "ring drops"));
@@ -363,4 +480,416 @@ TEST_CASE("engine: SIGINT of the command stops the navigator and the descent (AD
   auto t = rig.ticket_text("T-0001");
   CHECK(core::contains(t, "status  open"));
   CHECK(core::contains(t, "stopped by the user at stream (navigator)"));
+}
+
+// --- ADR 0020: reasonable talk between the agents, no circles ---------------------------------
+
+TEST_CASE("engine: a feature over two leaves comes back to the orchestrator after each done leaf") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "ring part"));  // a known leaf: no navigator hop
+  rig.model.tool("report", {{"status", "done"}, {"fix", "ring gains reset"}, {"files", {"impl/ring.cpp"}}});
+  rig.model.tool("dispatch", dispatch("stream.pump", "S", "pump part"));
+  rig.model.tool("report", {{"status", "done"}, {"fix", "pump calls reset on stop"}});
+  rig.model.tool("close", {{"verdict", "done"}, {"note", "both parts in place"}});
+  auto r = rig.engine->task("reset the stream on stop");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() == 5);
+  auto second = test::ScriptedModel::request_text(rig.model.calls[2].req);
+  CHECK(core::contains(second, "Finished in this run: stream.ring"));
+  CHECK(core::contains(second, "stream.ring: done: ring gains reset"));
+  auto t = rig.ticket_text("T-0001");
+  CHECK(core::contains(t, "status  closed"));
+  CHECK(core::contains(t, "status  done\nfix     stream.ring: ring gains reset\nfiles   stream.ring: impl/ring.cpp"));
+  CHECK(core::contains(t, "fix     stream.pump: pump calls reset on stop"));
+  CHECK(core::contains(t, "note    both parts in place"));
+}
+
+TEST_CASE("engine: a done leaf of a feature is not sent the ticket again in the same run") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "ring part"));
+  rig.model.tool("report", {{"status", "done"}, {"fix", "ring gains reset"}});
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "ring again"));
+  rig.model.tool("close", {{"verdict", "done"}});
+  auto r = rig.engine->task("reset the stream on stop");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() == 4);
+  CHECK(core::contains(test::ScriptedModel::request_text(rig.model.calls[3].req), "stream.ring already answered in this run (done"));
+}
+
+TEST_CASE("engine: a cause in a contract test goes to the tester (needs_tester), who corrects it") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "contract test flakes"));
+  rig.model.tool("report", {{"status", "needs_tester"}, {"cause", "the contract test samples fill before the last push"},
+                            {"fix", "sample fill after the last push"}});
+  rig.model.tool("report", {{"status", "done"}, {"fix", "the test samples fill after the last push"},
+                            {"files", {"tests/contract/ring_contract.cpp"}}});
+  auto r = rig.engine->debug("ring contract test flakes", {});
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() == 3);
+  CHECK(rig.model.calls[2].tier == "cheap");  // the tester's tier of [roles]
+  auto tester = test::ScriptedModel::request_text(rig.model.calls[2].req);
+  CHECK(core::contains(tester, "You are the TESTER"));
+  CHECK(core::contains(tester, "the contract test samples fill before the last push"));
+  CHECK(core::contains(tester, "Never weaken or drop an invariant"));
+  auto t = rig.ticket_text("T-0001");
+  CHECK(core::contains(t, "status  closed"));
+  CHECK(core::contains(t, "outcome=needs_tester"));
+  CHECK(core::contains(t, "L2 tester       at=stream.ring model=cheap attempt=1 outcome=done"));
+  CHECK(core::contains(t, "status  fixed"));
+  CHECK(core::contains(t, "files   tests/contract/ring_contract.cpp"));
+}
+
+TEST_CASE("engine: in a feature, a leaf done after its tester fixed a contract test goes back to the orchestrator") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "ring part"));
+  rig.model.tool("report", {{"status", "needs_tester"}, {"cause", "reset is in place; the contract test assumes no reset"},
+                            {"fix", "let the test reset the ring first"}, {"files", {"impl/ring.cpp"}}});
+  rig.model.tool("report", {{"status", "done"}, {"fix", "the test resets the ring first"}, {"files", {"tests/contract/ring_contract.cpp"}}});
+  rig.model.tool("dispatch", dispatch("stream.pump", "S", "pump part"));
+  rig.model.tool("report", {{"status", "done"}, {"fix", "pump calls reset on stop"}});
+  rig.model.tool("close", {{"verdict", "done"}, {"note", "both parts in place"}});
+  auto r = rig.engine->task("reset the stream on stop");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() == 6);  // flappy T-0014 closed after the tester, its second block undone
+  auto orch = test::ScriptedModel::request_text(rig.model.calls[3].req);
+  CHECK(core::contains(orch, "stream.ring: done (after the tester fixed a contract test)"));
+  auto t = rig.ticket_text("T-0001");
+  CHECK(core::contains(t, "status  closed"));
+  CHECK(core::contains(t, "fix     stream.ring: the test resets the ring first"));
+  CHECK(core::contains(t, "files   stream.ring: impl/ring.cpp, tests/contract/ring_contract.cpp"));
+  CHECK(core::contains(t, "fix     stream.pump: pump calls reset on stop"));
+}
+
+TEST_CASE("engine: a closed ticket runs again only with force, which reopens it") {
+  Rig rig;
+  rig.model.tool("close", {{"verdict", "done"}, {"note", "nothing to do"}});
+  REQUIRE(rig.engine->task("tidy the ring"));
+  auto again = rig.engine->run_ticket("T-0001");
+  REQUIRE(again);
+  CHECK(core::contains(*again, "is closed (karkas ticket run T-0001 --force reopens it)"));
+  CHECK(rig.model.calls.size() == 1);
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "the part left undone"));
+  rig.model.tool("report", {{"status", "done"}, {"fix", "ring tidied"}});
+  rig.model.tool("close", {{"verdict", "done"}});
+  auto forced = rig.engine->run_ticket("T-0001", true);
+  REQUIRE_MESSAGE(forced, (forced ? "" : forced.error().str()));
+  CHECK(rig.model.calls.size() == 4);
+  CHECK(core::contains(rig.ticket_text("T-0001"), "fix     stream.ring: ring tidied"));
+}
+
+TEST_CASE("engine: a navigator cannot send the ticket back to a child that just said not_here") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream", "M", "frames dropped"));
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "ring suspected"));
+  rig.model.tool("report", {{"status", "not_here"}, {"cause", "the flaw is in the pump"}});
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "ring again"));  // refused
+  rig.model.tool("dispatch", dispatch("stream.pump", "S", "pump then"));
+  rig.model.tool("report", {{"status", "fixed"}, {"cause", "short pushes ignored"}, {"fix", "retry"}});
+  auto r = rig.engine->debug("crackle", {});
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() == 6);
+  auto nav = test::ScriptedModel::request_text(rig.model.calls[3].req);
+  CHECK(core::contains(nav, "Already answered in this run"));
+  CHECK(core::contains(nav, "tried   stream.ring -> worker at stream.ring: not_here | stream.ring not_here: the flaw is in the pump"));
+  CHECK(core::contains(test::ScriptedModel::request_text(rig.model.calls[4].req), "stream.ring already answered in this run (not_here"));
+  CHECK(core::contains(rig.ticket_text("T-0001"), "status  closed"));
+}
+
+TEST_CASE("engine: a ticket whose @change waits for approval is not run again") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream.ring", "M", "y"));
+  rig.model.tool("report", {{"status", "needs_contract_change"}, {"cause", "consumer needs to drain the ring"},
+                            {"proposal", "~ @block stream.ring\n+ fn reset() -> void"}});
+  auto r = rig.engine->debug("crackle", {});
+  REQUIRE(r);
+  auto calls = rig.model.calls.size();
+  auto again = rig.engine->run_ticket("T-0001");
+  REQUIRE_FALSE(again);
+  CHECK(core::contains(again.error().message, "T-0001 waits for C-0001"));
+  CHECK(core::contains(again.error().message, "karkas approve C-0001"));
+  CHECK(rig.model.calls.size() == calls);
+}
+
+TEST_CASE("engine: [routing] escalate moves a failing worker along a chain of any tier names") {
+  auto cfg = test::test_config();
+  cfg.models["ds_flash"] = cfg.models["cheap"];
+  cfg.models["ds_pro"] = cfg.models["strong"];
+  cfg.block_tiers = {{"stream.ring", "ds_flash"}};
+  cfg.escalate = {"ds_flash", "ds_pro"};
+  Rig rig(true, cfg);
+  rig.tests.fn = [](const std::vector<std::string>&) { return failing(); };
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "ring drops"));
+  for (int i = 0; i < 4; ++i) rig.model.tool("report", {{"status", "fixed"}, {"cause", "maybe"}});
+  auto r = rig.engine->debug("crackle", {});
+  REQUIRE(r);
+  std::vector<std::string> tiers;
+  for (std::size_t i = 1; i < rig.model.calls.size(); ++i) tiers.push_back(rig.model.calls[i].tier);
+  CHECK(tiers == std::vector<std::string>{"ds_flash", "ds_flash", "ds_pro", "ds_pro"});
+  CHECK(core::contains(rig.ticket_text("T-0001"), "status  escalated"));
+  CHECK(agents::next_tier(cfg, "ds_pro").empty());
+  CHECK(agents::next_tier(test::test_config(), "cheap") == "medium");
+}
+
+TEST_CASE("engine: in a ticket the worker brings an unfrozen api/ in line with the card") {
+  Rig rig;
+  index::StateStore st(rig.p.path());
+  REQUIRE(st.freeze_api("stream.pump", "x"));  // the project went through approve api; ring was unfrozen
+  // The approved change added reset() to the card: api/ is behind it (D04).
+  auto card = rig.p / "blocks/stream/ring/block.ksl";
+  auto text = test::read(card);
+  text.insert(text.find("\nfn      capacity()"), "\nfn      reset()");
+  test::write(card, text);
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "card gained reset"));
+  rig.model.tool("edit_file", {{"path", "api/ring.hpp"},
+                               {"old", "  [[nodiscard]] virtual std::size_t fill() const = 0;"},
+                               {"new", "  [[nodiscard]] virtual std::size_t fill() const = 0;\n  virtual void reset() = 0;"}});
+  rig.model.tool("report", {{"status", "done"}, {"fix", "reset() declared and implemented"}, {"api", "changed"}});
+  rig.model.tool("close", {{"verdict", "done"}});
+  auto r = rig.engine->task("the ring can be reset");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  CHECK(core::contains(test::ScriptedModel::request_text(rig.model.calls[1].req), "unfrozen and behind its card"));
+  CHECK(core::contains(test::read(rig.p / "blocks/stream/ring/api/ring.hpp"), "virtual void reset() = 0;"));
+  CHECK(core::contains(rig.ticket_text("T-0001"), "api     stream.ring: changed to the card (karkas approve api stream.ring freezes it)"));
+}
+
+TEST_CASE("engine: a worker tunes a constant of a frozen api/, which stays frozen with the new hash") {
+  Rig rig;
+  test::write(rig.p / "blocks/stream/ring/api/limits.hpp", "#pragma once\nnamespace wk {\ninline constexpr int kMaxFrames = 4096;\n}\n");
+  auto hash = [&] {
+    auto s = core::load_schema(rig.p.path());
+    REQUIRE(s);
+    return index::block_api_hash(index::collect_code_files(*s), "stream.ring");
+  };
+  index::StateStore st(rig.p.path());
+  REQUIRE(st.freeze_api("stream.ring", hash()));
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "a bigger ring"));
+  rig.model.tool("edit_file", {{"path", "api/limits.hpp"}, {"old", "4096"}, {"new", "8192"}});
+  rig.model.tool("report", {{"status", "done"}, {"fix", "kMaxFrames 4096 -> 8192"}});
+  rig.model.tool("close", {{"verdict", "done"}});
+  auto r = rig.engine->task("allow 8192 frames");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  CHECK(core::contains(test::ScriptedModel::request_text(rig.model.calls[1].req), "frozen: its declarations"));
+  CHECK(core::contains(test::read(rig.p / "blocks/stream/ring/api/limits.hpp"), "8192"));
+  auto state = st.load();
+  REQUIRE(state);
+  CHECK(state->frozen_api.at("stream.ring") == hash());  // no D05: the frozen hash follows the values
+  // The verification re-tests the dependents of the edited api/ (12.4).
+  bool dependents = false;
+  for (const auto& c : rig.tests.calls) dependents = dependents || std::find(c.begin(), c.end(), "dsp.chain") != c.end();
+  CHECK(dependents);
+  CHECK(core::contains(rig.ticket_text("T-0001"), "constants tuned or added, declarations unchanged (re-frozen)"));
+}
+
+TEST_CASE("engine: the orchestrator's change that changes no card is refused by the tool and corrected") {
+  Rig rig;
+  rig.model.tool("propose_change", {{"reason", "ring needs reset"}, {"diff", "~ @block stream.ring"}});
+  rig.model.tool("propose_change", {{"reason", "ring needs reset"}, {"diff", "~ @block stream.ring\n+ fn reset() -> void"}});
+  auto r = rig.engine->task("the ring can be reset");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() == 2);
+  CHECK(core::contains(test::ScriptedModel::request_text(rig.model.calls[1].req), "the change cannot be proposed"));
+  CHECK(core::contains(rig.ticket_text("T-0001"), "C-0001 needs human approval"));
+}
+
+TEST_CASE("engine: ask() cuts a long answer on a word boundary, never inside a character") {
+  Rig rig;
+  std::string longer;
+  for (int i = 0; i < 80; ++i) longer += "слово ";
+  rig.model.tool("answer", {{"text", longer}});
+  auto a = rig.engine->ask("stream.pump", "rate?", "");
+  REQUIRE(a);
+  CHECK(a->ends_with("слово..."));
+  CHECK(core::estimate_tokens(*a) <= 82);
+}
+
+TEST_CASE("engine: the schema agents get no probes tool without probe data, the journal keeps what the model saw") {
+  Rig rig;
+  rig.model.tool("close", {{"verdict", "not_a_bug"}});
+  auto r = rig.engine->task("nothing");
+  REQUIRE(r);
+  bool probes = false;
+  for (const auto& t : rig.model.calls[0].req.tools) probes = probes || t.name == "probes";
+  CHECK_FALSE(probes);
+  auto runs = rig.engine->index().runs();
+  REQUIRE_FALSE(runs.empty());
+  bool found = false;
+  for (const auto& e : std::filesystem::directory_iterator(rig.p / ".karkas/runs")) {
+    if (!e.is_regular_file()) continue;
+    auto text = test::read(e.path());
+    if (core::contains(text, "\"kind\":\"start\"") && core::contains(text, "You are the ORCHESTRATOR") &&
+        core::contains(text, "\"context\":\"idea ")) {
+      found = true;
+    }
+  }
+  CHECK(found);
+}
+
+TEST_CASE("engine: [effort] per role reaches the request, other roles keep the tier's effort") {
+  auto cfg = test::test_config();
+  cfg.role_effort = {{"orchestrator", "low"}};
+  cfg.models["medium"].effort = "high";
+  CHECK(cfg.max_output_tokens_routing == 0);  // off by default
+  cfg.max_output_tokens_routing = 2048;
+  Rig rig(true, cfg);
+  rig.model.tool("dispatch", dispatch("stream", "S", "x"));
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "y"));
+  rig.model.tool("report", {{"status", "fixed"}, {"cause", "c"}, {"fix", "f"}});
+  auto r = rig.engine->debug("crackle", {});
+  REQUIRE(r);
+  CHECK(rig.model.calls[0].req.effort == "low");   // orchestrator: [effort]
+  CHECK(rig.model.calls[0].req.max_tokens == cfg.max_output_tokens_routing);  // schema agents: short answers
+  CHECK(rig.model.calls[2].req.max_tokens == cfg.max_output_tokens);          // the worker keeps the full limit
+  CHECK(rig.model.calls[1].req.effort == "high");  // navigator on medium: the tier's effort
+}
+
+TEST_CASE("engine: tuning a constant of a shared block leaves its card valid (no hist line in a shared card)") {
+  Rig rig;
+  test::write(rig.p / "blocks/shared/types/api/consts.hpp", "#pragma once\nnamespace wk {\ninline constexpr int kRate = 48000;\n}\n");
+  auto s = core::load_schema(rig.p.path());
+  REQUIRE(s);
+  index::StateStore st(rig.p.path());
+  REQUIRE(st.freeze_api("shared.types", index::block_api_hash(index::collect_code_files(*s), "shared.types")));
+  rig.model.tool("dispatch", dispatch("shared.types", "S", "a tunable number"));
+  rig.model.tool("edit_file", {{"path", "api/consts.hpp"}, {"old", "48000"}, {"new", "44100"}});
+  rig.model.tool("report", {{"status", "done"}, {"fix", "kRate 48000 -> 44100"}});
+  rig.model.tool("close", {{"verdict", "done"}});
+  auto r = rig.engine->task("use 44100 Hz");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  CHECK(core::contains(rig.ticket_text("T-0001"), "status  closed"));
+  CHECK_FALSE(core::contains(test::read(rig.p / "blocks/shared/types/block.ksl"), "hist"));
+  auto after = core::load_schema(rig.p.path());
+  REQUIRE(after);
+  CHECK_FALSE(core::has_errors(core::check_schema(*after)));
+}
+
+TEST_CASE("engine: answers cut at the output limit get a decide-now nudge with their last thoughts, each time") {
+  Rig rig;
+  auto cut = [](const std::string& thought) {
+    return [thought](const llm::Request&) {
+      llm::Response r;
+      r.stop_reason = "max_tokens";
+      r.usage = {10, 4096, 0, 0, 0};
+      llm::ContentBlock b;
+      b.type = llm::ContentBlock::Type::Other;
+      b.text = thought;
+      b.raw_json = R"({"type":"reasoning"})";
+      r.content.push_back(b);
+      return r;
+    };
+  };
+  rig.model.then(cut("first: the pickups need a Slow kind"));
+  rig.model.then(cut("second: so the change is a note line in rules.pickups"));
+  rig.model.tool("close", {{"verdict", "not_a_bug"}});
+  auto r = rig.engine->task("nothing");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() == 3);
+  auto last = test::ScriptedModel::request_text(rig.model.calls[2].req);
+  CHECK(core::contains(last, "cut at the output limit"));
+  CHECK(core::contains(last, "second: so the change is a note line in rules.pickups"));
+  CHECK(core::contains(rig.ticket_text("T-0001"), "status  closed"));
+}
+
+TEST_CASE("engine: an api/ unfrozen long ago and in line with its card is not presented as work to do") {
+  Rig rig;
+  index::StateStore st(rig.p.path());
+  REQUIRE(st.freeze_api("stream.pump", "x"));  // ring unfrozen, its card unchanged (no D04)
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "a fix inside the ring"));
+  rig.model.tool("report", {{"status", "done"}, {"fix", "nothing in api/"}});
+  rig.model.tool("close", {{"verdict", "done"}});
+  auto r = rig.engine->task("tidy the ring");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  auto worker = test::ScriptedModel::request_text(rig.model.calls[1].req);
+  CHECK(core::contains(worker, "unfrozen but already in line with its card"));
+  CHECK_FALSE(core::contains(worker, "behind its card"));
+  // New constants are never a card's business: allowed as in a frozen api/ (flappy T-0014, where
+  // "only what the card names" made the worker of config refuse three new constants).
+  CHECK(core::contains(worker, "add new constexpr constants and change values of constants when the ticket needs them"));
+}
+
+TEST_CASE("engine: the orchestrator of a feature sees the approved changes of its ticket as the agreed scope") {
+  Rig rig;
+  rig.model.tool("propose_change", {{"reason", "the ring can be reset by the pump"}, {"diff", "~ @block stream.ring\n+ fn reset() -> void"}});
+  auto r = rig.engine->task("reset the stream on stop");
+  REQUIRE(r);
+  REQUIRE(rig.engine->approve("C-0001"));
+  CHECK(core::contains(rig.ticket_text("T-0001"), "note    C-0001 approved"));
+  rig.model.tool("close", {{"verdict", "done"}});
+  auto again = rig.engine->run_ticket("T-0001");
+  REQUIRE_MESSAGE(again, (again ? "" : again.error().str()));
+  auto orch = test::ScriptedModel::request_text(rig.model.calls.back().req);
+  CHECK(core::contains(orch, "Approved changes of this ticket (the agreed scope"));
+  CHECK(core::contains(orch, "- C-0001 (stream.ring): the ring can be reset by the pump"));
+}
+
+TEST_CASE("engine: a run stopped after a finished leaf keeps that leaf's result lines") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "ring part"));
+  rig.model.tool("report", {{"status", "done"}, {"fix", "ring gains reset"}, {"files", {"impl/ring.cpp"}}});
+  rig.model.tool("dispatch", dispatch("stream.pump", "S", "pump part"));
+  rig.model.then([&](const llm::Request&) {
+    for (const auto& a : metrics::active_runs(rig.p.path())) {
+      if (a.role == "worker") REQUIRE(metrics::request_stop(rig.p.path(), a.journal));
+    }
+    return test::tool_response("read_file", {{"path", "impl/pump.cpp"}});
+  });
+  auto r = rig.engine->task("reset the stream on stop");
+  REQUIRE_FALSE(r);
+  CHECK(r.error().code == "cancelled");
+  auto t = rig.ticket_text("T-0001");
+  CHECK(core::contains(t, "status  open"));
+  CHECK(core::contains(t, "status  stopped\nfix     stream.ring: ring gains reset\nfiles   stream.ring: impl/ring.cpp"));
+  auto stopped_at = t.find("status  stopped");
+  REQUIRE(stopped_at != std::string::npos);
+  CHECK(t.find("\nstate   ", stopped_at) != std::string::npos);
+  // Continued: the stopped result carries the state fingerprint, so the orchestrator hears that
+  // nothing changed since, not that the result comes from "an older run".
+  rig.model.tool("close", {{"verdict", "done"}, {"note", "the pump part comes in another ticket"}});
+  auto again = rig.engine->run_ticket("T-0001");
+  REQUIRE_MESSAGE(again, (again ? "" : again.error().str()));
+  auto orch = test::ScriptedModel::request_text(rig.model.calls.back().req);
+  CHECK(core::contains(orch, "Nothing changed in the cards or api/ since the last result."));
+  CHECK_FALSE(core::contains(orch, "without a state fingerprint"));
+}
+
+TEST_CASE("engine: a feature that gives a leaf new invariants has the tester add their contract tests") {
+  auto cfg = test::test_config();
+  cfg.auto_approve = true;
+  Rig rig(true, cfg);
+  rig.model.tool("propose_change", {{"reason", "the ring can be reset"},
+                                    {"diff", "~ @block stream.ring\n+ fn reset() -> void\n+ inv reset() leaves the ring empty"}});
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "implement reset"));
+  rig.model.tool("report", {{"status", "done"}, {"fix", "reset() implemented"}});
+  rig.model.tool("report", {{"status", "done"}, {"fix", "contract test: reset leaves the ring empty"}, {"files", "tests/contract/ring_reset.cpp"}});
+  rig.model.tool("close", {{"verdict", "done"}});
+  auto r = rig.engine->task("the ring can be reset");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(rig.model.calls.size() == 5);
+  auto tester = test::ScriptedModel::request_text(rig.model.calls[3].req);
+  CHECK(core::contains(tester, "gained these invariants in this ticket"));
+  CHECK(core::contains(tester, "- reset() leaves the ring empty"));
+  auto t = rig.ticket_text("T-0001");
+  CHECK(core::contains(t, "tester       at=stream.ring"));
+  CHECK(core::contains(t, "tests   stream.ring: contract tests for 1 new invariant(s) by the tester"));
+  CHECK(core::contains(t, "status  closed"));
+}
+
+TEST_CASE("engine: Auto (auto_approve) approves a proposed change and the orchestrator goes on in the same run") {
+  auto cfg = test::test_config();
+  cfg.auto_approve = true;
+  Rig rig(true, cfg);
+  rig.model.tool("propose_change", {{"reason", "the ring can be reset"}, {"diff", "~ @block stream.ring\n+ fn reset() -> void"}});
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "implement reset"));
+  rig.model.tool("report", {{"status", "done"}, {"fix", "reset() implemented"}});
+  rig.model.tool("close", {{"verdict", "done"}});
+  auto r = rig.engine->task("the ring can be reset");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  agents::ChangeStore changes(rig.p.path());
+  auto c = changes.load("C-0001");
+  REQUIRE(c);
+  CHECK(c->status.value == "approved");
+  CHECK(core::contains(test::read(rig.p / "blocks/stream/ring/block.ksl"), "fn      reset() -> void"));
+  auto t = rig.ticket_text("T-0001");
+  CHECK(core::contains(t, "C-0001 approved automatically (auto_approve)"));
+  CHECK(core::contains(t, "status  closed"));
+  CHECK(core::contains(t, "fix     stream.ring: reset() implemented"));
 }

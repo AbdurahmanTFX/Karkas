@@ -16,3 +16,5 @@ Threads differ and neither is any -> give via=. Every leaf has inv lines; each i
 Ticket trail lines: L<n> <role> at=<block> suspect=<a,b> ruled_out=<a> pick=<block> difficulty=S|M|L why="<= 20 words"
 Change diff lines: "+ <ksl line>" add, "- <ksl line>" remove, "~ @block <id>" select the record to change,
 "+ @block <id>" starts a new block whose following "+" lines form its card.
+"+ const <name> <C++ type> <value> // note" under "~ @block <id>" adds a constant to that block's api/ (written by
+the program on approval; no card line).

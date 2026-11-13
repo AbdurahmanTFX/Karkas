@@ -3,6 +3,7 @@
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <chrono>
 #include <nlohmann/json.hpp>
 
@@ -26,7 +27,11 @@ metrics::Tokens tokens_of(const llm::Usage& u) {
                          u.cache_write_1h_tokens, u.cache_read_tokens};
 }
 
-std::string clip(const std::string& s, std::size_t n) { return s.size() <= n ? s : s.substr(0, n) + "..."; }
+// Journal payloads carry model output and file contents: invalid UTF-8 becomes U+FFFD
+// instead of an exception that would abort the run.
+constexpr auto kUtf8Replace = json::error_handler_t::replace;
+
+std::string clip(const std::string& s, std::size_t n) { return core::truncate_utf8(s, n) + (s.size() <= n ? "" : "..."); }
 
 }  // namespace
 
@@ -40,8 +45,9 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
     return res;
   }
   res.model = tier->model;
-  res.provider = tier->provider;
-  if (auto p = metrics::check_price(cfg_, tier->provider, tier->model); !p) {
+  // Mode "mcp" (ADR 0024): an MCP client answers the turns — no API, no price.
+  res.provider = cfg_.mcp() ? "mcp" : tier->provider;
+  if (auto p = metrics::check_price(cfg_, tier->provider, tier->model); !p && !cfg_.mcp()) {
     res.outcome = "error";
     res.error = p.error().message;
     return res;
@@ -53,7 +59,7 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
     return res;
   }
   auto journal = metrics::RunJournal::open(root_, {spec.ticket, spec.role_name.empty() ? std::string(to_string(spec.role)) : spec.role_name,
-                                                   spec.block.empty() ? "root" : spec.block, tier->provider, tier->model,
+                                                   spec.block.empty() ? "root" : spec.block, res.provider, tier->model,
                                                    spec.tier, spec.attempt});
   if (!journal) {
     res.outcome = "error";
@@ -80,8 +86,17 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
   llm::Request req;
   req.model = tier->model;
   req.max_tokens = cfg_.max_output_tokens;
+  if ((spec.role == Role::Orchestrator || spec.role == Role::Navigator) && cfg_.max_output_tokens_routing > 0) {
+    req.max_tokens = req.max_tokens > 0 ? std::min(req.max_tokens, cfg_.max_output_tokens_routing) : cfg_.max_output_tokens_routing;
+  }
   req.cache_ttl = cfg_.cache_ttl;
-  req.effort = tier->effort;
+  // [effort] per role beats the tier's effort: a dispatch decision rarely needs deep reasoning.
+  const std::string role_name = spec.role_name.empty() ? std::string(to_string(spec.role)) : spec.role_name;
+  if (auto e = cfg_.role_effort.find(role_name); e != cfg_.role_effort.end()) {
+    req.effort = e->second;
+  } else {
+    req.effort = tier->effort;
+  }
   if (tier->provider == "anthropic" &&
       (tier->fallbacks == "default" || (tier->fallbacks == "auto" && llm::supports_default_fallback(tier->model)))) {
     req.fallbacks = "default";
@@ -92,15 +107,29 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
   if (!spec.context_text.empty()) first.content.push_back(llm::ContentBlock::make_text(spec.context_text, true));
   first.content.push_back(llm::ContentBlock::make_text(spec.task_text.empty() ? "Begin." : spec.task_text));
   req.messages.push_back(std::move(first));
+  // Which run the turns belong to (the MCP bridge shows it to the client; APIs ignore it).
+  req.meta_json = json{{"journal", res.journal},
+                       {"ticket", spec.ticket},
+                       {"role", role_name},
+                       {"block", spec.block.empty() ? "root" : spec.block},
+                       {"tier", spec.tier},
+                       {"subagent", core::subagent_name(spec.tier)},
+                       {"attempt", spec.attempt}}
+                      .dump(-1, ' ', false, kUtf8Replace);
   (void)journal->step("start", json{{"role", to_string(spec.role)},
                                     {"block", spec.block},
                                     {"tier", spec.tier},
                                     {"system_tokens_est", core::estimate_tokens(spec.system_text)},
                                     {"context_tokens_est", core::estimate_tokens(spec.context_text)},
-                                    {"task", clip(spec.task_text, 4000)}}
-                                   .dump());
+                                    {"effort", req.effort},
+                                    {"task", clip(spec.task_text, 4000)},
+                                    // What the model saw, so a run can be read back step by step.
+                                    {"system", clip(spec.system_text, 65536)},
+                                    {"context", clip(spec.context_text, 65536)}}
+                                   .dump(-1, ' ', false, kUtf8Replace));
 
-  bool nudged = false;
+  bool nudged = false;  // the one "answer with a tool, not prose" reminder
+  int cuts = 0;         // answers cut at the output limit, each followed by a "decide now" (at most 3)
   auto stop_now = [&] {
     if (!stop_seen) stop_seen = journal->stop_requested();  // unthrottled between steps
     return stop_seen || core::cancelled();
@@ -108,7 +137,7 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
   while (true) {
     if (stop_now()) {
       res.outcome = "cancelled";
-      (void)journal->step("cancelled", json{{"message", "stopped by the user"}}.dump());
+      (void)journal->step("cancelled", json{{"message", "stopped by the user"}}.dump(-1, ' ', false, kUtf8Replace));
       break;
     }
     if (res.steps >= spec.max_steps) {
@@ -124,13 +153,13 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
     ++res.steps;
     if (!resp && (resp.error().code == "cancelled" || stop_now())) {
       res.outcome = "cancelled";
-      (void)journal->step("cancelled", json{{"message", "stopped by the user"}}.dump());
+      (void)journal->step("cancelled", json{{"message", "stopped by the user"}}.dump(-1, ' ', false, kUtf8Replace));
       break;
     }
     if (!resp) {
       res.outcome = "error";
       res.error = resp.error().message;
-      (void)journal->step("error", json{{"message", res.error}}.dump());
+      (void)journal->step("error", json{{"message", res.error}}.dump(-1, ' ', false, kUtf8Replace));
       break;
     }
     res.tokens += tokens_of(resp->usage);
@@ -152,20 +181,41 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
                                          {"usage",
                                           {{"input", resp->usage.input_tokens},
                                            {"output", resp->usage.output_tokens},
+                                           {"reasoning", resp->usage.reasoning_tokens},
                                            {"cache_write", resp->usage.cache_write_tokens},
                                            {"cache_read", resp->usage.cache_read_tokens}}},
                                          {"content", content}}
-                                        .dump());
+                                        .dump(-1, ' ', false, kUtf8Replace));
     auto text = resp->text();
     if (!text.empty()) res.final_text = text;
     req.messages.push_back({"assistant", resp->content});
-    long long used = res.tokens.input + res.tokens.output + res.tokens.cache_write() + res.tokens.cache_read;
+    // The budget follows what tokens cost: a cache read is 10-30x cheaper than input and every
+    // step re-reads the whole prefix, so counting it fully stopped cheap 20-step runs midway
+    // (a DeepSeek worker: 16k in, 14k out, 283k cache reads, $0.02, ADR 0021).
+    long long used = res.tokens.input + res.tokens.output + res.tokens.cache_write() + res.tokens.cache_read / 10;
     if (resp->stop_reason == "refusal") {
       res.outcome = "refusal";
       break;
     }
     auto uses = resp->tool_uses();
     if (uses.empty()) {
+      // Cut at the output limit while thinking: the API drops the hidden reasoning, so the
+      // model would start over. Its last thoughts come back as text with a "decide now"
+      // (seen with DeepSeek: 8192 reasoning tokens, then a fresh 8192).
+      if (resp->stop_reason == "max_tokens" && cuts < 3 && res.steps < spec.max_steps) {
+        ++cuts;
+        std::string thought;
+        for (const auto& b : resp->content) {
+          if (b.type == llm::ContentBlock::Type::Other && !b.text.empty()) thought = b.text;
+        }
+        std::string tail = thought.size() > 2000 ? "..." + core::truncate_utf8(thought.substr(thought.size() - 2000), 2000)
+                                                 : thought;
+        std::string msg = "Your answer was cut at the output limit before any tool call.";
+        if (!tail.empty()) msg += " Your last thoughts were:\n<<<\n" + tail + "\n>>>\nContinue from there:";
+        msg += " think briefly and decide now with one tool call; if you are unsure, take the most likely option.";
+        req.messages.push_back({"user", {llm::ContentBlock::make_text(msg, true)}});
+        continue;
+      }
       if (!nudged && res.steps < spec.max_steps) {
         nudged = true;
         req.messages.push_back({"user", {llm::ContentBlock::make_text(
@@ -189,7 +239,7 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
                                        {"is_error", out.is_error},
                                        {"terminal", out.terminal},
                                        {"result", clip(out.content, 2000)}}
-                                      .dump());
+                                      .dump(-1, ' ', false, kUtf8Replace));
       if (out.terminal && !terminal) {
         terminal = true;
         res.terminal_tool = u->name;
@@ -201,7 +251,7 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
       res.outcome = "terminal";
       break;
     }
-    if (used > spec.max_tokens) {
+    if (spec.max_tokens > 0 && used > spec.max_tokens) {
       res.outcome = "budget";
       break;
     }
@@ -218,10 +268,10 @@ AgentResult AgentRunner::run(const AgentSpec& spec, IToolHost& host) {
     auto j = json::parse(res.terminal_input, nullptr, false);
     if (j.is_object()) outcome = j.value("status", outcome);
   }
-  (void)journal->step("end", json{{"outcome", res.outcome}, {"terminal", res.terminal_tool}, {"reads", res.reads}}.dump());
+  (void)journal->step("end", json{{"outcome", res.outcome}, {"terminal", res.terminal_tool}, {"reads", res.reads}}.dump(-1, ' ', false, kUtf8Replace));
   auto row = journal->finish(res.tokens, res.cost, res.ms, res.steps, outcome, idx_);
   if (!row) spdlog::warn("agents: cannot finish run journal: {}", row.error().message);
-  spdlog::info("agents: {} {} tier={} steps={} outcome={} in={} out={} cache_read={} usd={:.4f}", to_string(spec.role),
+  spdlog::info("agents: {} {} tier={} steps={} outcome={} in={} out={} cache_read={} usd={:.4f}", role_name,
                spec.block, spec.tier, res.steps, outcome, res.tokens.input, res.tokens.output, res.tokens.cache_read,
                res.cost);
   return res;

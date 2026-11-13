@@ -22,6 +22,7 @@ struct Cleared {
   std::int64_t runs_before = 0;                 // runs that ended at or before this time
   std::map<std::string, std::int64_t> tests;    // block → time of the cleared result
   std::int64_t tests_before = 0;
+  std::set<std::string> changes;                // decided schema changes hidden from the side bar
 
   [[nodiscard]] bool hides(const index::TicketRow& t) const;
   [[nodiscard]] bool hides(const index::RunRow& r) const;

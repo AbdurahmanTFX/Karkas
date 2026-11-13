@@ -2,6 +2,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <map>
 #include <set>
 
@@ -14,6 +15,13 @@ std::string next_tier(const std::string& tier) {
   if (tier == "cheap") return "medium";
   if (tier == "medium") return "strong";
   return {};
+}
+
+std::string next_tier(const core::Config& cfg, const std::string& tier) {
+  if (cfg.escalate.empty()) return next_tier(tier);
+  auto it = std::find(cfg.escalate.begin(), cfg.escalate.end(), tier);
+  if (it == cfg.escalate.end() || std::next(it) == cfg.escalate.end()) return {};
+  return *std::next(it);
 }
 
 Route route(const RouteInput& in, const core::Config& cfg, int bucket_runs, int bucket_ok) {
@@ -120,7 +128,7 @@ kk::Result<ModelChoice> model_for(const core::Config& cfg, const core::Schema& s
       c.by = why;
     }
   };
-  if (auto p = cfg.pin(c.block); !p.tier.empty()) {
+  if (auto p = cfg.pin(c.block, role); !p.tier.empty()) {
     c.tier = p.tier;
     c.by = "pinned by " + p.by;
   } else if (role == "worker" && b != nullptr && b->has_code()) {

@@ -36,6 +36,7 @@ Usage& Usage::operator+=(const Usage& o) {
   cache_write_tokens += o.cache_write_tokens;
   cache_write_1h_tokens += o.cache_write_1h_tokens;
   cache_read_tokens += o.cache_read_tokens;
+  reasoning_tokens += o.reasoning_tokens;
   return *this;
 }
 

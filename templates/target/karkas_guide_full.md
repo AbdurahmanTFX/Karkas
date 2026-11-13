@@ -34,8 +34,39 @@ not read or grep the whole code base.
    blocks its card links to. Make its contract tests pass (kk_run_tests <block>).
 6. After every step: kk_check shows 0 errors and the tests pass. Name the warnings you leave.
 
+## Agents through MCP (mode mcp)
+`[agents] mode = "mcp"` in karkas.toml (the switch in karkas-gui, `karkas mode mcp`): the work is
+done by Karkas's own agents — orchestrator, navigators, workers, testers — exactly as with an API,
+and you are their model. The MCP server's instructions say so when it starts.
+- A feature goes to kk_task, a bug to kk_debug (a ticket, as `karkas task` / `karkas debug`).
+  Do not change the project with your own tools: the agents do it in their sandboxes.
+- kk_agent_next(list=true) shows the turns that wait: ticket, role, block, the tier of its
+  model ([mcp.levels], [mcp.roles], [mcp.blocks]) and the Claude Code subagent of that tier.
+- Serve a run yourself when you run that model; otherwise hand the run to the subagent
+  (karkas-<tier>): "serve karkas run <run>". Runs of different blocks can go in parallel.
+- A turn is what an API would get: the agent's system prompt, its tools, its messages. Answer
+  with kk_agent_act(turn, calls=[{name, input}], text): only the agent's tools; Karkas runs them
+  and shows the results in the next turn. The run ends with the tool its instructions name.
+  When the results take longer than kk_agent_act waits, go on with kk_agent_next(run, after=<the
+  turn you answered>): only what is new comes back, not the whole turn. Pass seen=[the runs you
+  served in this session] too: a new run of a role you served (every decision of the orchestrator
+  is one) comes without the system prompt, tools and unchanged context you have.
+- A feature is planned in one decision of the orchestrator (dispatch with next): its blocks run one
+  after another, and the ticket closes when the last is done. With Auto a worker's card change is
+  approved in its own run. `karkas stats <ticket>` shows the runs and the traffic of the turns.
+- Go on until no turn waits and the ticket ended; then report its result (kk_ticket_view).
+  Proposed schema changes wait for the user (kk_changes); after approval: kk_ticket_run, and
+  kk_implement builds the code of an approved new schema.
+- Commands that run agents (karkas approve, expand, implement, ticket run) wait for you to serve
+  their turns: never run one in the foreground of your own shell; use kk_implement /
+  kk_ticket_run or the background, or the command waits on you while you wait on it.
+
 ## Models and delegation
 karkas.toml decides which model works on which part of the tree ([blocks], [levels], [roles]).
+In mode mcp the maps [mcp.blocks], [mcp.levels], [mcp.roles] decide (Claude tiers). [levels] pick the
+model of the roles that decide at a level (orchestrator, navigators, architect, ask); the work on a leaf
+(worker, tester) goes by [roles] and the size of the task and escalates on failure ([routing] levels_for
+= "all" pins every role by level). `karkas stats` shows how the runs of each role and tier ended.
 This is part of the method, not a hint. kk_view ends with the model line of the block;
 kk_model_for <block> explains it.
 - The line names a subagent (karkas-strong, karkas-medium, karkas-cheap, ...). If this session

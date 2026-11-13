@@ -22,5 +22,6 @@ std::string title(const char* en);
 // Display names of block kinds and statuses (data values stay English).
 const char* tr_kind(const std::string& kind);
 const char* tr_status(const std::string& status);
+const char* tr_ticket_status(const std::string& status);
 
 }  // namespace kk::gui

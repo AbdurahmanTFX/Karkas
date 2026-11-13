@@ -119,7 +119,7 @@ TEST_CASE("index: statuses from approvals, files and test results") {
   files = index::collect_code_files(*schema);
   index::TestResult r;
   r.block = "dsp.reverb";
-  r.code_hash = index::block_code_hash(files, "dsp.reverb");
+  r.code_hash = index::block_test_hash(*schema, files, "dsp.reverb");
   r.contract = {1, 2};
   r.failures = {"contract: zero mix leaves samples unchanged"};
   REQUIRE(store.record_tests({r}));

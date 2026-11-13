@@ -114,7 +114,7 @@ kk::Result<TestRun> TestService::build_and_test(const std::vector<std::string>& 
       if (blk == nullptr || !blk->has_code()) continue;
       index::TestResult r;
       r.block = id;
-      r.code_hash = index::block_code_hash(files, id);
+      r.code_hash = index::block_test_hash(*schema, files, id);
       r.build_failed = true;
       r.failures = core::split(b->summary, '\n');
       if (r.failures.size() > 10) r.failures.resize(10);
@@ -168,7 +168,7 @@ kk::Result<TestRun> TestService::build_and_test(const std::vector<std::string>& 
   for (const auto& bt : t->blocks) {
     index::TestResult r;
     r.block = bt.block;
-    r.code_hash = index::block_code_hash(files, bt.block);
+    r.code_hash = index::block_test_hash(*schema, files, bt.block);
     r.contract = {bt.contract.pass, bt.contract.total};
     r.unit = {bt.unit.pass, bt.unit.total};
     r.integration = {bt.integration.pass, bt.integration.total};

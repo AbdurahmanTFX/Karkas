@@ -47,6 +47,19 @@ struct Price {
   double cache_write_1h = -1.0;
 };
 
+// The model maps of one mode of the agents (ADR 0024): which tier works where.
+struct ModelMaps {
+  // [roles]: role → tier or "auto"
+  std::map<std::string, std::string> roles = {{"architect", "strong"},
+                                              {"orchestrator", "strong"},
+                                              {"navigator", "medium"},
+                                              {"worker", "auto"},
+                                              {"tester", "cheap"}};
+  std::map<int, std::string> levels;               // [levels]
+  std::map<std::string, std::string> block_tiers;  // [blocks]
+  std::vector<std::string> escalate;               // [routing] escalate
+};
+
 struct Config {
   // [project]
   std::string lang = "cpp";
@@ -76,20 +89,55 @@ struct Config {
   int medium_max = 6;
   int attempts_before_escalation = 2;
   bool self_tune = true;
+  // [routing] levels_for (ADR 0026): "decisions" (default) — [levels] pick the model of the roles that
+  // decide at a level (orchestrator, navigator, architect, ask); the work on a leaf (worker, tester,
+  // integration tester, composer) goes by [roles] and the size of the task, escalating on failure.
+  // "all": [levels] pin every role, as before.
+  bool levels_for_leaves = false;
+  // Escalation chain of tiers (weakest first), e.g. ["deepseek_flash", "deepseek"]; empty:
+  // local → cheap → medium → strong. A tier outside the chain does not escalate.
+  std::vector<std::string> escalate;
+  // [effort]: reasoning effort per role (orchestrator = "low"); beats the tier's effort.
+  std::map<std::string, std::string> role_effort;
+  // [agents] auto_approve: a schema change proposed in a ticket is approved at once and the
+  // descent goes on, with no human in between ("Auto" in the GUI). Off by default.
+  bool auto_approve = false;
+  // [agents] review_changes (ADR 0026): before a change of the orchestrator is approved, each leaf
+  // it changes is asked (cheap) whether the card is enough for its part; a gap sends the change back
+  // to the orchestrator once. Off by default: it costs one short run per leaf of every change.
+  bool review_changes = false;
+  // [agents] mode (ADR 0024): where the answers of the agents' model come from. "api": Karkas
+  // calls the models of [models.*] itself. "mcp": an MCP client (Claude Code) answers every
+  // turn through kk_agent_next / kk_agent_act. The engine, its prompts, tools, sandbox and the
+  // protocol of a ticket are the same in both.
+  std::string agents_mode = "api";
+  int mcp_wait_s = 1800;  // [agents] mcp_wait_s: how long one turn waits for the MCP client
+  // The maps of both modes as written: [roles] [levels] [blocks] [routing] escalate for "api",
+  // [mcp.roles] [mcp.levels] [mcp.blocks] [mcp.routing] escalate for "mcp". roles, levels,
+  // block_tiers and escalate above are the maps of the active mode.
+  ModelMaps api_maps, mcp_maps;
+  [[nodiscard]] bool mcp() const { return agents_mode == "mcp"; }
+  // The section a map of the active mode is written to: "levels" → "levels" or "mcp.levels"
+  // (also "roles", "blocks").
+  [[nodiscard]] std::string map_section(std::string_view map) const;
   // [limits]
   int max_steps_worker = 25;
   int max_steps_navigator = 6;
   int max_steps_orchestrator = 8;
   int max_steps_architect = 30;
   int max_steps_tester = 25;
-  long long max_tokens_per_run = 150000;
+  long long max_tokens_per_run = 0;  // token budget of one agent run; 0 = none (steps limit runs)
   int max_parallel_agents = 2;
   int max_parallel_builds = 1;
   int build_timeout_s = 300;
   int test_timeout_s = 120;
   int request_timeout_s = 300;
   int run_timeout_s = 1800;
-  int max_output_tokens = 8192;
+  int max_output_tokens = 0;  // output limit of one answer; 0 = the provider's maximum
+  // Optional lower output limit of the schema agents (orchestrator, navigator); 0 = off. A
+  // test showed that a cut also stops reasoning that was about to decide: clear prompts serve
+  // better, and a cut answer is continued from its last thoughts anyway.
+  int max_output_tokens_routing = 0;
   // [cache]
   std::string cache_ttl = "5m";  // "5m" | "1h"
   // [prices]
@@ -111,7 +159,9 @@ struct Config {
   [[nodiscard]] const ModelTier* tier(std::string_view name) const;
   // The model pinned for agents working on `block` ("" or "root" = the whole project):
   // [blocks] (longest prefix) first, then [levels] by the depth of the block.
-  [[nodiscard]] Pin pin(std::string_view block) const;
+  // The model pinned for a block: [blocks], then [levels] — the latter for a leaf role only with
+  // [routing] levels_for = "all". role "" = a deciding role.
+  [[nodiscard]] Pin pin(std::string_view block, std::string_view role = {}) const;
 };
 
 // Level of a block in the tree: number of path segments ("" / "root" = 0, "game.flow" = 2).
@@ -131,6 +181,15 @@ VoidResult erase_config_section(const std::filesystem::path& project_root, std::
 
 // Parses TOML text into `cfg` (overriding the fields present).
 VoidResult apply_config_text(Config& cfg, std::string_view toml_text, std::string_view file);
+// Copies the maps of the active mode (agents_mode) into roles, levels, block_tiers, escalate.
+void activate_mode(Config& cfg);
+// The API maps fitted to Claude tiers for mode "mcp" (ADR 0024): an Anthropic tier stays; any other
+// tier takes the Claude tier at the same place of the escalation chain (the weakest → cheap, the
+// strongest → strong). The chain of the result is the Claude tiers, weakest first.
+ModelMaps mcp_maps_from_api(const Config& cfg);
+// Writes `maps` as [mcp.roles] [mcp.levels] [mcp.blocks] [mcp.routing] escalate of karkas.toml text
+// (the old MCP maps are replaced, everything else kept).
+Result<std::string> write_mcp_maps(std::string_view text, const ModelMaps& maps);
 Result<Config> load_config(const std::filesystem::path& project_root);
 
 }  // namespace kk::core

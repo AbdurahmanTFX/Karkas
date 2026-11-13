@@ -1,9 +1,11 @@
 #include <doctest/doctest.h>
 
 #include <nlohmann/json.hpp>
+#include <thread>
 
 #include "kk/core/cancel.hpp"
 #include "kk/core/text.hpp"
+#include "kk/llm/mcp_bridge.hpp"
 #include "kk/llm/provider.hpp"
 #include "kk/test/support.hpp"
 
@@ -312,4 +314,116 @@ TEST_CASE("llm: a stopped agent does not retry (ADR 0019)") {
   });
   CHECK(calls == 1);
   CHECK_FALSE(r2);
+}
+
+TEST_CASE("llm: invalid UTF-8 in a request is replaced, never thrown (both providers)") {
+  // A Cyrillic letter cut after its lead byte, as a source file in another encoding would give.
+  std::string broken = "card \xD0 end";
+  llm::Request req = simple_request();
+  req.messages.push_back({"user", {llm::ContentBlock::make_text(broken)}});
+  std::string a;
+  std::string o;
+  CHECK_NOTHROW(a = llm::AnthropicProvider::request_json(req));
+  CHECK_NOTHROW(o = llm::OpenAICompatProvider::request_json(req));
+  // The body stays valid JSON; the bad byte became U+FFFD.
+  CHECK(core::contains(json::parse(a).dump(), "card \xEF\xBF\xBD end"));
+  CHECK(core::contains(json::parse(o).dump(), "card \xEF\xBF\xBD end"));
+}
+
+TEST_CASE("llm: OpenAI-compatible reasoning effort and DeepSeek reasoning_content (ADR 0020)") {
+  llm::Request r = simple_request();
+  r.model = "deepseek-v4-pro";
+  CHECK_FALSE(json::parse(llm::OpenAICompatProvider::request_json(r)).contains("reasoning_effort"));
+  r.effort = "low";
+  CHECK(json::parse(llm::OpenAICompatProvider::request_json(r))["reasoning_effort"] == "low");
+  auto resp = llm::OpenAICompatProvider::parse_response(
+      R"({"id":"x","model":"deepseek-v4-pro","choices":[{"finish_reason":"tool_calls","message":{"role":"assistant",)"
+      R"("content":"","reasoning_content":"think first","tool_calls":[{"id":"c1","type":"function","function":)"
+      R"({"name":"report","arguments":"{\"status\":\"done\"}"}}]}}],"usage":{"prompt_tokens":100,"completion_tokens":50,)"
+      R"("prompt_tokens_details":{"cached_tokens":60},"completion_tokens_details":{"reasoning_tokens":40}}})");
+  REQUIRE_MESSAGE(resp, (resp ? "" : resp.error().str()));
+  CHECK(resp->usage.reasoning_tokens == 40);
+  CHECK(resp->usage.output_tokens == 50);
+  CHECK(resp->usage.input_tokens == 40);
+  REQUIRE(resp->content.size() == 2);
+  CHECK(resp->content[0].type == llm::ContentBlock::Type::Other);
+  CHECK(json::parse(resp->content[0].raw_json)["text"] == "think first");
+  REQUIRE(resp->tool_uses().size() == 1);
+  // Not sent back (the API drops earlier reasoning): the assistant turn carries the tool call only.
+  r.messages.push_back({"assistant", resp->content});
+  auto body = json::parse(llm::OpenAICompatProvider::request_json(r));
+  const auto& a = body["messages"].back();
+  CHECK_FALSE(a.contains("reasoning_content"));
+  CHECK(a["tool_calls"][0]["function"]["name"] == "report");
+}
+
+TEST_CASE("llm: an assistant turn of reasoning only is not sent (the API refuses it with HTTP 400)") {
+  llm::Request r = simple_request();
+  r.model = "deepseek-v4-pro";
+  llm::ContentBlock thought;
+  thought.type = llm::ContentBlock::Type::Other;
+  thought.text = "long thinking cut at the limit";
+  thought.raw_json = R"({"type":"reasoning","text":"long thinking cut at the limit"})";
+  r.messages.push_back({"assistant", {thought}});
+  r.messages.push_back({"user", {llm::ContentBlock::make_text("decide now")}});
+  auto body = json::parse(llm::OpenAICompatProvider::request_json(r));
+  for (const auto& m : body["messages"]) CHECK(m["role"] != "assistant");
+  CHECK(body["messages"].back()["content"] == "decide now");
+}
+
+TEST_CASE("mcp bridge: a client's answer becomes the tool calls the engine reads (ADR 0024)") {
+  auto r = llm::turn_response(
+      R"({"text": "reading first", "calls": [{"name": "read_file", "input": {"path": "impl/a.cpp"}}, {"name": "report", "input": "{\"status\":\"fixed\"}"}]})",
+      "run-x-001", "claude-haiku-5-5");
+  REQUIRE(r);
+  CHECK(r->stop_reason == "tool_use");
+  CHECK(r->text() == "reading first");
+  CHECK(r->usage.output_tokens == 0);  // a subscription: no tokens to bill
+  auto uses = r->tool_uses();
+  REQUIRE(uses.size() == 2);
+  CHECK(uses[0]->name == "read_file");
+  CHECK(json::parse(uses[0]->input_json)["path"] == "impl/a.cpp");
+  CHECK(json::parse(uses[1]->input_json)["status"] == "fixed");  // input sent as text is read too
+  CHECK(uses[0]->id != uses[1]->id);
+  CHECK(uses[0]->id.find('.') == std::string::npos);
+  auto t = llm::turn_response(R"({"text": "no tools"})", "x", "m");
+  REQUIRE(t);
+  CHECK(t->stop_reason == "end_turn");
+  CHECK_FALSE(llm::turn_response("[1,2]", "x", "m"));
+}
+
+TEST_CASE("mcp bridge: a request waits in the queue until the client answers it") {
+  test::TempDir d{"mcpq"};
+  llm::McpBridgeProvider provider(d.path() / "mcp", 20);
+  llm::Request req;
+  req.model = "claude-haiku-5-5";
+  req.system = {llm::ContentBlock::make_text("You are a worker.")};
+  req.tools = {{"report", "ends the run", R"({"type":"object","properties":{"status":{"type":"string"}}})", false}};
+  req.messages = {{"user", {llm::ContentBlock::make_text("Fix the ring.")}}};
+  req.meta_json = R"({"journal": "20261112-1-worker-ring.jsonl", "ticket": "T-0001", "role": "worker", "block": "ring", "tier": "cheap", "subagent": "karkas-cheap"})";
+  std::thread client([&] {
+    llm::McpQueue q(d.path() / "mcp");
+    for (int i = 0; i < 200; ++i) {
+      auto w = q.waiting();
+      if (!w.empty()) {
+        CHECK(w[0].run == "20261112-1-worker-ring.jsonl");
+        CHECK(w[0].ticket == "T-0001");
+        CHECK(w[0].subagent == "karkas-cheap");
+        CHECK(w[0].id == "20261112-1-worker-ring-001");
+        auto text = q.request(w[0].id);
+        REQUIRE(text);
+        CHECK(core::contains(*text, "Fix the ring."));
+        CHECK(core::contains(*text, "You are a worker."));
+        REQUIRE(q.answer(w[0].id, R"({"calls": [{"name": "report", "input": {"status": "fixed"}}]})"));
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+  auto resp = provider.send(req);
+  client.join();
+  REQUIRE(resp);
+  REQUIRE(resp->tool_uses().size() == 1);
+  CHECK(resp->tool_uses()[0]->name == "report");
+  CHECK(llm::McpQueue(d.path() / "mcp").waiting().empty());  // the turn's files are gone
 }

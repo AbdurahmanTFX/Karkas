@@ -252,6 +252,36 @@ const std::array<Sdf, static_cast<std::size_t>(Icon::Count)>& shapes() {
         float bubble = U(box(p, {0.06f, 0.12f}, {0.94f, 0.70f}, 0.12f), poly(p, {{0.22f, 0.62f}, {0.44f, 0.62f}, {0.20f, 0.90f}}));
         return S(bubble, U(seg(p, {0.24f, 0.32f}, {0.76f, 0.32f}, 0.04f), seg(p, {0.24f, 0.50f}, {0.60f, 0.50f}, 0.04f)));
       },
+      // Copy (two sheets)
+      [](V p) {
+        float back = S(box(p, {0.10f, 0.08f}, {0.62f, 0.66f}, 0.07f), box(p, {0.10f + 2 * T, 0.08f + 2 * T}, {0.62f - 2 * T, 0.66f - 2 * T}, 0.03f));
+        float front = box(p, {0.36f, 0.32f}, {0.90f, 0.92f}, 0.07f);
+        float hole = box(p, {0.36f + 2 * T, 0.32f + 2 * T}, {0.90f - 2 * T, 0.92f - 2 * T}, 0.03f);
+        return U(S(back, box(p, {0.30f, 0.26f}, {0.96f, 0.98f}, 0.08f)), S(front, hole));
+      },
+      // Windows (a window with panes)
+      [](V p) {
+        float frame = S(box(p, {0.08f, 0.12f}, {0.92f, 0.88f}, 0.08f), box(p, {0.08f + 2 * T, 0.30f}, {0.92f - 2 * T, 0.88f - 2 * T}, 0.02f));
+        return U(frame, seg(p, {0.42f, 0.30f}, {0.42f, 0.84f}, T));
+      },
+      // Pencil
+      [](V p) {
+        float body = poly(p, {{0.70f, 0.10f}, {0.90f, 0.30f}, {0.36f, 0.84f}, {0.16f, 0.64f}});
+        float tip = poly(p, {{0.16f, 0.64f}, {0.36f, 0.84f}, {0.08f, 0.92f}});
+        return U(body, tip);
+      },
+      // Bolt (Auto)
+      [](V p) { return poly(p, {{0.58f, 0.04f}, {0.20f, 0.56f}, {0.46f, 0.56f}, {0.38f, 0.96f}, {0.80f, 0.40f}, {0.54f, 0.40f}}); },
+      // ChevronRight
+      [](V p) { return U(seg(p, {0.36f, 0.20f}, {0.66f, 0.50f}, 0.07f), seg(p, {0.66f, 0.50f}, {0.36f, 0.80f}, 0.07f)); },
+      // ChevronDown
+      [](V p) { return U(seg(p, {0.20f, 0.36f}, {0.50f, 0.66f}, 0.07f), seg(p, {0.50f, 0.66f}, {0.80f, 0.36f}, 0.07f)); },
+      // Ghost (a dashed block: preview of a change)
+      [](V p) {
+        float outline = S(box(p, {0.08f, 0.18f}, {0.92f, 0.82f}, 0.10f), box(p, {0.08f + 2 * T, 0.18f + 2 * T}, {0.92f - 2 * T, 0.82f - 2 * T}, 0.06f));
+        float gaps = U(U(box(p, {0.30f, 0.0f}, {0.40f, 1.0f}), box(p, {0.60f, 0.0f}, {0.70f, 1.0f})), box(p, {0.0f, 0.45f}, {1.0f, 0.55f}));
+        return S(outline, gaps);
+      },
   };
   return s;
 }

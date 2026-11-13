@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <thread>
 
@@ -32,6 +33,46 @@ TEST_CASE("text: token estimate is in a sane range") {
   CHECK(t >= 15);
   CHECK(t <= 40);
   CHECK(estimate_tokens("") == 0);
+}
+
+namespace {
+// Strict check of well-formed UTF-8 sequences (lengths only; enough for these tests).
+bool valid_utf8(std::string_view s) {
+  std::size_t i = 0;
+  while (i < s.size()) {
+    auto c = static_cast<unsigned char>(s[i]);
+    std::size_t len = c < 0x80u ? 1 : (c & 0xE0u) == 0xC0u ? 2 : (c & 0xF0u) == 0xE0u ? 3 : (c & 0xF8u) == 0xF0u ? 4 : 0;
+    if (len == 0 || i + len > s.size()) return false;
+    for (std::size_t k = 1; k < len; ++k) {
+      if ((static_cast<unsigned char>(s[i + k]) & 0xC0u) != 0x80u) return false;
+    }
+    i += len;
+  }
+  return true;
+}
+}  // namespace
+
+TEST_CASE("text: truncate_utf8 never cuts a multi-byte code point") {
+  CHECK(truncate_utf8("", 0) == "");
+  CHECK(truncate_utf8("abc", 10) == "abc");
+  CHECK(truncate_utf8("abc", 2) == "ab");
+  // "абвгд": five 2-byte code points. A cut inside "б" (3 bytes) steps back to its start.
+  std::string cyr = "абвгд";
+  CHECK(truncate_utf8(cyr, 3) == "а");
+  // A cut that lands on a lead byte is already a boundary: nothing is dropped.
+  CHECK(truncate_utf8(cyr, 4) == "аб");
+  // ASCII, 2-, 3- and 4-byte code points: every cut is a valid prefix, as long as possible.
+  std::string mixed = "a\xD0\xB0\xE2\x82\xAC\xF0\x9F\x98\x80z";  // a а € 😀 z
+  for (std::size_t n = 0; n <= mixed.size() + 1; ++n) {
+    auto cut = truncate_utf8(mixed, n);
+    CAPTURE(n);
+    CHECK(cut.size() <= n);
+    CHECK(std::string_view(mixed).starts_with(cut));
+    CHECK(valid_utf8(cut));
+    CHECK(cut.size() + 3 >= std::min(n, mixed.size()));  // drops at most one incomplete code point
+  }
+  CHECK(truncate_utf8(mixed, 5) == "a\xD0\xB0");  // inside € (bytes 3..5)
+  CHECK(truncate_utf8(mixed, 9) == "a\xD0\xB0\xE2\x82\xAC");  // inside 😀 (bytes 6..9)
 }
 
 TEST_CASE("paths: is_within rejects escapes") {
@@ -142,6 +183,37 @@ api_key_env = "LOCAL_KEY"
   Config bad;
   CHECK_FALSE(apply_config_text(bad, "[levels]\ntop = \"strong\"\n", "k.toml"));
   CHECK_FALSE(apply_config_text(bad, "[blocks]\n\"Game\" = \"strong\"\n", "k.toml"));
+  // [levels] pin the deciding roles; the work on a leaf goes by [roles] and routing unless
+  // [routing] levels_for = "all" (ADR 0026). [blocks] pins every role.
+  CHECK(cfg.pin("world.bird", "worker").tier.empty());
+  CHECK(cfg.pin("world.bird", "ask").tier == "cheap");
+  CHECK(cfg.pin("game.flow.timer", "tester").tier == "medium");
+  Config all;
+  REQUIRE(apply_config_text(all, "[levels]\n2 = \"cheap\"\n[routing]\nlevels_for = \"all\"\n", "k.toml"));
+  CHECK(all.pin("world.bird", "worker").tier == "cheap");
+  CHECK_FALSE(apply_config_text(bad, "[routing]\nlevels_for = \"leaves\"\n", "k.toml"));
+}
+
+TEST_CASE("config: escalation chain and reasoning effort per role (ADR 0020)") {
+  Config cfg;
+  CHECK(cfg.escalate.empty());
+  auto r = apply_config_text(cfg, R"([routing]
+escalate = ["deepseek_flash", "deepseek"]
+
+[effort]
+orchestrator = "low"
+navigator    = "low"
+)", "karkas.toml");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  CHECK(cfg.escalate == std::vector<std::string>{"deepseek_flash", "deepseek"});
+  CHECK(cfg.role_effort.at("orchestrator") == "low");
+  CHECK(cfg.role_effort.at("navigator") == "low");
+  CHECK_FALSE(cfg.role_effort.contains("worker"));
+  CHECK_FALSE(cfg.auto_approve);
+  REQUIRE(apply_config_text(cfg, "[agents]\nauto_approve = true\n", "k.toml"));
+  CHECK(cfg.auto_approve);
+  REQUIRE(apply_config_text(cfg, "[agents]\nauto_approve = \"false\"\n", "k.toml"));
+  CHECK_FALSE(cfg.auto_approve);
 }
 
 TEST_CASE("config: set_config_value edits one key and keeps the rest") {
@@ -218,4 +290,48 @@ TEST_CASE("cancel: process flag and per-thread scopes (ADR 0019)") {
   CHECK(cancelled());
   reset_cancel();
   CHECK_FALSE(cancelled());
+}
+
+TEST_CASE("config: [agents] mode picks the model maps of that mode, both are kept (ADR 0024)") {
+  Config c;
+  REQUIRE(apply_config_text(c, R"(
+[levels]
+1 = "deepseek_flash"
+[roles]
+orchestrator = "deepseek"
+[routing]
+escalate = ["deepseek_flash", "deepseek"]
+[mcp.levels]
+1 = "cheap"
+[mcp.roles]
+orchestrator = "strong"
+[mcp.blocks]
+"game.flow" = "medium"
+[mcp.routing]
+escalate = ["cheap", "medium", "strong"]
+)",
+                            "karkas.toml"));
+  CHECK(c.agents_mode == "api");
+  CHECK(c.levels.at(1) == "deepseek_flash");
+  CHECK(c.roles.at("orchestrator") == "deepseek");
+  CHECK(c.escalate == std::vector<std::string>{"deepseek_flash", "deepseek"});
+  CHECK(c.map_section("levels") == "levels");
+  CHECK(c.mcp_maps.levels.at(1) == "cheap");
+  // The project file switches the mode: the MCP maps become the active ones.
+  REQUIRE(apply_config_text(c, "[agents]\nmode = \"mcp\"\n", "karkas.toml"));
+  CHECK(c.mcp());
+  CHECK(c.levels.at(1) == "cheap");
+  CHECK(c.roles.at("orchestrator") == "strong");
+  CHECK(c.roles.at("navigator") == "medium");  // a role the MCP maps leave out keeps its default
+  CHECK(c.block_tiers.at("game.flow") == "medium");
+  CHECK(c.escalate == std::vector<std::string>{"cheap", "medium", "strong"});
+  CHECK(c.api_maps.levels.at(1) == "deepseek_flash");  // the API maps stay for the switch back
+  CHECK(c.map_section("levels") == "mcp.levels");
+  CHECK(c.pin("game.flow").tier == "medium");
+  Config bad;
+  CHECK_FALSE(apply_config_text(bad, "[agents]\nmode = \"sampling\"\n", "karkas.toml"));
+  // The GUI writes the maps of a mode into its own section.
+  auto text = set_config_value("[agents]\nmode = \"mcp\"\n", "mcp.levels", "2", std::string("cheap"));
+  REQUIRE(text);
+  CHECK(contains(*text, "[mcp.levels]\n2 = \"cheap\""));
 }

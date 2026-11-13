@@ -113,12 +113,33 @@ std::string compress_build_log(std::string_view log, const fs::path& root, std::
   std::vector<std::string> out;
   std::set<std::string> seen;
   std::size_t extra = 0;
-  for (auto line : core::split(log, '\n')) {
+  // Raw lines: core::split trims, and the indentation is what marks CMake's message lines.
+  std::vector<std::string> all;
+  for (std::size_t start = 0; start < log.size();) {
+    auto end = log.find('\n', start);
+    if (end == std::string_view::npos) end = log.size();
+    auto raw = log.substr(start, end - start);
+    if (!raw.empty() && raw.back() == '\r') raw.remove_suffix(1);
+    if (!core::trim(raw).empty()) all.emplace_back(raw);
+    start = end + 1;
+  }
+  for (std::size_t i = 0; i < all.size(); ++i) {
+    auto line = all[i];
     auto l = core::to_lower(line);
     bool is_err = core::contains(l, "error:") || core::contains(l, "undefined reference") || core::contains(l, "ld returned") ||
                   core::contains(l, "fatal error") || core::contains(l, "cmake error") ||
                   core::contains(l, "no such file or directory") || core::contains(l, "killed after");
     if (!is_err) continue;
+    // CMake puts the message on the indented lines under "CMake Error at <file>:<line> (<command>):";
+    // without them the error says where, not what.
+    if (core::contains(l, "cmake error")) {
+      for (std::size_t k = i + 1, n = 0; k < all.size() && n < 4; ++k, ++n) {
+        const auto& next = all[k];
+        if (next.empty() || (next.front() != ' ' && next.front() != '\t')) break;
+        line += " " + std::string(core::trim(next));
+        i = k;
+      }
+    }
     if (!prefix.empty()) line = core::replace_all(line, prefix, "");
     line = std::string(core::trim(line));
     if (line.size() > 300) line = line.substr(0, 300) + "...";
@@ -196,6 +217,7 @@ std::vector<BlockTests> parse_ctest_output(std::string_view out, const fs::path&
     auto slash = name.rfind('/');
     std::string block = slash == std::string::npos ? name : name.substr(0, slash);
     std::string kind = slash == std::string::npos ? "unit" : name.substr(slash + 1);
+    if (auto colon = kind.find(':'); colon != std::string::npos) kind.resize(colon);  // "unit:<program>", a standalone test
     auto& bt = blocks[block];
     bt.block = block;
     Counts* c = kind == "contract" ? &bt.contract : kind == "integration" ? &bt.integration : &bt.unit;

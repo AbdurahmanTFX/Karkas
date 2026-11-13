@@ -12,6 +12,7 @@ ImFont* g_ui = nullptr;
 ImFont* g_heading = nullptr;
 ImFont* g_mono = nullptr;
 ImFont* g_icons_big = nullptr;
+ImFont* g_display = nullptr;
 
 std::string first_existing(const std::vector<std::string>& candidates) {
   for (const auto& c : candidates) {
@@ -129,8 +130,10 @@ void load_fonts(float scale, const std::string& configured_ui_font) {
   auto mono = first_existing({"/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf", "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
                               "/usr/share/fonts/TTF/DejaVuSansMono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"});
   const ImWchar* cyr = io.Fonts->GetGlyphRangesCyrillic();
-  // Arrows, geometric shapes and dingbats come from DejaVu when the UI font lacks them.
-  static const ImWchar extra[] = {0x2000, 0x206F, 0x2190, 0x21FF, 0x2500, 0x25FF, 0x2600, 0x26FF, 0x2700, 0x27BF, 0};
+  // Greek, punctuation, letterlike symbols, arrows, math operators (≤ ≥ ≠ ≈ ∞), technical
+  // signs, shapes and dingbats come from DejaVu when the UI font lacks them (agents write them).
+  static const ImWchar extra[] = {0x0370, 0x03FF, 0x2000, 0x206F, 0x2100, 0x214F, 0x2190, 0x21FF, 0x2200, 0x22FF, 0x2300, 0x23FF,
+                                  0x2500, 0x25FF, 0x2600, 0x26FF, 0x2700, 0x27BF, 0x27F0, 0x27FF, 0x2900, 0x297F, 0};
   auto add = [&](const std::string& file, float px, const ImWchar* ranges, bool merge) -> ImFont* {
     if (file.empty()) return nullptr;
     ImFontConfig cfg;
@@ -144,7 +147,15 @@ void load_fonts(float scale, const std::string& configured_ui_font) {
   add(symbols, size, extra, true);
   add_icon_glyphs(g_ui, size);
   g_heading = add(medium, 12.5f * scale, cyr, false);
-  if (g_heading == nullptr) g_heading = g_ui;
+  if (g_heading == nullptr) {
+    g_heading = g_ui;
+  } else {
+    add(symbols, 12.5f * scale, extra, true);
+  }
+  // Large names of blocks drawn as cards when the schema is zoomed out (ADR 0023): the same
+  // medium font rasterized big, so a name shown large stays sharp.
+  g_display = add(medium, 28.0f * scale, cyr, false);
+  if (g_display == nullptr) g_display = g_heading;
   // Big icons (activity bar): a font with only the icon glyphs, rasterized at that size.
   static const ImWchar space[] = {0x20, 0x20, 0};
   g_icons_big = add(ui, 24.0f * scale, space, false);
@@ -159,6 +170,7 @@ void load_fonts(float scale, const std::string& configured_ui_font) {
 
 ImFont* ui_font() { return g_ui; }
 ImFont* heading_font() { return g_heading; }
+ImFont* display_font() { return g_display != nullptr ? g_display : g_heading; }
 ImFont* mono_font() { return g_mono; }
 ImFont* icon_font_big() { return g_icons_big != nullptr ? g_icons_big : g_ui; }
 

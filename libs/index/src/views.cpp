@@ -817,17 +817,45 @@ kk::Result<std::string> Index::status(std::string_view block) {
     if (!bb) return std::unexpected(bb.error());
     const auto& b = **bb;
     out += fmt::format("status {} {}\n", b.id, b.status);
+    // The state of the contract, so an agent above knows who may change api/ (ADR 0020).
+    if (!b.api_hash.empty()) {
+      bool any_frozen = std::any_of(s.blocks.begin(), s.blocks.end(), [](const BlockRow& x) { return !x.api_frozen_hash.empty(); });
+      if (!b.api_frozen_hash.empty()) {
+        out += "api frozen (declarations are the contract; its worker may tune values of constants and add new constants)\n";
+      } else if (any_frozen) {
+        // D04 E: the card names a fn api/ lacks (api/ is behind). D04 W: both have it, with other
+        // parameter counts — either side may be the right one, so no "behind" (T-0013: api/ had
+        // gained a defaulted parameter and the card followed it).
+        std::vector<std::string> differ;
+        bool behind = false;
+        for (const auto& d : s.drift) {
+          if (d.block != b.id || d.code != "D04") continue;
+          if (d.severity == "E") behind = true;
+          else differ.push_back(d.message);
+        }
+        if (behind) {
+          out += "api unfrozen by an approved change and behind its card (the card names what api/ lacks): its worker brings api/ "
+                 "in line in a ticket\n";
+        } else if (!differ.empty()) {
+          out += fmt::format("api unfrozen by an approved change; api/ and its card differ ({}): api/ follows the card, or a change "
+                             "brings the card in line when api/ is right\n",
+                             core::join(differ, "; "));
+        } else {
+          out += "api unfrozen by an approved change, already in line with its card (karkas approve api freezes it)\n";
+        }
+      }
+    }
     for (const auto& t : s.tests) {
       if (!Snapshot::under(block, t.block)) continue;
       std::string line = fmt::format("tests {}", t.block);
+      if (!t.fresh) line += " stale (the code or a linked api/ changed since this run; run_tests gives fresh results):";
       if (t.contract.total > 0) line += fmt::format(" contract {}/{}", t.contract.pass, t.contract.total);
       if (t.unit.total > 0) line += fmt::format(" unit {}/{}", t.unit.pass, t.unit.total);
       if (t.integration.total > 0) line += fmt::format(" integration {}/{}", t.integration.pass, t.integration.total);
       if (t.build_failed) line += " build=failed";
-      if (!t.fresh) line += " stale";
       out += line + "\n";
       for (const auto& f : t.failures) {
-        if (!f.empty()) out += "fail " + f + "\n";
+        if (!f.empty()) out += (t.fresh ? "fail " : "old fail ") + f + "\n";
       }
     }
     for (const auto& d : s.drift) {

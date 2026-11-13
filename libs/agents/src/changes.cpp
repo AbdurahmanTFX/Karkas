@@ -1,5 +1,7 @@
 #include "kk/agents/changes.hpp"
 
+#include "kk/agents/api_edit.hpp"
+
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -143,6 +145,7 @@ kk::Result<std::map<std::string, std::string>> compute(const fs::path& root, con
       continue;
     }
     if (current.empty()) return kk::fail("diff", fmt::format("line {}: select a block first ('~ @block <id>')", d.line));
+    if (is_const_line(d.text)) continue;  // a constant goes into api/, not into the card (ADR 0026)
     (d.op == '+' ? edits[current].add : edits[current].remove).push_back(d.text);
   }
   std::map<std::string, std::string> out;  // id → new card text ("" = remove)
@@ -244,14 +247,18 @@ kk::Result<ApplyResult> check_diff(const fs::path& root, const std::vector<core:
   return apply_or_check(root, diff, {}, false);
 }
 
-kk::Result<core::Change> propose_change(const fs::path& root, std::string from, std::string reason,
-                                        std::string_view diff_text) {
-  reason = std::string(core::trim(reason));
-  if (reason.empty() || reason.find('\n') != std::string::npos) return kk::fail("change", "reason: one line saying why");
+kk::Result<void> check_proposal(const fs::path& root, std::string_view diff_text) {
   auto lines = parse_diff(diff_text);
   if (!lines) return std::unexpected(lines.error());
   if (std::none_of(lines->begin(), lines->end(), [](const core::DiffLine& d) { return d.op != '~'; })) {
     return kk::fail("change", "the diff changes no card (only '~' selections)");
+  }
+  auto consts = change_constants(*lines);
+  if (!consts) return std::unexpected(consts.error());
+  if (!consts->empty()) {
+    auto schema = core::load_schema(root);
+    if (!schema) return std::unexpected(schema.error());
+    if (auto why = check_constants(*schema, *consts); !why.empty()) return kk::fail("change", why);
   }
   auto r = check_diff(root, *lines);
   if (!r) return std::unexpected(r.error());
@@ -260,8 +267,25 @@ kk::Result<core::Change> propose_change(const fs::path& root, std::string from, 
     for (const auto& i : r->issues) text += "\n  " + i.str();
     return kk::fail("change", text);
   }
-  if (r->files.empty()) return kk::fail("change", "the diff changes no card");
+  // A change of constants only writes no card, which is fine.
+  if (r->files.empty() && consts->empty()) return kk::fail("change", "the diff changes no card");
+  return {};
+}
+
+kk::Result<core::Change> propose_change(const fs::path& root, std::string from, std::string reason,
+                                        std::string_view diff_text) {
+  reason = std::string(core::trim(reason));
+  if (reason.empty() || reason.find('\n') != std::string::npos) return kk::fail("change", "reason: one line saying why");
+  if (auto ok = check_proposal(root, diff_text); !ok) return std::unexpected(ok.error());
+  auto lines = parse_diff(diff_text);
+  if (!lines) return std::unexpected(lines.error());
   return ChangeStore(root).create(std::move(from), std::move(reason), std::move(*lines));
+}
+
+kk::Result<std::map<std::string, std::string>> cards_after(const fs::path& root, const std::vector<core::DiffLine>& diff) {
+  auto schema = core::load_schema(root);
+  if (!schema) return std::unexpected(schema.error());
+  return compute(root, diff, *schema);
 }
 
 std::string preview_diff(const fs::path& root, const std::vector<core::DiffLine>& diff) {

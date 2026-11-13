@@ -55,7 +55,7 @@ struct AgentSpec {
   std::string context_text;  // stable block context (views, api/) — cached
   std::string task_text;     // ticket path view + task (changes per run)
   int max_steps = 25;
-  long long max_tokens = 150000;
+  long long max_tokens = 0;  // token budget of the run; 0 = none
   std::chrono::seconds timeout{1800};
 };
 

@@ -76,7 +76,7 @@ TEST_CASE("edit: connect out → in and fn → call on the picture") {
   CHECK_FALSE(agents::op_connect(load(p), "dsp.gain", "set_gain", "mix"));  // duplicate call
 }
 
-TEST_CASE("edit: rename moves the folder and updates every reference; undo moves it back") {
+TEST_CASE("edit: rename moves the folder and updates every reference, undo moves it back") {
   test::FixtureCopy p("wavkit");
   auto chain = test::read(p / "blocks/dsp/chain/block.ksl");
   auto op = agents::op_rename(load(p), "stream.ring", "buffer");

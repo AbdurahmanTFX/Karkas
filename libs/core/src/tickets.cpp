@@ -222,36 +222,62 @@ std::string path_view(const Ticket& t, std::string_view at, std::size_t token_bu
     }
   }
   auto in_path = [&](const std::string& b) { return on_path.contains(b); };
+  const std::string here = at.empty() ? std::string("root") : std::string(at);
 
   // For each block on the path keep its latest decision (earlier ones belong to
-  // branches already ruled out); the current block keeps all its entries (attempts).
+  // branches already ruled out); the current block keeps its entries (attempts), but
+  // repeats of one decision (same role, pick, outcome, model) fold into the latest one
+  // with repeats=N: ten identical dispatches tell the agent nothing ten times.
   std::map<std::string, std::size_t> latest;
+  std::map<std::string, std::size_t> own_latest;  // decision key → index of its latest entry
+  std::map<std::string, int> own_count;
+  auto own_key = [](const TrailEntry& e) {
+    // Two proposals are two decisions ("proposed C-0006", "proposed C-0007"), not a repeat.
+    std::string what = e.get("outcome") == "change" ? "|" + e.get("why") : std::string();
+    return e.role + "|" + e.get("pick") + "|" + e.get("outcome") + "|" + e.get("model") + what;
+  };
   for (std::size_t i = 0; i < t.trail.size(); ++i) {
     const auto& e = t.trail[i];
-    if (e.type == TrailEntry::Type::Level) latest[e.get("at")] = i;
+    if (e.type != TrailEntry::Type::Level) continue;
+    latest[e.get("at")] = i;
+    if (e.get("at") == here) {
+      own_latest[own_key(e)] = i;
+      ++own_count[own_key(e)];
+    }
   }
   std::vector<TrailEntry> kept;
   std::vector<std::size_t> new_fact_idx;  // indexes into kept
+  std::map<std::string, std::size_t> fact_last;  // a repeated observation is shown once (its latest copy)
+  for (std::size_t i = 0; i < t.trail.size(); ++i) {
+    if (t.trail[i].type == TrailEntry::Type::Fact) fact_last[t.trail[i].text] = i;
+  }
   bool attached = false;  // following lines belong to an included level entry
   for (std::size_t i = 0; i < t.trail.size(); ++i) {
     const auto& e = t.trail[i];
     if (e.type == TrailEntry::Type::Level) {
       auto a = e.get("at");
-      bool include = in_path(a) && (a == at || latest[a] == i);
+      bool own = a == here;
+      bool include = in_path(a) && (own || latest[a] == i);
       attached = include;
       if (!include) continue;
+      if (own && own_latest[own_key(e)] != i) continue;  // folded into its latest repeat
       TrailEntry c = e;
       c.trivia = {};
-      auto pick = c.get("pick");
-      std::vector<std::string> sus;
-      for (const auto& s : c.list("suspect")) {
-        if (s != pick && in_path(s)) sus.push_back(s);
+      if (!own) {
+        // Suspects on other branches mean nothing to an agent further down (app. D); the
+        // agent's own earlier decisions keep their suspects.
+        auto pick = c.get("pick");
+        std::vector<std::string> sus;
+        for (const auto& s : c.list("suspect")) {
+          if (s != pick && in_path(s)) sus.push_back(s);
+        }
+        if (sus.empty()) {
+          c.erase("suspect");
+        } else {
+          c.set("suspect", join(sus, ","));
+        }
       }
-      if (sus.empty()) {
-        c.erase("suspect");
-      } else {
-        c.set("suspect", join(sus, ","));
-      }
+      if (own && own_count[own_key(e)] > 1) c.set("repeats", std::to_string(own_count[own_key(e)]));
       kept.push_back(std::move(c));
     } else if (e.type == TrailEntry::Type::Answer) {
       if (attached || in_path(e.get("at"))) {
@@ -260,10 +286,122 @@ std::string path_view(const Ticket& t, std::string_view at, std::size_t token_bu
         kept.push_back(std::move(c));
       }
     } else if (attached) {
+      if (e.type == TrailEntry::Type::Fact && fact_last[e.text] != i) continue;
       TrailEntry c = e;
       c.trivia = {};
       if (c.type == TrailEntry::Type::Fact) new_fact_idx.push_back(kept.size());
       kept.push_back(std::move(c));
+    }
+  }
+
+  // What the earlier descents below this block ended with (oldest first, identical
+  // consecutive ones folded): without it an agent above the leaves never learns that its
+  // last pick already failed and picks it again.
+  std::vector<std::string> tried;
+  {
+    struct Seg {
+      std::vector<std::string> picks;
+      std::string end;
+      std::string detail;  // the fact the program wrote right after the outcome (its cause)
+    };
+    std::vector<Seg> segs;
+    bool open = false;
+    bool after_outcome = false;  // the previous line was the outcome of the open segment
+    std::string outcome_at;
+    for (const auto& e : t.trail) {
+      bool was_after = after_outcome;
+      after_outcome = false;
+      if (e.type == TrailEntry::Type::Fact && was_after && !segs.empty() && e.text.starts_with(outcome_at + " ")) {
+        segs.back().detail = e.text;
+        continue;
+      }
+      if (e.type == TrailEntry::Type::Level) {
+        auto a = e.get("at");
+        if (a == here) {
+          segs.push_back({});
+          open = true;
+          if (!e.get("outcome").empty()) {
+            segs.back().end = e.get("outcome") + (e.get("why").empty() ? "" : ": " + e.get("why"));
+            open = false;
+          } else if (!e.get("pick").empty()) {
+            segs.back().picks.push_back(e.get("pick"));
+          }
+          continue;
+        }
+        if (!open || !Schema::is_under(here, a)) {
+          open = false;
+          continue;
+        }
+        if (!e.get("pick").empty()) segs.back().picks.push_back(e.get("pick"));
+        if (!e.get("outcome").empty()) {
+          segs.back().end = e.role + " at " + a + ": " + e.get("outcome");
+          segs.back().detail.clear();
+          after_outcome = true;
+          outcome_at = a;
+        }
+      } else if (e.type == TrailEntry::Type::Note && open && !segs.empty() && e.text.starts_with("stopped by the user")) {
+        segs.back().end = "stopped by the user";
+      }
+    }
+    bool below = std::any_of(segs.begin(), segs.end(), [](const Seg& s) { return !s.picks.empty(); });
+    struct Fold {
+      std::string line, detail;
+      int n = 1;
+    };
+    std::vector<Fold> folded;
+    for (const auto& s : segs) {
+      if (!below) break;  // a leaf: its own attempts are in the trail already
+      if (s.end.empty()) continue;  // still running, or ended with no recorded outcome
+      std::string line = (s.picks.empty() ? std::string() : join(s.picks, " > ") + " -> ") + s.end;
+      if (!folded.empty() && folded.back().line == line) {
+        ++folded.back().n;
+        if (!s.detail.empty()) folded.back().detail = s.detail;  // the latest cause
+      } else {
+        folded.push_back({line, s.detail, 1});
+      }
+    }
+    for (const auto& f : folded) {
+      std::string l = f.n > 1 ? fmt::format("{} (x{})", f.line, f.n) : f.line;
+      if (!f.detail.empty()) l += " | " + truncate_utf8(f.detail, 240);
+      tried.push_back(l);
+    }
+  }
+
+  // The latest result block (what the last run reported to the human) for the agents on
+  // the path of the block where the last descent ended: its cause is the most useful line
+  // of the whole ticket and it lives outside the trail.
+  std::vector<ResultLine> last_result;
+  {
+    std::string last_at;
+    for (const auto& e : t.trail) {
+      if (e.type == TrailEntry::Type::Level && !e.get("outcome").empty()) last_at = e.get("at");
+    }
+    std::size_t start = t.result.size();
+    for (std::size_t i = 0; i < t.result.size(); ++i) {
+      if (t.result[i].key == "status") start = i;
+    }
+    bool relevant = here == "root" || (!last_at.empty() && Schema::is_under(here, last_at));
+    if (relevant) {
+      for (std::size_t i = start; i < t.result.size(); ++i) {
+        if (t.result[i].key != "cost" && t.result[i].key != "state") last_result.push_back(t.result[i]);
+      }
+    }
+    // Below the root, a result of a feature over blocks ("fix  config: ...") shows only this block's
+    // lines: the others' are noise to its agent (ADR 0026); none of them means nothing to show.
+    auto prefix_of = [](const std::string& text) -> std::string {
+      auto colon = text.find(": ");
+      if (colon == std::string::npos) return {};
+      auto id = text.substr(0, colon);
+      return is_block_path(id) ? id : std::string();
+    };
+    if (here != "root" && std::any_of(last_result.begin(), last_result.end(), [&](const ResultLine& r) { return !prefix_of(r.text).empty(); })) {
+      std::vector<ResultLine> mine;
+      for (const auto& r : last_result) {
+        auto p = prefix_of(r.text);
+        if (p.empty() ? r.key == "status" : Schema::is_under(here, p)) mine.push_back(r);
+      }
+      if (std::none_of(mine.begin(), mine.end(), [](const ResultLine& r) { return r.key != "status"; })) mine.clear();
+      last_result = std::move(mine);
     }
   }
 
@@ -277,6 +415,14 @@ std::string path_view(const Ticket& t, std::string_view at, std::size_t token_bu
       out += "--- trail\n";
       for (const auto& e : entries) out += format_trail_entry(e) + "\n";
       if (folded > 0) out += format_line("note", fmt::format("+{} facts in ticket file", folded)) + "\n";
+    }
+    if (!tried.empty()) {
+      out += "--- earlier descents from here (oldest first)\n";
+      for (const auto& l : tried) out += format_line("tried", format_free_text(l)) + "\n";
+    }
+    if (!last_result.empty()) {
+      out += "--- last result\n";
+      for (const auto& r : last_result) out += format_line(r.key, format_free_text(r.text)) + "\n";
     }
     return out;
   };

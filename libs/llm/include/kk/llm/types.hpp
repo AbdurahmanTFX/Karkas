@@ -40,13 +40,16 @@ struct ToolDef {
 
 struct Request {
   std::string model;
-  int max_tokens = 16000;
+  int max_tokens = 16000;  // output limit of one answer; 0 = the provider's own maximum
   std::vector<ContentBlock> system;
   std::vector<ToolDef> tools;
   std::vector<Message> messages;
   std::string cache_ttl = "5m";  // "5m" | "1h"
   std::string effort;            // output_config.effort; "" = model default
   std::string fallbacks;         // "default" = server-side refusal fallback; "" = off
+  // The agent run this request belongs to, as JSON text ({"journal", "ticket", "role", "block",
+  // "tier", "subagent"}): providers ignore it; the MCP bridge shows it to the client (ADR 0024).
+  std::string meta_json;
 };
 
 struct Usage {
@@ -55,6 +58,7 @@ struct Usage {
   std::int64_t cache_write_tokens = 0;     // cache_creation_input_tokens (all TTLs)
   std::int64_t cache_write_1h_tokens = 0;  // part of cache_write_tokens written with ttl=1h
   std::int64_t cache_read_tokens = 0;      // cache_read_input_tokens
+  std::int64_t reasoning_tokens = 0;       // part of output_tokens spent on hidden reasoning (if reported)
   Usage& operator+=(const Usage& o);
 };
 

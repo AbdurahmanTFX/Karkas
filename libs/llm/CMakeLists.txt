@@ -1,5 +1,5 @@
 kk_add_library(llm
-  SOURCES src/http.cpp src/provider.cpp src/anthropic.cpp src/openai.cpp
+  SOURCES src/http.cpp src/provider.cpp src/anthropic.cpp src/openai.cpp src/mcp_bridge.cpp
   PUBLIC_DEPS kk_core
   PRIVATE_DEPS CURL::libcurl nlohmann_json::nlohmann_json spdlog::spdlog)
 

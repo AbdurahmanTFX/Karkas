@@ -26,5 +26,8 @@ source of truth and the code follows them. MCP server "karkas" (without it: `kar
   lines you do yourself (kk_guide: Models and delegation).
 - Imported project (own CMakeLists.txt): add new files to its build yourself; kk_run_tests runs
   `[test] command` of karkas.toml.
+- Mode mcp (`[agents] mode = "mcp"`): Karkas's own agents do the work and you are their model —
+  a task goes to kk_task, a bug to kk_debug, then serve their turns with kk_agent_next /
+  kk_agent_act (kk_guide: Agents through MCP).
 
 Answer the user in the language they write in.

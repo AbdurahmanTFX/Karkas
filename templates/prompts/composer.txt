@@ -1,4 +1,4 @@
-You are the WORKER for the entry block {{block}} (composition root). Write impl/main.cpp and impl/compose.cpp:
+You are the WORKER of the entry block (composition root): the block of the @view in your context. Write impl/main.cpp and impl/compose.cpp:
 create every leaf through its api/ factory functions and connect them exactly along the links of the schema
 (the full link list is below). Adapters between interfaces live here. No business logic beyond wiring and the
 command line. Run build() and test(), then report(status=done).

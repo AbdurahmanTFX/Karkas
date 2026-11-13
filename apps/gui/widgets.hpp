@@ -9,9 +9,6 @@
 
 namespace kk::gui::ui {
 
-// A docked panel without the dock tab bar (the shell draws its own headers and tabs).
-// Call ImGui::End() whatever it returns.
-bool begin_docked(const char* name, ImU32 bg, ImVec2 padding = ImVec2(10, 8));
 // Flat button with an icon (and optional text); highlighted when `on`.
 bool icon_button(const char* id, Icon icon, const char* tooltip = nullptr, bool on = false, const char* text = nullptr);
 // A toggle chip: flips `*v` when clicked.
@@ -32,5 +29,23 @@ void ksl_text(const std::string& text);
 void muted(const char* fmt, ...) IM_FMTARGS(1);
 // Key-value row inside a two-column table.
 void prop(const char* key, const std::string& value);
+
+// A splitter at the cursor between two areas: vertical (side by side, `*size` = width of the
+// first) or horizontal (one above the other, `*size` = height of the first). Dragging keeps
+// `*size` within [min_a, total - min_b]; the cursor shows the resize arrows. True while moved.
+bool vsplitter(const char* id, float* size, float min_a, float min_b, float total, float height);
+bool hsplitter(const char* id, float* size, float min_a, float min_b, float total, float width);
+// The "hand" cursor over the last item (something to click).
+void hand_on_hover();
+// Mouse cursor for the frame: "hand" over clickable items unless something else set a cursor
+// (text input, resize). Call once at the end of the frame; `skip` when the schema canvas owns it.
+void update_cursor(bool skip);
+// KSL text (ticket, card, change) wrapped to the available width: directive words colored,
+// continuation lines aligned after them, "--- section" lines as headers.
+void ksl_wrapped(const std::string& text);
+// A small "Copy" button: puts `text` on the clipboard and says "Copied" for a moment.
+bool copy_button(const char* id, const std::string& text);
+// The longest prefix of `s` (whole UTF-8 characters) that fits `width`, with "…" when cut.
+std::string ellipsize(const std::string& s, float width);
 
 }  // namespace kk::gui::ui

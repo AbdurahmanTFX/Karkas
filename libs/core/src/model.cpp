@@ -838,8 +838,8 @@ Result<Ticket> parse_ticket(const Record& rec) {
     } else if (s.name == "result") {
       t.result_trivia = s.trivia;
       for (const auto& l : s.lines) {
-        static constexpr std::array<std::string_view, 9> kKeys = {
-            "status", "cause", "fix", "files", "tests", "api", "verify", "cost", "note"};
+        static constexpr std::array<std::string_view, 10> kKeys = {
+            "status", "cause", "fix", "files", "tests", "api", "verify", "cost", "note", "state"};
         if (std::find(kKeys.begin(), kKeys.end(), l.directive) == kKeys.end()) {
           return fail("S03", fmt::format("unknown directive '{}' in --- result", l.directive), loc_of(rec, l));
         }

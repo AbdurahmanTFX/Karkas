@@ -5,10 +5,13 @@
 #include <fmt/format.h>
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <misc/cpp/imgui_stdlib.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <functional>
+#include <tuple>
 
 #include "i18n.hpp"
 #include "icons.hpp"
@@ -72,47 +75,210 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
     active_blocks_.clear();
     for (const auto& a : m->active) active_blocks_.insert(a.block);
   }
+  (void)first_frame;
   draw_menu();
-  draw_status_bar(m);
-  draw_activity_bar(m);
-  ImGuiID dock = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
-  if (first_frame && ImGui::DockBuilderGetNode(dock) != nullptr && ImGui::DockBuilderGetNode(dock)->IsLeafNode()) {
-    ImGui::DockBuilderRemoveNodeChildNodes(dock);
-    ImGuiID center = dock;
-    ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.19f, nullptr, &center);
-    ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.26f, nullptr, &center);
-    ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28f, nullptr, &center);
-    ImGui::DockBuilderDockWindow("###side", left);
-    ImGui::DockBuilderDockWindow("###Inspector", right);
-    ImGui::DockBuilderDockWindow("###editor", center);
-    ImGui::DockBuilderDockWindow("###panel", bottom);
-    ImGui::DockBuilderFinish(dock);
-  }
-  draw_side_bar(m);
-  draw_settings_window(m);
-  draw_chat_window(m);
+  if (settings_.show_status) draw_status_bar(m);
+  if (settings_.show_activity) draw_activity_bar(m);
+  layout_panels();
   if (m == nullptr) {
-    if (ui::begin_docked("###editor", theme::kEditorBg)) ui::muted("%s", mp ? mp->message.c_str() : tr("indexing..."));
+    if (begin_editor_window()) {
+      ImGui::SetCursorScreenPos(ImVec2(free_area_.min.x + 16, free_area_.min.y + 16));
+      ui::muted("%s", mp ? mp->message.c_str() : tr("indexing..."));
+    }
     ImGui::End();
-    if (ui::begin_docked("###Inspector", theme::kSideBg)) ui::panel_title(tr("INSPECTOR"));
-    ImGui::End();
-    if (ui::begin_docked("###panel", theme::kSideBg)) ImGui::TextUnformatted("");
-    ImGui::End();
+    if (settings_.show_side) draw_side_bar(m);
+    if (settings_.show_inspector) {
+      if (begin_panel("Inspector###Inspector", insp_area_, 'L', theme::kSideBg, ImVec2(10, 8), &settings_.inspector_frac)) {
+        ui::panel_title(tr("INSPECTOR"));
+      }
+      ImGui::End();
+    }
+    if (bottom_visible()) {
+      if (begin_panel("Panel###panel", bottom_area_, 'T', theme::kSideBg, ImVec2(10, 4), &settings_.bottom_frac)) ImGui::TextUnformatted("");
+      ImGui::End();
+    }
+    draw_settings_window(m);
+    draw_chat_window(m);
+    order_windows();
     return true;
   }
+  // A change chosen in the side bar (or the chat): open the level that shows it, its groups in
+  // place, and select its first block; once per choice, so the user can look around after.
+  if (ghost_on_ && !req_.change.empty() && m->ghost.id == req_.change && ghost_shown_ != req_.change && m->req.change == req_.change) {
+    ghost_shown_ = req_.change;
+    const auto& g = m->ghost;
+    bool known = g.scope.empty() || m->snap->block(g.scope) != nullptr;
+    if (known && (!g.touched.empty() || !g.blocks.empty())) {
+      enter(g.scope);
+      req_.expanded = g.expand;
+      if (!g.touched.empty()) select(g.touched.front());
+      select_tab_ = "#schema";
+      fit_on_apply_ = true;
+    }
+  }
+  if (req_.change.empty()) ghost_shown_.clear();
   draw_editor(*m);
-  draw_inspector(*m);
-  draw_bottom(*m);
+  if (settings_.show_side) draw_side_bar(m);
+  if (settings_.show_inspector) draw_inspector(*m);
+  if (bottom_visible()) draw_bottom(*m);
+  draw_settings_window(m);
+  draw_chat_window(m);
   draw_dialogs(*m);
+  order_windows();
+  ui::update_cursor(canvas_hovered_);
   return !m->active.empty() || (chat_ && chat_->busy());
 }
 
+// --- windows ---------------------------------------------------------------------------------
+
+bool Ui::tab_visible(const char* key) const {
+  return std::find(settings_.hidden_tabs.begin(), settings_.hidden_tabs.end(), key) == settings_.hidden_tabs.end();
+}
+
+void Ui::set_tab_visible(const char* key, bool on) {
+  std::erase(settings_.hidden_tabs, std::string(key));
+  if (!on) settings_.hidden_tabs.emplace_back(key);
+  settings_changed();
+}
+
+bool Ui::bottom_visible() const {
+  if (!settings_.show_bottom) return false;
+  for (const char* k : {"tickets", "agents", "build", "costs", "drift"}) {
+    if (tab_visible(k)) return true;
+  }
+  return false;  // every tab hidden: no empty panel
+}
+
+void Ui::layout_panels() {
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  ImVec2 a = vp->WorkPos;
+  ImVec2 z(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y);
+  float width = std::max(1.0f, vp->WorkSize.x);
+  float height = std::max(1.0f, vp->WorkSize.y);
+  float side_w = settings_.show_side ? std::clamp(settings_.side_frac * width, 160.0f, width * 0.6f) : 0.0f;
+  float insp_w = settings_.show_inspector ? std::clamp(settings_.inspector_frac * width, 200.0f, width * 0.6f) : 0.0f;
+  if (side_w + insp_w > width - 160.0f && side_w + insp_w > 0) {  // a narrow window: both shrink
+    float k = std::max(0.0f, width - 160.0f) / (side_w + insp_w);
+    side_w *= k;
+    insp_w *= k;
+  }
+  float bottom_h = bottom_visible() ? std::clamp(settings_.bottom_frac * height, 90.0f, height * 0.85f) : 0.0f;
+  work_ = {a, z};
+  side_area_ = {a, ImVec2(a.x + side_w, z.y)};
+  insp_area_ = {ImVec2(z.x - insp_w, a.y), z};
+  bottom_area_ = {ImVec2(a.x + side_w, z.y - bottom_h), ImVec2(z.x - insp_w, z.y)};
+  free_area_ = {ImVec2(a.x + side_w, a.y), ImVec2(z.x - insp_w, z.y - bottom_h)};
+  // A drag of a border ended: the new sizes are kept for the next start.
+  if (panel_dragged_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    panel_dragged_ = false;
+    settings_changed();
+  }
+}
+
+bool Ui::begin_panel(const char* name, const Area& r, char edge, ImU32 bg, ImVec2 padding, float* frac) {
+  bool vertical = edge == 'T';  // resized in height
+  float total = std::max(1.0f, vertical ? work_.h() : work_.w());
+  ImGui::SetNextWindowPos(r.min, ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(r.w(), r.h()), ImGuiCond_Always);
+  if (vertical) {
+    ImGui::SetNextWindowSizeConstraints(ImVec2(r.w(), 90.0f), ImVec2(r.w(), total * 0.85f));
+  } else {
+    ImGui::SetNextWindowSizeConstraints(ImVec2(edge == 'R' ? 160.0f : 200.0f, r.h()), ImVec2(total * 0.6f, r.h()));
+  }
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::col(bg));
+  ImGui::PushStyleColor(ImGuiCol_Border, theme::col(theme::kBorder));
+  ImGui::PushStyleColor(ImGuiCol_ResizeGrip, IM_COL32(0, 0, 0, 0));
+  ImGui::PushStyleColor(ImGuiCol_ResizeGripHovered, IM_COL32(0, 0, 0, 0));
+  ImGui::PushStyleColor(ImGuiCol_ResizeGripActive, IM_COL32(0, 0, 0, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+  ImGuiWindowFlags fl = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
+                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
+  bool open = ImGui::Begin(name, nullptr, fl);
+  ImGui::PopStyleVar(3);
+  ImGui::PopStyleColor(5);
+  // The size after a drag at the border in this frame, as a part of the work area.
+  ImVec2 size = ImGui::GetWindowSize();
+  float f = (vertical ? size.y : size.x) / total;
+  if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && std::fabs(f - *frac) > 0.0005f) {
+    *frac = f;
+    panel_dragged_ = true;
+  }
+  return open;
+}
+
+bool Ui::begin_editor_window() {
+  ImGui::SetNextWindowPos(work_.min, ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(work_.w(), work_.h()), ImGuiCond_Always);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::col(theme::kEditorBg));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGuiWindowFlags fl = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings |
+                        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse;
+  bool open = ImGui::Begin("Editor###editor", nullptr, fl);
+  ImGui::PopStyleVar(3);
+  ImGui::PopStyleColor();
+  return open;
+}
+
+void Ui::order_windows() {
+  // Back to front: the schema, the side bar, the inspector, the bottom panel; the chat, the
+  // settings and dialogs stay above them whichever was clicked last.
+  for (const char* name : {"###panel", "###Inspector", "###side", "###editor"}) {
+    if (ImGuiWindow* w = ImGui::FindWindowByName(name)) ImGui::BringWindowToDisplayBack(w);
+  }
+}
+
+void Ui::draw_windows_menu() {
+  auto item = [&](Icon ic, const char* label, bool* v) {
+    if (ImGui::MenuItem(with_icon(ic, label).c_str(), nullptr, v)) settings_changed();
+  };
+  item(Icon::Files, tr("Side bar (explorer, search, changes)"), &settings_.show_side);
+  item(Icon::Info, tr("Inspector"), &settings_.show_inspector);
+  item(Icon::Ticket, tr("Bottom panel"), &settings_.show_bottom);
+  if (ImGui::BeginMenu(with_icon(Icon::Layers, tr("Bottom panel tabs")).c_str(), settings_.show_bottom)) {
+    for (const auto& [key, label, ic] : {std::tuple{"tickets", "Tickets", Icon::Ticket}, std::tuple{"agents", "Agents", Icon::Agent},
+                                         std::tuple{"build", "Build & tests", Icon::Hammer}, std::tuple{"costs", "Costs", Icon::Coins},
+                                         std::tuple{"drift", "Drift", Icon::Wave}}) {
+      bool on = tab_visible(key);
+      if (ImGui::MenuItem(with_icon(ic, tr(label)).c_str(), nullptr, &on)) set_tab_visible(key, on);
+    }
+    ImGui::EndMenu();
+  }
+  item(Icon::Changes, tr("Activity bar"), &settings_.show_activity);
+  item(Icon::Dot, tr("Status bar"), &settings_.show_status);
+  if (ImGui::MenuItem(with_icon(Icon::Chat, tr("Orchestrator chat")).c_str(), "Ctrl+Shift+O", show_chat_)) {
+    show_chat_ = !show_chat_;
+    chat_focus_ = show_chat_;
+  }
+  if (ImGui::MenuItem(with_icon(Icon::Agent, tr("Live: agents step by step")).c_str())) open_live("");
+  ImGui::Separator();
+  if (ImGui::MenuItem(with_icon(Icon::Schema, tr("Only the schema (hide every panel)")).c_str())) {
+    settings_.show_side = settings_.show_inspector = settings_.show_bottom = false;
+    settings_.show_activity = false;
+    show_chat_ = false;
+    settings_changed();
+  }
+  if (ImGui::MenuItem(with_icon(Icon::Windows, tr("Show every panel")).c_str())) {
+    settings_.show_side = settings_.show_inspector = settings_.show_bottom = true;
+    settings_.show_activity = settings_.show_status = true;
+    settings_.hidden_tabs.clear();
+    settings_changed();
+  }
+}
+
 void Ui::set_project_root(std::filesystem::path root) {
+  reset_canvas_caches();
   root_ = std::move(root);
   reload_models();
   cleared_ = load_cleared(root_);
   chat_ = std::make_unique<Chat>(root_, find_karkas_cli(), wake_);
   chat_serial_ = ~0ULL;
+  feed_ = std::make_unique<JournalFeed>(root_ / ".karkas" / "runs");
+  live_journal_.clear();
+  load_bends();
 }
 
 void Ui::go_to(const Model& m, const std::string& id) {
@@ -203,6 +369,10 @@ void Ui::draw_menu() {
     }
     ImGui::EndMenu();
   }
+  if (ImGui::BeginMenu(tr("Windows"))) {
+    draw_windows_menu();
+    ImGui::EndMenu();
+  }
   if (ImGui::BeginMenu(tr("Go"))) {
     if (ImGui::MenuItem(with_icon(Icon::ArrowUp, tr("Up one level")).c_str(), "Alt+Up", false, !req_.scope.empty())) {
       enter(core::parent_id(req_.scope));
@@ -231,7 +401,7 @@ void Ui::draw_activity_bar(const Model* m) {
       ImVec2 size(w, w * 0.92f);
       ImGui::InvisibleButton(tip, size);
       bool hot = ImGui::IsItemHovered();
-      bool on = side_ == v;
+      bool on = side_ == v && settings_.show_side;
       if (v == SideView::Settings) on = show_settings_;
       if (v == SideView::Chat) on = show_chat_;
       if (ImGui::IsItemClicked()) {
@@ -241,8 +411,15 @@ void Ui::draw_activity_bar(const Model* m) {
         } else if (v == SideView::Chat) {
           show_chat_ = !show_chat_;  // a separate window too
           chat_focus_ = show_chat_;
+        } else if (side_ == v && settings_.show_side) {
+          settings_.show_side = false;  // a second click hides the side bar, like an IDE
+          settings_changed();
         } else {
           side_ = v;
+          if (!settings_.show_side) {
+            settings_.show_side = true;
+            settings_changed();
+          }
         }
       }
       if (hot) ImGui::SetTooltip("%s", tip);
@@ -303,11 +480,32 @@ void Ui::draw_status_bar(const Model* m) {
       if (status_item("st_problems", probs, errors > 0 ? rgb(241, 120, 120) : text, tr("Drift: errors and warnings"))) {
         bottom_select_ = "drift";
       }
+      // The mode of the agents' model (ADR 0024); in mode mcp, the turns waiting for the client.
+      {
+        std::string mode = cfg_.mcp() ? "MCP" : "API";
+        std::size_t waiting = cfg_.mcp() ? mcp_waiting().size() : 0;
+        std::string label = waiting > 0 ? fmt::format("{} · {} {}", mode, waiting, tr("waiting")) : mode;
+        float a = static_cast<float>(0.6 + 0.4 * std::sin(pulse_ * 5.0));
+        if (status_item("st_mode", with_icon(cfg_.mcp() ? Icon::Agent : Icon::Coins, label), waiting > 0 ? rgb(240, 200, 30, a) : text,
+                        cfg_.mcp() ? tr("Agents' model: an MCP client (Claude Code) answers their turns. Click: the chat")
+                                   : tr("Agents' model: the APIs of karkas.toml. Click: the chat"))) {
+          show_chat_ = true;
+          chat_window_focus_ = true;
+        }
+      }
       if (!m->active.empty()) {
         float a = static_cast<float>(0.6 + 0.4 * std::sin(pulse_ * 5.0));
         if (status_item("st_agents", with_icon(Icon::Agent, fmt::format(fmt::runtime(tr("agents working: {}")), m->active.size())),
-                        rgb(240, 200, 30, a))) {
-          bottom_select_ = "agents";
+                        rgb(240, 200, 30, a), tr("Watch the agents step by step"))) {
+          open_live("");  // follow the agent that works now
+        }
+      }
+      {
+        double total = 0;
+        for (const auto& r : m->runs) total += r.cost_usd;
+        if (total > 0 && status_item("st_cost", with_icon(Icon::Coins, fmt::format("${:.2f}", total)), text, tr("Total cost of all agent runs"))) {
+          bottom_select_ = "costs";
+          settings_.show_bottom = true;
         }
       }
       if (chat_ && chat_->busy()) {
@@ -343,17 +541,25 @@ void Ui::draw_status_bar(const Model* m) {
 
 void Ui::draw_side_bar(const Model* m) {
   tree_hover_.clear();
-  if (!ui::begin_docked("Side###side", theme::kSideBg, ImVec2(8, 8))) {
+  if (!begin_panel("Side###side", side_area_, 'R', theme::kSideBg, ImVec2(8, 8), &settings_.side_frac)) {
     ImGui::End();
     return;
   }
   const char* titles[] = {"EXPLORER", "SEARCH", "SCHEMA CHANGES", "SETTINGS"};
   ui::panel_title(tr(titles[static_cast<int>(side_)]));
+  float hide_w = ImGui::GetFrameHeight() * 1.1f;
   if (side_ == SideView::Explorer) {
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight() * 2.2f);
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight() * 2.2f - hide_w);
     if (ui::icon_button("ex_open", Icon::FolderOpen, tr("Open project..."))) show_picker();
     ImGui::SameLine(0, 2);
     if (ui::icon_button("ex_folder", Icon::Folder, tr("Show project folder"))) w_.open_folder("");
+    ImGui::SameLine(0, 2);
+  } else {
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - hide_w);
+  }
+  if (ui::icon_button("side_hide", Icon::Close, tr("Hide this panel (Windows menu shows it again)"))) {
+    settings_.show_side = false;
+    settings_changed();
   }
   ImGui::Spacing();
   if (m == nullptr) {
@@ -506,43 +712,253 @@ void Ui::side_changes(const Model& m) {
     ImGui::PopTextWrapPos();
     return;
   }
-  for (const auto& c : m.changes) {
+  // Pending changes always show; decided ones can be hidden (display only, the files stay).
+  std::vector<const core::Change*> rows;
+  int pending = 0;
+  int hidden = 0;
+  for (auto it = m.changes.rbegin(); it != m.changes.rend(); ++it) {  // newest first
+    const auto& c = *it;
+    bool decided = c.status.value != "pending";
+    pending += decided ? 0 : 1;
+    if (decided && cleared_.changes.contains(c.id)) {
+      ++hidden;
+      continue;
+    }
+    rows.push_back(&c);
+  }
+  ui::muted("%s", fmt::format(fmt::runtime(tr("{} pending, {} decided")), pending, static_cast<int>(m.changes.size()) - pending).c_str());
+  int decided_shown = static_cast<int>(rows.size()) - pending;
+  float right = (decided_shown > 0 ? ImGui::GetFrameHeight() * 1.4f : 0) + (hidden > 0 ? ImGui::GetFrameHeight() * 1.4f : 0);
+  ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 8, ImGui::GetContentRegionMax().x - right));
+  if (decided_shown > 0 && ui::icon_button("ch_hide", Icon::Trash, tr("Hide the decided changes from this list (the files stay)"))) {
+    for (const auto* c : rows) {
+      if (c->status.value != "pending") cleared_.changes.insert(c->id);
+    }
+    if (const auto* sel = [&]() -> const core::Change* {
+          for (const auto& c : m.changes) {
+            if (c.id == req_.change) return &c;
+          }
+          return nullptr;
+        }();
+        sel != nullptr && sel->status.value != "pending") {
+      req_.change.clear();
+    }
+    cleared_changed();
+  }
+  if (hidden > 0) {
+    if (decided_shown > 0) ImGui::SameLine(0, 2);
+    if (ui::icon_button("ch_restore", Icon::Undo, fmt::format(fmt::runtime(tr("Show the {} hidden changes again")), hidden).c_str())) {
+      cleared_.changes.clear();
+      cleared_changed();
+    }
+  }
+  const core::Change* sel = nullptr;
+  for (const auto* c : rows) {
+    if (c->id == req_.change) sel = c;
+  }
+  float avail_h = ImGui::GetContentRegionAvail().y;
+  float avail_w = ImGui::GetContentRegionAvail().x;
+  float& list_h = settings_.changes_list_h;
+  if (list_h <= 0) list_h = avail_h * 0.35f;
+  list_h = std::clamp(list_h, 70.0f, std::max(70.0f, avail_h - 140.0f));
+  // The list scrolls on its own (wheel), the details below it too.
+  ImGui::BeginChild("clist", ImVec2(0, sel != nullptr ? list_h : 0));
+  float line = ImGui::GetTextLineHeight();
+  for (const auto* cp : rows) {
+    const auto& c = *cp;
     ImGui::PushID(c.id.c_str());
-    bool sel = req_.change == c.id;
-    if (ImGui::Selectable("##c", sel, 0, ImVec2(0, ImGui::GetTextLineHeight() * 2.1f))) req_.change = c.id;
-    ImVec2 mn = ImGui::GetItemRectMin();
-    ImVec2 mx = ImGui::GetItemRectMax();
+    bool is_sel = req_.change == c.id;
+    bool decided = c.status.value != "pending";
+    // A row never changes with the mouse over it: the hide button of a decided change has its
+    // place reserved at the right end, and the row counts as hovered by its rectangle (also
+    // while the mouse is on that button), so the button stays and takes the click.
+    ImVec2 mn = ImGui::GetCursorScreenPos();
+    float row_w = std::max(40.0f, ImGui::GetContentRegionAvail().x);
+    float row_h = line * 2.15f;
+    ImVec2 mx(mn.x + row_w, mn.y + row_h);
+    float btn = ImGui::GetFrameHeight();
+    float hide_w = decided ? btn + 4 : 0.0f;
+    // (Also while the hide button is held: an active item would make the window "not hovered".)
+    bool hot = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && ImGui::IsMouseHoveringRect(mn, mx);
+    bool hidden_now = false;
+    bool hide_hot = false;
+    ImVec2 bmin(mx.x - btn - 2, mn.y + (row_h - btn) * 0.5f);
+    if (decided && hot) {
+      // The button is submitted before the row so it gets the click; its X is drawn after the
+      // row, over the row's highlight.
+      ImGui::SetCursorScreenPos(bmin);
+      if (ImGui::InvisibleButton("hide", ImVec2(btn, btn))) {
+        cleared_.changes.insert(c.id);
+        if (is_sel) req_.change.clear();
+        cleared_changed();
+        hidden_now = true;
+      }
+      hide_hot = ImGui::IsItemHovered();
+      if (hide_hot) {
+        ImGui::SetTooltip("%s", tr("Hide from this list (the file stays)"));
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+      }
+      ImGui::SetCursorScreenPos(mn);
+    }
+    if (ImGui::Selectable("##c", is_sel, 0, ImVec2(row_w, row_h)) && !hidden_now) {
+      req_.change = is_sel ? std::string() : c.id;  // a second click folds it
+      change_editing_ = false;
+    }
+    ui::hand_on_hover();
+    if (!hide_hot && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && !c.reason.value.empty()) ImGui::SetTooltip("%s", c.reason.value.c_str());
     auto* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRect(mn, ImVec2(mx.x - hide_w, mx.y), true);
     ImVec4 sc = c.status.value == "pending" ? rgb(230, 180, 60) : c.status.value == "approved" ? rgb(115, 201, 145) : rgb(140, 140, 140);
-    dl->AddText(ImVec2(mn.x + 2, mn.y), ImGui::GetColorU32(sc), icon(Icon::Changes));
+    dl->AddText(ImVec2(mn.x + 2, mn.y + 1), ImGui::GetColorU32(sc), icon(Icon::Changes));
     float tx = mn.x + ImGui::CalcTextSize(icon(Icon::Changes)).x + 8;
-    dl->AddText(ImVec2(tx, mn.y), ImGui::GetColorU32(ImGuiCol_Text), c.id.c_str());
-    std::string st = tr_status(c.status.value);
-    if (c.status.value == "pending") st = tr("pending");
-    if (c.status.value == "approved") st = tr("approved");
-    if (c.status.value == "rejected") st = tr("rejected");
+    dl->AddText(ImVec2(tx, mn.y + 1), ImGui::GetColorU32(ImGuiCol_Text), c.id.c_str());
+    std::string st = c.status.value == "pending" ? tr("pending") : c.status.value == "approved" ? tr("approved")
+                                                                  : c.status.value == "rejected" ? tr("rejected")
+                                                                                                 : c.status.value;
+    // The status only where it fits beside the id (the icon has its color anyway).
+    float id_w = ImGui::CalcTextSize(c.id.c_str()).x;
     ImVec2 sts = ImGui::CalcTextSize(st.c_str());
-    dl->AddText(ImVec2(mx.x - sts.x - 4, mn.y), ImGui::GetColorU32(sc), st.c_str());
-    dl->PushClipRect(mn, mx, true);
-    dl->AddText(ImVec2(tx, mn.y + ImGui::GetTextLineHeight()), ImGui::GetColorU32(ImGuiCol_TextDisabled), c.reason.value.c_str());
+    float st_x = mx.x - hide_w - sts.x - 4;
+    if (st_x > tx + id_w + 8) dl->AddText(ImVec2(st_x, mn.y + 1), ImGui::GetColorU32(sc), st.c_str());
+    std::string reason = ui::ellipsize(c.reason.value, mx.x - hide_w - tx - 4);
+    dl->AddText(ImVec2(tx, mn.y + line + 2), ImGui::GetColorU32(ImGuiCol_TextDisabled), reason.c_str());
     dl->PopClipRect();
+    if (decided && hot) {
+      if (hide_hot) dl->AddRectFilled(bmin, ImVec2(bmin.x + btn, bmin.y + btn), ImGui::GetColorU32(ImGuiCol_ButtonHovered), 3.0f);
+      ImVec2 ts = ImGui::CalcTextSize(icon(Icon::Close));
+      dl->AddText(ImVec2(bmin.x + (btn - ts.x) * 0.5f, bmin.y + (btn - ts.y) * 0.5f),
+                  ImGui::GetColorU32(hide_hot ? ImGuiCol_Text : ImGuiCol_TextDisabled), icon(Icon::Close));
+    }
+    if (ImGui::BeginPopupContextItem("cctx")) {
+      ImGui::TextDisabled("%s", c.id.c_str());
+      ImGui::Separator();
+      if (ImGui::MenuItem(with_icon(Icon::Ghost, tr("Show on the schema")).c_str())) {
+        req_.change = c.id;
+        ghost_on_ = true;
+        ghost_shown_.clear();
+      }
+      if (ImGui::MenuItem(with_icon(Icon::Copy, tr("Copy")).c_str())) ImGui::SetClipboardText(core::write_change(c).c_str());
+      if (c.status.value == "pending") {
+        ImGui::Separator();
+        if (ImGui::MenuItem(with_icon(Icon::Check, tr("Approve")).c_str())) w_.approve_change(c.id);
+        if (ImGui::MenuItem(with_icon(Icon::Close, tr("Reject")).c_str())) w_.reject_change(c.id);
+      } else if (ImGui::MenuItem(with_icon(Icon::Close, tr("Hide from this list (the file stays)")).c_str())) {
+        cleared_.changes.insert(c.id);
+        if (is_sel) req_.change.clear();
+        cleared_changed();
+      }
+      ImGui::EndPopup();
+    }
     ImGui::PopID();
   }
-  for (const auto& c : m.changes) {
-    if (c.id != req_.change) continue;
-    ImGui::Separator();
+  ImGui::EndChild();
+  if (sel == nullptr) return;
+  ui::hsplitter("csplit", &list_h, 70.0f, 140.0f, avail_h, avail_w);
+  if (ImGui::IsItemDeactivated()) settings_changed();
+  const auto& c = *sel;
+  if (edit_change_next_ == c.id) {
+    edit_change_next_.clear();
     if (c.status.value == "pending") {
-      ImGui::PushStyleColor(ImGuiCol_Button, theme::accent(0.9f));
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::accent(1.0f));
-      if (ImGui::Button(with_icon(Icon::Check, tr("Approve")).c_str())) w_.approve_change(c.id);
-      ImGui::PopStyleColor(2);
-      ImGui::SameLine();
-      if (ImGui::Button(with_icon(Icon::Close, tr("Reject")).c_str())) w_.reject_change(c.id);
+      change_editing_ = true;
+      change_edit_id_ = c.id;
+      change_edit_buf_.clear();
+      for (const auto& d : c.diff) change_edit_buf_ += std::string(1, d.op) + " " + d.text + "\n";
     }
-    ImGui::BeginChild("diff", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
-    ui::diff_text(m.change_preview);
-    ImGui::EndChild();
   }
+  ImGui::BeginChild("cdetail", ImVec2(0, 0));
+  // Actions.
+  if (c.status.value == "pending") {
+    ImGui::PushStyleColor(ImGuiCol_Button, theme::accent(0.9f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::accent(1.0f));
+    if (ImGui::Button(with_icon(Icon::Check, tr("Approve")).c_str())) w_.approve_change(c.id);
+    ui::hand_on_hover();
+    ImGui::PopStyleColor(2);
+    ImGui::SameLine();
+    if (ImGui::Button(with_icon(Icon::Close, tr("Reject")).c_str())) w_.reject_change(c.id);
+    ui::hand_on_hover();
+    ImGui::SameLine();
+  }
+  if (ui::icon_button("ghost", Icon::Ghost, tr("Show what the change does on the schema (ghost blocks and links)"), ghost_on_)) {
+    ghost_on_ = !ghost_on_;
+    ghost_shown_.clear();
+  }
+  if (c.status.value == "pending") {
+    ImGui::SameLine(0, 2);
+    if (ui::icon_button("cedit", Icon::Pencil, tr("Edit the KSL diff of this change"), change_editing_)) {
+      change_editing_ = !change_editing_;
+      if (change_editing_) {
+        change_edit_id_ = c.id;
+        change_edit_buf_.clear();
+        for (const auto& d : c.diff) change_edit_buf_ += std::string(1, d.op) + " " + d.text + "\n";
+      }
+    }
+  }
+  ImGui::SameLine(0, 2);
+  ui::copy_button("ccopy", core::write_change(c));
+  ImGui::Spacing();
+  if (change_editing_ && change_edit_id_ == c.id) {
+    ui::muted("%s", tr("'~ @block <id>' selects a card, '+ line' adds, '- line' removes; checked before it is saved."));
+    ImGui::PushFont(theme::mono_font());
+    float h = std::max(120.0f, ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 1.5f);
+    ImGui::InputTextMultiline("##cedit", &change_edit_buf_, ImVec2(-1, h));
+    ImGui::PopFont();
+    if (ImGui::Button(with_icon(Icon::Check, tr("Save")).c_str())) {
+      w_.edit_change(c.id, change_edit_buf_);
+      change_editing_ = false;
+    }
+    ui::hand_on_hover();
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Cancel"))) change_editing_ = false;
+    ui::hand_on_hover();
+    ImGui::EndChild();
+    return;
+  }
+  // Why, from where, which blocks; then the diff and the cards after it.
+  ImGui::PushTextWrapPos(0.0f);
+  ImGui::TextUnformatted(c.reason.value.c_str());
+  ImGui::PopTextWrapPos();
+  auto from = core::split_ws(c.from.value);
+  if (!from.empty()) {
+    ui::muted("%s", tr("from"));
+    for (const auto& part : from) {
+      ImGui::SameLine(0, 6);
+      if (core::is_record_id(part) && part[0] == 'T') {
+        if (ImGui::SmallButton(part.c_str())) {
+          req_.ticket = part;
+          bottom_select_ = "tickets";
+        }
+        ui::hand_on_hover();
+      } else {
+        ImGui::TextUnformatted(part.c_str());
+      }
+    }
+  }
+  if (!m.ghost.error.empty() && m.ghost.id == c.id) {
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(rgb(241, 120, 120), "%s", m.ghost.error.c_str());
+    ImGui::PopTextWrapPos();
+  }
+  if (m.ghost.id == c.id && (!m.ghost.touched.empty() || !m.ghost.blocks.empty())) {
+    ui::muted("%s", tr("blocks"));
+    auto chip = [&](const std::string& id, bool fresh) {
+      ImGui::SameLine(0, 6);
+      if (ImGui::GetCursorPosX() + ImGui::CalcTextSize(id.c_str()).x + 20 > ImGui::GetContentRegionMax().x) ImGui::NewLine();
+      ImGui::PushStyleColor(ImGuiCol_Button, fresh ? rgb(60, 140, 80, 0.5f) : rgb(255, 255, 255, 0.08f));
+      if (ImGui::SmallButton(((fresh ? "+ " : "") + id).c_str()) && m.snap->block(id) != nullptr) go_to(m, id);
+      ImGui::PopStyleColor();
+      ui::hand_on_hover();
+    };
+    for (const auto& b : m.ghost.blocks) chip(b.id, true);
+    for (const auto& t : m.ghost.touched) chip(t, false);
+  }
+  ImGui::Spacing();
+  if (ui::section(tr("Diff"))) {
+    std::string diff;
+    for (const auto& d : c.diff) diff += std::string(1, d.op) + " " + d.text + "\n";
+    ui::diff_text(diff);
+  }
+  if (!m.change_cards.empty() && ui::section(tr("Cards after the change"), false)) ui::diff_text(m.change_cards);
+  ImGui::EndChild();
 }
 
 // --- settings window ----------------------------------------------------------------------
@@ -699,10 +1115,38 @@ void Ui::open_file_tab(const std::string& file) {
 }
 
 void Ui::draw_editor(const Model& m) {
-  if (!ui::begin_docked("Editor###editor", theme::kEditorBg, ImVec2(0, 0))) {
+  if (!begin_editor_window()) {
     ImGui::End();
     return;
   }
+  if (!select_tab_.empty()) editor_tab_ = select_tab_;
+  if (editor_tab_ != "#schema" && std::find(open_files_.begin(), open_files_.end(), editor_tab_) == open_files_.end()) editor_tab_ = "#schema";
+  // What the tab shows comes first, under the tab bar: the schema over the whole work area
+  // (the panels lie on it), a file in the part no panel covers.
+  ImVec2 body_min(free_area_.min.x, free_area_.min.y + chrome_h_);
+  ImVec2 body_size(std::max(1.0f, free_area_.w()), std::max(1.0f, free_area_.h() - chrome_h_));
+  if (editor_tab_ == "#schema") {
+    if (m.snap->blocks.empty() || (m.graph.nodes.empty() && m.req.scope == req_.scope)) {
+      ImGui::SetCursorScreenPos(body_min);
+      ImGui::BeginChild("##empty", body_size, ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
+      draw_empty(m);
+      ImGui::EndChild();
+    } else {
+      ImGui::SetCursorScreenPos(work_.min);
+      draw_graph(m);
+    }
+  } else {
+    ImGui::SetCursorScreenPos(body_min);
+    ImGui::BeginChild("##file", body_size, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    draw_file_body(m, editor_tab_);
+    ImGui::EndChild();
+  }
+  // The tab bar and the toolbar of the tab, over the schema.
+  ImGui::SetCursorScreenPos(free_area_.min);
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::col(theme::kEditorBg));
+  ImGui::BeginChild("##chrome", ImVec2(std::max(1.0f, free_area_.w()), 0), ImGuiChildFlags_AutoResizeY,
+                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+  ImGui::PopStyleColor();
   // Tab bar and tab items must see the same frame padding (sizes are computed per item).
   auto begin_tab = [](const std::string& label, bool* open, ImGuiTabItemFlags flags) {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12, 6));
@@ -716,17 +1160,14 @@ void Ui::draw_editor(const Model& m) {
   if (tabs) {
     ImGuiTabItemFlags sf = select_tab_ == "#schema" ? ImGuiTabItemFlags_SetSelected : 0;
     if (begin_tab(with_icon(Icon::Schema, tr("Schema")) + "###tab_schema", nullptr, sf | ImGuiTabItemFlags_Leading)) {
+      editor_tab_ = "#schema";
       ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + 8, ImGui::GetCursorPosY() + 4));
       ImGui::BeginGroup();
       ImGui::PushItemWidth(-8);
       draw_schema_toolbar(m);
       ImGui::PopItemWidth();
       ImGui::EndGroup();
-      if (m.snap->blocks.empty() || (m.graph.nodes.empty() && m.req.scope == req_.scope)) {
-        draw_empty(m);
-      } else {
-        draw_graph(m);
-      }
+      ImGui::Dummy(ImVec2(1, 2));
       ImGui::EndTabItem();
     }
     auto files = open_files_;
@@ -736,8 +1177,9 @@ void Ui::draw_editor(const Model& m) {
       std::string label = with_icon(f.ends_with(".ksl") ? Icon::Card : Icon::Code, std::filesystem::path(f).filename().string());
       if (begin_tab(label + "###tab_" + f, &open, ff)) {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("%s", f.c_str());
+        editor_tab_ = f;
         req_.open_file = f;
-        draw_file_tab(m, f);
+        draw_file_header(m, f);
         ImGui::EndTabItem();
       }
       if (!open) {
@@ -745,10 +1187,18 @@ void Ui::draw_editor(const Model& m) {
         editors_.erase(f);
         editor_loaded_.erase(f);
         if (req_.open_file == f) req_.open_file.clear();
+        if (editor_tab_ == f) editor_tab_ = "#schema";
       }
     }
     ImGui::EndTabBar();
   }
+  ImGui::EndChild();
+  chrome_h_ = ImGui::GetItemRectSize().y;
+  // A thin shadow under the toolbar: the schema goes on beneath it.
+  auto* dl = ImGui::GetWindowDrawList();
+  float y = free_area_.min.y + chrome_h_;
+  dl->AddRectFilledMultiColor(ImVec2(free_area_.min.x, y), ImVec2(free_area_.max.x, y + 6), IM_COL32(0, 0, 0, 70), IM_COL32(0, 0, 0, 70),
+                              IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0));
   select_tab_.clear();
   ImGui::End();
 }
@@ -791,11 +1241,22 @@ void Ui::draw_schema_toolbar(const Model& m) {
   }
 }
 
-void Ui::draw_file_tab(const Model& m, const std::string& file) {
+void Ui::draw_file_header(const Model& m, const std::string& file) {
+  (void)m;
   ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + 10, ImGui::GetCursorPosY() + 4));
   std::string crumbs = core::replace_all(file, "/", "  ›  ");
+  ImGui::AlignTextToFramePadding();
   ui::muted("%s", crumbs.c_str());
   ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight() * 1.6f);
+  if (ui::icon_button("ext_edit", Icon::FolderOpen, tr("Open in the external editor"))) {
+    auto it = editors_.find(file);
+    int line = it != editors_.end() && it->second ? it->second->GetCursorPosition().mLine + 1 : 1;
+    w_.open_in_editor(file, line);
+  }
+  ImGui::Dummy(ImVec2(1, 2));
+}
+
+void Ui::draw_file_body(const Model& m, const std::string& file) {
   auto& ed = editors_[file];
   if (!ed) {
     ed = std::make_unique<TextEditor>();
@@ -809,7 +1270,6 @@ void Ui::draw_file_tab(const Model& m, const std::string& file) {
     pal[static_cast<int>(TextEditor::PaletteIndex::CurrentLineEdge)] = IM_COL32(255, 255, 255, 20);
     ed->SetPalette(pal);
   }
-  if (ui::icon_button("ext_edit", Icon::FolderOpen, tr("Open in the external editor"))) w_.open_in_editor(file, ed->GetCursorPosition().mLine + 1);
   if (m.req.open_file == file && editor_loaded_[file] != m.code_text) {
     ed->SetText(m.code_text);
     editor_loaded_[file] = m.code_text;
@@ -822,11 +1282,16 @@ void Ui::draw_file_tab(const Model& m, const std::string& file) {
 // --- inspector ------------------------------------------------------------------------------------
 
 void Ui::draw_inspector(const Model& m) {
-  if (!ui::begin_docked("Inspector###Inspector", theme::kSideBg, ImVec2(10, 8))) {
+  if (!begin_panel("Inspector###Inspector", insp_area_, 'L', theme::kSideBg, ImVec2(10, 8), &settings_.inspector_frac)) {
     ImGui::End();
     return;
   }
   ui::panel_title(tr("INSPECTOR"));
+  ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight() * 1.1f);
+  if (ui::icon_button("insp_hide", Icon::Close, tr("Hide this panel (Windows menu shows it again)"))) {
+    settings_.show_inspector = false;
+    settings_changed();
+  }
   ImGui::Spacing();
   const auto* b = req_.selected.empty() ? nullptr : m.snap->block(req_.selected);
   if (b == nullptr) {

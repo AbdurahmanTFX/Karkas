@@ -3,7 +3,9 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cctype>
 #include <map>
+#include <regex>
 #include <set>
 
 #include "kk/code/analyzer.hpp"
@@ -37,12 +39,62 @@ bool has_files(const fs::path& dir, std::string_view ext_set) {
   if (!fs::is_directory(dir, ec)) return false;
   for (auto it = fs::recursive_directory_iterator(dir, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
     if (ec) break;
-    if (it->is_regular_file(ec) && core::contains(ext_set, it->path().extension().string() + ";")) return true;
+    // An exact extension of the set: a file without one (".gitkeep") is no source (".;" never matches).
+    auto ext = it->path().extension().string();
+    if (it->is_regular_file(ec) && !ext.empty() && core::contains(ext_set, ext + ";")) return true;
   }
   return false;
 }
 
 bool has_cpp(const fs::path& dir) { return has_files(dir, ".cpp;.cc;.cxx;"); }
+
+// The glob patterns of the sources has_cpp() counts, so a folder it calls non-empty never gives
+// an empty list.
+std::string sources_glob(const std::string& dir) { return fmt::format("\"{0}/*.cpp\" \"{0}/*.cc\" \"{0}/*.cxx\"", dir); }
+
+// The test sources of a block: those that share one doctest program, by kind folder, and those
+// with a main() of their own. A standalone test linked into the doctest program breaks the build
+// of the whole project ("multiple definition of main"): flappy-karkas's app had two, written
+// while Karkas built no tests of an entry block. Each such file is a program of its own.
+struct TestSources {
+  std::set<std::string> doctest_kinds;  // "contract", "unit": folders with doctest sources
+  std::vector<fs::path> standalone;     // sources with their own main(), sorted
+};
+
+TestSources scan_tests(const fs::path& tests_dir) {
+  TestSources out;
+  static const std::regex own_main(R"((\bint\s+main\s*\()|DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN)");
+  std::error_code ec;
+  if (!fs::is_directory(tests_dir, ec)) return out;
+  for (auto it = fs::recursive_directory_iterator(tests_dir, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
+    if (ec) break;
+    if (!it->is_regular_file(ec)) continue;
+    auto ext = it->path().extension().string();
+    if (ext != ".cpp" && ext != ".cc" && ext != ".cxx") continue;
+    auto text = core::read_file(it->path());
+    if (text && std::regex_search(*text, own_main)) {
+      out.standalone.push_back(it->path());
+      continue;
+    }
+    auto rel = it->path().lexically_relative(tests_dir);
+    auto first = rel.begin() == rel.end() ? std::string() : rel.begin()->string();
+    if (first == "contract" || first == "unit") out.doctest_kinds.insert(first);
+  }
+  std::sort(out.standalone.begin(), out.standalone.end());
+  return out;
+}
+
+// "unit" or "contract" by the folder under tests/ ("unit" for anything else).
+std::string test_kind(const fs::path& tests_dir, const fs::path& file) {
+  auto rel = file.lexically_relative(tests_dir);
+  return rel.begin() != rel.end() && rel.begin()->string() == "contract" ? "contract" : "unit";
+}
+
+std::string ident(std::string_view name) {
+  std::string out;
+  for (char c : name) out += (std::isalnum(static_cast<unsigned char>(c)) != 0) ? c : '_';
+  return out;
+}
 
 std::string labels(const core::Schema& s, const std::string& id) {
   std::vector<std::string> l = {id};
@@ -94,6 +146,51 @@ std::string gen_cmake(const core::Schema& s) {
   body += target_template("cmake_preamble.cmake", {{"project", s.project.name}, {"std", std_ver}}).value_or("");
   const auto& dirs = s.project.dirs;
   auto rel = [&](const core::Block& b, const std::string& sub) { return "${CMAKE_CURRENT_SOURCE_DIR}/" + b.dir + "/" + sub; };
+  // The test programs of a leaf or the entry: one doctest program for the sources that share
+  // doctest's main (created only when its glob finds sources at configure time: a folder emptied
+  // after this file was written must not stop the configure of the whole project), and one
+  // program per standalone test (its own main(); passes with exit code 0).
+  auto test_programs = [&](const core::Block& b, const std::string& t, const std::string& var, const std::string& extra,
+                           const std::vector<std::string>& includes, const std::vector<std::string>& deps) {
+    std::string out;
+    auto tests_dir = s.root / b.dir / dirs.tests;
+    if (!has_cpp(tests_dir)) return out;
+    auto src = scan_tests(tests_dir);
+    std::string inc;
+    for (const auto& i : includes) inc += " \"" + i + "\"";
+    std::string with_extra = extra.empty() ? "" : " " + extra;
+    out += fmt::format("file(GLOB_RECURSE {} CONFIGURE_DEPENDS {})\n", var, sources_glob(rel(b, dirs.tests)));
+    for (const auto& f : src.standalone) {
+      out += fmt::format("list(REMOVE_ITEM {} \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\")\n", var, core::rel_str(s.root, f));
+    }
+    out += fmt::format("if({})\n", var);
+    out += fmt::format("add_executable({}_tests ${{{}}}{})\n", t, var, with_extra);
+    out += fmt::format("target_include_directories({}_tests PRIVATE{})\n", t, inc);
+    std::vector<std::string> tdeps = deps;
+    tdeps.push_back("kk_doctest_main");
+    out += fmt::format("target_link_libraries({}_tests PRIVATE {})\n", t, core::join(tdeps, " "));
+    out += fmt::format("kk_probes({}_tests)\n", t);
+    for (const char* kind : {"contract", "unit"}) {
+      if (!src.doctest_kinds.contains(kind)) continue;
+      out += fmt::format("add_test(NAME {}/{} COMMAND {}_tests \"-sf=*/{}/{}/*\")\n", b.id, kind, t, dirs.tests, kind);
+      out += fmt::format("set_tests_properties({}/{} PROPERTIES LABELS \"{}\")\n", b.id, kind, labels(s, b.id));
+    }
+    out += "endif()\n";
+    std::set<std::string> used = {t + "_tests", t + "_integration"};
+    for (const auto& f : src.standalone) {
+      auto name = t + "_" + ident(f.stem().string());
+      for (int n = 2; used.contains(name); ++n) name = t + "_" + ident(f.stem().string()) + "_" + std::to_string(n);
+      used.insert(name);
+      auto test = fmt::format("{}/{}:{}", b.id, test_kind(tests_dir, f), f.stem().string());
+      out += fmt::format("add_executable({} \"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\"{})\n", name, core::rel_str(s.root, f), with_extra);
+      out += fmt::format("target_include_directories({} PRIVATE{})\n", name, inc);
+      if (!deps.empty()) out += fmt::format("target_link_libraries({} PRIVATE {})\n", name, core::join(deps, " "));
+      out += fmt::format("kk_probes({})\n", name);
+      out += fmt::format("add_test(NAME {} COMMAND {})\n", test, name);
+      out += fmt::format("set_tests_properties({} PROPERTIES LABELS \"{}\")\n", test, labels(s, b.id));
+    }
+    return out;
+  };
   std::vector<std::string> leaf_targets;
   for (const auto& b : s.blocks) {
     if (b.kind != core::BlockKind::Leaf && b.kind != core::BlockKind::Shared) continue;
@@ -104,7 +201,7 @@ std::string gen_cmake(const core::Schema& s) {
     bool impl = has_cpp(s.root / b.dir / dirs.impl);
     body += fmt::format("\n# --- {} ({}): {}\n", b.id, b.kind_name(), b.purpose.value);
     if (impl) {
-      body += fmt::format("file(GLOB_RECURSE _src CONFIGURE_DEPENDS \"{}/*.cpp\" \"{}/*.cc\")\n", rel(b, dirs.impl), rel(b, dirs.impl));
+      body += fmt::format("file(GLOB_RECURSE _src CONFIGURE_DEPENDS {})\n", sources_glob(rel(b, dirs.impl)));
       body += fmt::format("add_library({} STATIC ${{_src}})\n", t);
       body += fmt::format("target_include_directories({} PUBLIC \"{}\" PRIVATE \"{}\")\n", t, rel(b, dirs.api), rel(b, dirs.impl));
       if (!deps.empty()) body += fmt::format("target_link_libraries({} PRIVATE {})\n", t, core::join(deps, " "));
@@ -114,22 +211,9 @@ std::string gen_cmake(const core::Schema& s) {
       body += fmt::format("target_include_directories({} INTERFACE \"{}\")\n", t, rel(b, dirs.api));
       if (!deps.empty()) body += fmt::format("target_link_libraries({} INTERFACE {})\n", t, core::join(deps, " "));
     }
-    auto tests_dir = s.root / b.dir / dirs.tests;
-    if (has_cpp(tests_dir)) {
-      body += fmt::format("file(GLOB_RECURSE _tests CONFIGURE_DEPENDS \"{}/*.cpp\")\n", rel(b, dirs.tests));
-      body += fmt::format("add_executable({}_tests ${{_tests}})\n", t);
-      body += fmt::format("target_include_directories({}_tests PRIVATE \"{}\" \"{}\")\n", t, rel(b, dirs.mocks), rel(b, dirs.impl));
-      std::vector<std::string> tdeps = {t};
-      tdeps.insert(tdeps.end(), deps.begin(), deps.end());
-      tdeps.push_back("kk_doctest_main");
-      body += fmt::format("target_link_libraries({}_tests PRIVATE {})\n", t, core::join(tdeps, " "));
-      body += fmt::format("kk_probes({}_tests)\n", t);
-      for (const char* kind : {"contract", "unit"}) {
-        if (!has_cpp(tests_dir / kind)) continue;
-        body += fmt::format("add_test(NAME {}/{} COMMAND {}_tests \"-sf=*/{}/{}/*\")\n", b.id, kind, t, dirs.tests, kind);
-        body += fmt::format("set_tests_properties({}/{} PROPERTIES LABELS \"{}\")\n", b.id, kind, labels(s, b.id));
-      }
-    }
+    std::vector<std::string> tdeps = {t};
+    tdeps.insert(tdeps.end(), deps.begin(), deps.end());
+    body += test_programs(b, t, "_tests", "", {rel(b, dirs.mocks), rel(b, dirs.impl)}, tdeps);
   }
   for (const auto& b : s.blocks) {
     if (b.kind != core::BlockKind::Group) continue;
@@ -148,12 +232,15 @@ std::string gen_cmake(const core::Schema& s) {
         const auto* x = s.find(a);
         if (x != nullptr && x->has_code()) deps.insert(tname(a));
       }
-      body += fmt::format("file(GLOB_RECURSE _itests CONFIGURE_DEPENDS \"${{CMAKE_CURRENT_SOURCE_DIR}}/tests/integration/{}/*.cpp\")\n", b.id);
+      body += fmt::format("file(GLOB_RECURSE _itests CONFIGURE_DEPENDS {})\n",
+                          sources_glob("${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/" + b.id));
+      body += "if(_itests)\n";
       body += fmt::format("add_executable({}_integration ${{_itests}})\n", t);
       body += fmt::format("target_link_libraries({}_integration PRIVATE {} kk_doctest_main)\n", t,
                           core::join({deps.begin(), deps.end()}, " "));
       body += fmt::format("add_test(NAME {}/integration COMMAND {}_integration)\n", b.id, t);
       body += fmt::format("set_tests_properties({}/integration PROPERTIES LABELS \"{}\")\n", b.id, labels(s, b.id));
+      body += "endif()\n";
     }
   }
   for (const auto& b : s.blocks) {
@@ -162,12 +249,19 @@ std::string gen_cmake(const core::Schema& s) {
     auto t = tname(b.id);
     body += fmt::format("\n# --- {} (entry): {}\n", b.id, b.purpose.value);
     if (has_cpp(s.root / b.dir / dirs.impl)) {
-      body += fmt::format("file(GLOB_RECURSE _app CONFIGURE_DEPENDS \"{}/*.cpp\")\n", rel(b, dirs.impl));
+      body += fmt::format("file(GLOB_RECURSE _app CONFIGURE_DEPENDS {})\n", sources_glob(rel(b, dirs.impl)));
       body += fmt::format("add_executable({} ${{_app}})\n", t);
       body += fmt::format("set_target_properties({} PROPERTIES OUTPUT_NAME {})\n", t, s.project.name);
       body += fmt::format("target_include_directories({} PRIVATE \"{}\" \"{}\")\n", t, rel(b, dirs.api), rel(b, dirs.impl));
       if (!leaf_targets.empty()) body += fmt::format("target_link_libraries({} PRIVATE {})\n", t, core::join(leaf_targets, " "));
       body += fmt::format("kk_probes({})\n", t);
+      // Unit tests of the composition root: its impl/ without main.cpp (main() lives there, see
+      // skel_main.cpp) and the leaves it wires.
+      if (has_cpp(s.root / b.dir / dirs.tests)) {
+        body += "set(_app_lib ${_app})\n";
+        body += "list(FILTER _app_lib EXCLUDE REGEX \"/main\\\\.(cpp|cc|cxx)$\")\n";
+        body += test_programs(b, t, "_app_tests", "${_app_lib}", {rel(b, dirs.api), rel(b, dirs.impl)}, leaf_targets);
+      }
     }
   }
   body += "\ninclude(\"${CMAKE_CURRENT_SOURCE_DIR}/cmake/user.cmake\" OPTIONAL)\n";

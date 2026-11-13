@@ -54,13 +54,20 @@ TEST_CASE("model_for: the same order as Karkas's own agents (ADR 0011, 0013)") {
   auto w = rig.pick(cfg, "stream.pump");
   CHECK(w.tier == "medium");
   CHECK(w.by == "role worker");
-  // [levels], then [blocks] (the nearest ancestor) beat the role.
+  // [levels] pin the roles that decide; the work on a leaf goes by [roles] and routing (ADR 0026),
+  // unless [routing] levels_for = "all". [blocks] (the nearest ancestor) pins every role.
   cfg.levels = {{0, "medium"}, {2, "strong"}};
   cfg.block_tiers = {{"stream", "cheap"}};
   CHECK(rig.pick(cfg, "").by == "pinned by level 0");
   auto dsp = rig.pick(cfg, "dsp.echo");
-  CHECK(dsp.tier == "strong");
-  CHECK(dsp.by == "pinned by level 2");
+  CHECK(dsp.tier == "medium");
+  CHECK(dsp.by == "role worker");
+  CHECK(rig.pick(cfg, "dsp.echo", "ask").by == "pinned by level 2");
+  cfg.levels_for_leaves = true;
+  auto dsp_all = rig.pick(cfg, "dsp.echo");
+  CHECK(dsp_all.tier == "strong");
+  CHECK(dsp_all.by == "pinned by level 2");
+  cfg.levels_for_leaves = false;
   auto ring = rig.pick(cfg, "stream.ring", "tester");
   CHECK(ring.tier == "cheap");
   CHECK(ring.by == "pinned by block stream");

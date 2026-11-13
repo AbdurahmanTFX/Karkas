@@ -57,6 +57,25 @@ TEST_CASE("runner: build log compression keeps errors only, deduplicated, at mos
   CHECK_FALSE(core::contains(s, "warning"));
 }
 
+TEST_CASE("runner: a CMake error keeps its message, not only where it was raised") {
+  std::string log =
+      "-- Configuring done\n"
+      "CMake Error at CMakeLists.txt:149 (add_executable):\n"
+      "  No SOURCES given to target: sim_pickups_tests\n"
+      "\n"
+      "\n"
+      "CMake Error at /p/CMakeLists.txt:213 (add_executable):\n"
+      "  Cannot find source file:\n"
+      "\n"
+      "    blocks/view/hud/tests/unit/x.cpp\n"
+      "-- Generating done\n";
+  auto s = runner::compress_build_log(log, "/p");
+  auto lines = core::split(s, '\n');
+  REQUIRE(lines.size() == 2);
+  CHECK(lines[0] == "CMake Error at CMakeLists.txt:149 (add_executable): No SOURCES given to target: sim_pickups_tests");
+  CHECK(lines[1] == "CMake Error at CMakeLists.txt:213 (add_executable): Cannot find source file: blocks/view/hud/tests/unit/x.cpp");
+}
+
 TEST_CASE("runner: ctest -V output is parsed into per-block counts and failures") {
   std::string out = R"(test 1
     Start 1: stream.ring/contract

@@ -5,6 +5,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <tuple>
 #include <chrono>
 #include <set>
 
@@ -157,6 +158,34 @@ void Worker::reject_change(const std::string& id) {
   });
 }
 
+void Worker::edit_change(const std::string& id, const std::string& diff_text) {
+  post([this, id, diff_text] {
+    agents::ChangeStore store(root_);
+    auto c = store.load(id);
+    if (!c) {
+      message_ = c.error().message;
+      return;
+    }
+    if (c->status.value != "pending") {
+      message_ = id + ": " + tr("only a pending change can be edited");
+      return;
+    }
+    if (auto ok = agents::check_proposal(root_, diff_text); !ok) {
+      message_ = id + ": " + ok.error().message;
+      return;
+    }
+    auto d = agents::parse_diff(diff_text);
+    if (!d) {
+      message_ = d.error().message;
+      return;
+    }
+    c->diff = std::move(*d);
+    auto w = core::write_file(store.file(id), core::write_change(*c));
+    message_ = w ? id + " " + tr("saved") : w.error().message;
+    files_changed_ = true;
+  });
+}
+
 void Worker::save_positions(const std::string& view, std::map<std::string, layout::Pos> pos) {
   post([this, view, pos = std::move(pos)] {
     layout::LayoutStore store(root_);
@@ -180,6 +209,137 @@ void Worker::open_in_editor(const std::string& rel_file, int line) {
     }
   });
 }
+
+namespace {
+
+// What a change does to the schema, for drawing it before approval (ADR 0021).
+ChangeGhost change_ghost(const fs::path& root, const core::Change& c) {
+  ChangeGhost g;
+  g.id = c.id;
+  auto schema = core::load_schema(root);
+  if (!schema) {
+    g.error = schema.error().message;
+    return g;
+  }
+  if (c.status.value != "pending") {
+    // A decided change is in the cards already (or never will be): only its blocks are shown.
+    std::set<std::string> ids;
+    for (const auto& d : c.diff) {
+      if (d.text.starts_with("@block ")) ids.insert(std::string(core::trim(std::string_view(d.text).substr(7))));
+    }
+    for (const auto& id : ids) {
+      if (schema->find(id) != nullptr) g.touched.push_back(id);
+    }
+    std::string scope;
+    bool first = true;
+    for (const auto& id : g.touched) {
+      std::string parent = core::parent_id(id);
+      if (first) {
+        scope = parent;
+        first = false;
+        continue;
+      }
+      while (!scope.empty() && !(parent == scope || parent.starts_with(scope + "."))) scope = core::parent_id(scope);
+    }
+    g.scope = scope;
+    std::set<std::string> expand;
+    for (const auto& id : g.touched) {
+      for (std::string x = core::parent_id(id); !x.empty() && x != scope; x = core::parent_id(x)) expand.insert(x);
+    }
+    g.expand.assign(expand.begin(), expand.end());
+    return g;
+  }
+  auto cards = agents::cards_after(root, c.diff);
+  if (!cards) {
+    g.error = cards.error().message;
+    return g;
+  }
+  using LinkT = std::tuple<std::string, std::string, std::string, std::string, std::string>;
+  auto dir_name = [](core::PortDir d) { return d == core::PortDir::In ? "in" : d == core::PortDir::Out ? "out" : "fn"; };
+  auto ports_of = [&](const core::Block& b) {
+    std::set<std::pair<std::string, std::string>> out;
+    for (const auto& p : b.ports) out.insert({dir_name(p.dir), p.name});
+    return out;
+  };
+  auto links_of = [](const core::Block& b) {
+    std::set<LinkT> out;
+    for (const auto& p : b.ports) {
+      if (p.dir == core::PortDir::In && p.from) {
+        out.insert({p.link == core::LinkKind::Event ? "event" : "data", p.from->block, p.from->port, b.id, p.name});
+      }
+    }
+    for (const auto& cl : b.calls) out.insert({"call", b.id, "", cl.target.block, cl.target.port});
+    for (const auto& u : b.uses) out.insert({"use", b.id, "", u.target, ""});
+    return out;
+  };
+  std::vector<std::string> involved;
+  for (const auto& [id, text] : *cards) {
+    const auto* old = schema->find(id);
+    if (text.empty()) {  // removed card
+      if (old != nullptr) g.touched.push_back(id);
+      involved.push_back(id);
+      continue;
+    }
+    auto nb = core::parse_block_text(text, id + "/block.ksl");
+    if (!nb) continue;
+    involved.push_back(id);
+    std::set<std::pair<std::string, std::string>> before;
+    std::set<LinkT> links_before;
+    if (old == nullptr) {
+      GhostBlock gb{id, nb->kind_text.value, nb->purpose.value, {}};
+      for (const auto& [d, n] : ports_of(*nb)) gb.ports.push_back({id, n, d, true});
+      g.blocks.push_back(std::move(gb));
+    } else {
+      g.touched.push_back(id);
+      before = ports_of(*old);
+      links_before = links_of(*old);
+      auto after = ports_of(*nb);
+      for (const auto& [d, n] : after) {
+        if (!before.contains({d, n})) g.ports.push_back({id, n, d, true});
+      }
+      for (const auto& [d, n] : before) {
+        if (!after.contains({d, n})) g.ports.push_back({id, n, d, false});
+      }
+    }
+    auto links_after = links_of(*nb);
+    for (const auto& l : links_after) {
+      if (!links_before.contains(l)) g.links.push_back({std::get<0>(l), std::get<1>(l), std::get<2>(l), std::get<3>(l), std::get<4>(l), true});
+    }
+    for (const auto& l : links_before) {
+      if (!links_after.contains(l)) g.links.push_back({std::get<0>(l), std::get<1>(l), std::get<2>(l), std::get<3>(l), std::get<4>(l), false});
+    }
+  }
+  for (const auto& l : g.links) {
+    involved.push_back(l.src_block);
+    involved.push_back(l.dst_block);
+  }
+  // The level: the deepest group that holds every block involved; groups below it on the way
+  // to an involved block open in place, so the blocks themselves are on the canvas.
+  std::string scope;
+  bool first = true;
+  for (const auto& id : involved) {
+    std::string parent = core::parent_id(id);
+    if (first) {
+      scope = parent;
+      first = false;
+      continue;
+    }
+    while (!scope.empty() && !(parent == scope || parent.starts_with(scope + "."))) scope = core::parent_id(scope);
+  }
+  g.scope = scope;
+  std::set<std::string> expand;
+  for (const auto& id : involved) {
+    for (std::string x = core::parent_id(id); !x.empty() && x != scope; x = core::parent_id(x)) {
+      if (const auto* b = schema->find(x); b != nullptr && b->kind == core::BlockKind::Group) expand.insert(x);
+    }
+  }
+  g.expand.assign(expand.begin(), expand.end());
+  std::sort(g.touched.begin(), g.touched.end());
+  g.touched.erase(std::unique(g.touched.begin(), g.touched.end()), g.touched.end());
+  return g;
+}
+
+}  // namespace
 
 namespace {
 
@@ -349,7 +509,10 @@ void Worker::loop() {
     if (auto cl = changes.list()) m->changes = std::move(*cl);
     if (!req.change.empty()) {
       for (const auto& c : m->changes) {
-        if (c.id == req.change) m->change_preview = core::write_change(c) + "\n" + agents::preview_diff(root_, c.diff);
+        if (c.id != req.change) continue;
+        m->change_cards = agents::preview_diff(root_, c.diff);
+        m->change_preview = core::write_change(c) + "\n" + m->change_cards;
+        m->ghost = change_ghost(root_, c);
       }
     }
     m->active = metrics::active_runs(root_);

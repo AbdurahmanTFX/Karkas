@@ -30,6 +30,8 @@ Route route(const RouteInput& in, const core::Config& cfg, int bucket_runs = 0, 
 RouteInput route_input(const core::Schema& schema, const index::Snapshot& snap, const std::string& block,
                        const std::string& difficulty, const std::vector<index::RunRow>& runs);
 std::string next_tier(const std::string& tier);  // cheap → medium → strong → ""
+// The next tier of [routing] escalate when it is set (the built-in chain otherwise).
+std::string next_tier(const core::Config& cfg, const std::string& tier);
 
 // route() of a leaf with the self-tuning statistics of its feature bucket taken from `runs`
 // (first-attempt cheap worker runs, 11.4).

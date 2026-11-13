@@ -17,6 +17,11 @@ std::string replace_all(std::string s, std::string_view from, std::string_view t
 bool contains(std::string_view s, std::string_view needle);
 std::string to_lower(std::string_view s);
 
+// A prefix of at most max_bytes that ends on a UTF-8 code point boundary (never cuts a
+// multi-byte sequence in half). Use before truncating text that will be JSON-serialized or
+// written to a file, so invalid UTF-8 cannot reach nlohmann::json::dump.
+std::string truncate_utf8(std::string_view s, std::size_t max_bytes);
+
 // Identifier rules from KSL 4.2.
 bool is_ident(std::string_view s);       // [a-z][a-z0-9_]*
 bool is_block_path(std::string_view s);  // ident(.ident)*

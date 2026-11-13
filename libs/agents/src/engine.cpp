@@ -1,11 +1,15 @@
 #include "kk/agents/engine.hpp"
 
+#include "kk/agents/api_edit.hpp"
+
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <deque>
 #include <future>
 #include <map>
+#include <regex>
 #include <nlohmann/json.hpp>
 #include <semaphore>
 #include <set>
@@ -19,6 +23,8 @@
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/validate.hpp"
+#include "kk/index/state.hpp"
+#include "kk/llm/mcp_bridge.hpp"
 #include "kk/llm/provider.hpp"
 #include "kk/templates.hpp"
 
@@ -51,7 +57,28 @@ std::vector<std::string> sarr(const json& j, const char* k) {
 
 std::string shorten(std::string s, std::size_t n) {
   s = core::replace_all(std::move(s), "\n", " ");
-  return s.size() <= n ? s : s.substr(0, n - 3) + "...";
+  return s.size() <= n ? s : core::truncate_utf8(s, n - 3) + "...";
+}
+
+// The inv lines a block gains by the approved changes of a ticket ("+ inv" under its "@block").
+std::vector<std::string> ticket_invariants(const ChangeStore& changes, const std::string& tid, const std::string& block) {
+  std::vector<std::string> out;
+  auto cs = changes.list();
+  if (!cs) return out;
+  for (const auto& c : *cs) {
+    if (c.status.value != "approved") continue;
+    auto from = core::split_ws(c.from.value);
+    if (std::find(from.begin(), from.end(), tid) == from.end()) continue;
+    std::string at;
+    for (const auto& d : c.diff) {
+      if (d.text.starts_with("@block ")) {
+        at = std::string(core::trim(std::string_view(d.text).substr(7)));
+        continue;
+      }
+      if (at == block && d.op == '+' && d.text.starts_with("inv ")) out.emplace_back(core::trim(std::string_view(d.text).substr(4)));
+    }
+  }
+  return out;
 }
 
 core::TrailEntry level_entry(int level, std::string role, std::vector<core::Attr> attrs) {
@@ -114,6 +141,62 @@ struct Engine::Impl {
 
   AgentRunner runner() { return AgentRunner(root, cfg, providers, nullptr); }
 
+  // A fingerprint of everything a human changes to unblock a ticket: every card, every api/
+  // and the frozen set. The same fingerprint means nothing was done since the last run.
+  std::string state_hash() {
+    auto s = schema();
+    if (!s) return "";
+    auto files = index::collect_code_files(*s);
+    std::string acc;
+    for (const auto& b : s->blocks) {
+      acc += b.id + "\n" + index::card_text_without_comments(b) + "\n" + index::block_api_hash(files, b.id) + "\n";
+    }
+    if (auto st = index::StateStore(root).load()) {
+      for (const auto& [id, h] : st->frozen_api) acc += "frozen " + id + " " + h + "\n";
+    }
+    return fmt::format("{:016x}", core::fnv1a64(acc));
+  }
+
+  // Why running the ticket again would only repeat its last run (empty if it may run): a
+  // change of the ticket still waits for approval, or the last run stopped on something only
+  // a human resolves and nothing a human changes (cards, api/, approvals) changed since.
+  std::string blocked_reason(const core::Ticket& t) {
+    if (auto cs = changes.list()) {
+      for (const auto& c : *cs) {
+        if (c.status.value != "pending") continue;
+        for (const auto& part : core::split_ws(c.from.value)) {
+          if (part == t.id) {
+            return fmt::format("{} waits for {}: approve it (karkas approve {}) or reject it (karkas change reject {}) first",
+                               t.id, c.id, c.id, c.id);
+          }
+        }
+      }
+    }
+    std::size_t start = t.result.size();
+    for (std::size_t i = 0; i < t.result.size(); ++i) {
+      if (t.result[i].key == "status") start = i;
+    }
+    std::string status, state, cause, note;
+    for (std::size_t i = start; i < t.result.size(); ++i) {
+      const auto& r = t.result[i];
+      if (r.key == "status") status = r.text;
+      if (r.key == "state") state = r.text;
+      if (r.key == "cause" && cause.empty()) cause = r.text;
+      if (r.key == "note") note = r.text;
+    }
+    static const std::set<std::string> blocking = {"needs_contract_change", "escalated", "needs_tester"};
+    if (!blocking.contains(status) || state.empty()) return "";
+    // A model or network failure is not an answer: running again is the remedy for it.
+    for (const char* w : {"failed: error", "failed: timeout", "failed: budget", "failed: max_steps", "failed: refusal",
+                          "failed: end_turn"}) {
+      if (core::contains(note, w)) return "";
+    }
+    if (state != state_hash()) return "";
+    return fmt::format("{} ended with {} and nothing changed since (cards, api/, approvals): running it again would only "
+                       "repeat that run.\n{}{}Act on it first, or run again with --force.",
+                       t.id, status, cause.empty() ? "" : "cause: " + cause + "\n", note.empty() ? "" : "note: " + note + "\n");
+  }
+
   std::string tier_for(const std::string& role, const std::string& fallback) {
     auto it = cfg.roles.find(role);
     std::string t = it == cfg.roles.end() ? fallback : it->second;
@@ -121,7 +204,7 @@ struct Engine::Impl {
   }
   // A model pinned for the block ([blocks], [levels]; ADR 0011) beats the role's tier.
   std::string tier_for(const std::string& role, const std::string& fallback, std::string_view block) {
-    if (auto p = cfg.pin(block); !p.tier.empty()) return p.tier;
+    if (auto p = cfg.pin(block, role); !p.tier.empty()) return p.tier;
     return tier_for(role, fallback);
   }
 
@@ -163,6 +246,156 @@ struct Engine::Impl {
       auto text = core::read_file(f).value_or("");
       budget -= std::min(budget, text.size());
       out += fmt::format("=== {}\n{}{}", name, text, text.ends_with("\n") ? "" : "\n");
+    }
+  }
+
+  // Identifiers a block uses (its card, api/, tests and, for a worker, impl/): the declarations of
+  // a big neighbor header an agent sees are these, the rest is one read_file away (ADR 0026).
+  static std::set<std::string> used_identifiers(const core::Schema& s, const std::string& block, Role role,
+                                                const std::string& card) {
+    static const std::set<std::string> skip = {
+        "const", "constexpr", "inline", "static", "struct", "class", "enum", "namespace", "using", "return", "void", "bool",
+        "char", "int", "unsigned", "long", "short", "float", "double", "auto", "true", "false", "nullptr", "include", "pragma",
+        "once", "std", "virtual", "override", "public", "private", "protected", "template", "typename", "default", "this",
+        "for", "while", "if", "else", "switch", "case", "break", "continue", "new", "delete", "size_t", "the", "and", "of"};
+    static const std::regex ident(R"([A-Za-z_][A-Za-z0-9_]{2,})");
+    std::set<std::string> out;
+    auto take = [&](const std::string& text) {
+      for (auto it = std::sregex_iterator(text.begin(), text.end(), ident); it != std::sregex_iterator(); ++it) {
+        if (!skip.contains(it->str())) out.insert(it->str());
+      }
+    };
+    take(card);
+    const auto& dirs = s.project.dirs;
+    std::vector<fs::path> dirs_to_read = {s.block_dir(block) / dirs.api, s.block_dir(block) / dirs.tests, s.block_dir(block) / dirs.mocks};
+    if (role == Role::Worker) dirs_to_read.push_back(s.block_dir(block) / dirs.impl);
+    std::error_code ec;
+    for (const auto& d : dirs_to_read) {
+      if (!fs::is_directory(d, ec)) continue;
+      for (const auto& e : fs::recursive_directory_iterator(d, ec)) {
+        if (e.is_regular_file(ec) && core::is_code_file(e.path())) take(core::read_file(e.path()).value_or(""));
+      }
+    }
+    return out;
+  }
+
+  // A neighbor's api/: a small header whole, a big one as the declarations the block uses.
+  static void add_neighbor_api(std::string& out, const fs::path& dir, const std::string& label, const std::set<std::string>& used,
+                               std::size_t& budget) {
+    constexpr std::size_t kWhole = 2000;
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) return;
+    std::vector<fs::path> files;
+    for (const auto& e : fs::recursive_directory_iterator(dir, ec)) {
+      if (e.is_regular_file(ec) && core::is_code_file(e.path())) files.push_back(e.path());
+    }
+    std::sort(files.begin(), files.end());
+    static const std::regex type_start(R"(^\s*(?:template\s*<[^>]*>\s*)?(?:struct|class|enum(?:\s+class)?|union)\s+([A-Za-z_]\w*))");
+    static const std::regex constant(R"(([A-Za-z_]\w*)\s*(?:=|\{))");
+    static const std::regex function(R"(([A-Za-z_]\w*)\s*\()");
+    static const std::regex alias(R"(^\s*using\s+([A-Za-z_]\w*)\s*=)");
+    for (const auto& f : files) {
+      auto name = label + core::rel_str(dir, f);
+      auto text = core::read_file(f).value_or("");
+      if (text.size() <= kWhole && text.size() <= budget) {
+        budget -= text.size();
+        out += fmt::format("=== {}\n{}{}", name, text, text.ends_with("\n") ? "" : "\n");
+        continue;
+      }
+      // Chunks: a type with its body, or one declaration, each with the comment lines before it.
+      std::vector<std::string> lines;  // raw: core::split trims, and a struct body keeps its indentation
+      for (std::size_t start = 0; start < text.size();) {
+        auto end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        lines.push_back(text.substr(start, end - start));
+        start = end + 1;
+      }
+      if (lines.empty()) continue;
+      std::string kept;
+      std::vector<std::string> names;
+      std::string comment;
+      for (std::size_t i = 0; i < lines.size(); ++i) {
+        const auto& l = lines[i];
+        auto t = std::string(core::trim(l));
+        if (t.empty() || t.starts_with("#")) {
+          comment.clear();
+          continue;
+        }
+        if (t.starts_with("//")) {
+          comment += l + "\n";
+          continue;
+        }
+        if (t.starts_with("namespace ") || t.starts_with("}  // namespace") || t == "}") {
+          kept += l + "\n";
+          comment.clear();
+          continue;
+        }
+        std::size_t end = i;
+        std::string decl;
+        std::smatch m;
+        if (std::regex_search(l, m, type_start)) {
+          decl = m[1];
+          int depth = 0;
+          bool opened = false;
+          for (end = i; end < lines.size(); ++end) {
+            for (char c : lines[end]) {
+              if (c == '{') {
+                ++depth;
+                opened = true;
+              } else if (c == '}') {
+                --depth;
+              }
+            }
+            if ((opened && depth <= 0) || (!opened && lines[end].find(';') != std::string::npos)) break;
+          }
+        } else {
+          while (end < lines.size() && lines[end].find(';') == std::string::npos && lines[end].find('{') == std::string::npos) ++end;
+          std::string joined;
+          for (std::size_t k = i; k <= end && k < lines.size(); ++k) joined += lines[k] + " ";
+          if (std::regex_search(joined, m, alias)) decl = m[1];
+          else if (joined.find('(') != std::string::npos && std::regex_search(joined, m, function)) decl = m[1];
+          else if (std::regex_search(joined, m, constant)) decl = m[1];
+        }
+        end = std::min(end, lines.size() - 1);
+        if (!decl.empty()) names.push_back(decl);
+        if (!decl.empty() && used.contains(decl)) {
+          kept += comment;
+          for (std::size_t k = i; k <= end; ++k) kept += lines[k] + "\n";
+        }
+        comment.clear();
+        i = end;
+      }
+      bool any = std::any_of(names.begin(), names.end(), [&](const std::string& n) { return used.contains(n); });
+      if (any && kept.size() <= budget) {
+        budget -= kept.size();
+        out += fmt::format("=== {} ({} bytes; the declarations this block uses, read_file for the rest)\n{}", name, text.size(), kept);
+      } else {
+        if (names.size() > 40) names.resize(40);
+        out += fmt::format("=== {} ({} bytes, use read_file; declares {})\n", name, text.size(), core::join(names, ", "));
+      }
+    }
+  }
+
+  // Tests of the block as a list: names say what is covered; one read_file shows a file.
+  static void list_tests(std::string& out, const fs::path& dir, const std::string& label) {
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) return;
+    std::vector<fs::path> files;
+    for (const auto& e : fs::recursive_directory_iterator(dir, ec)) {
+      if (e.is_regular_file(ec) && core::is_code_file(e.path())) files.push_back(e.path());
+    }
+    std::sort(files.begin(), files.end());
+    static const std::regex test_case(R"re(TEST_CASE\s*\(\s*"([^"]*)")re");
+    for (const auto& f : files) {
+      auto text = core::read_file(f).value_or("");
+      std::vector<std::string> cases;
+      for (auto it = std::sregex_iterator(text.begin(), text.end(), test_case); it != std::sregex_iterator(); ++it) {
+        cases.push_back("\"" + (*it)[1].str() + "\"");
+      }
+      std::size_t more = cases.size() > 8 ? cases.size() - 8 : 0;
+      if (more > 0) cases.resize(8);
+      out += fmt::format("=== {}{} ({} bytes, use read_file){}{}\n", label, core::rel_str(dir, f), text.size(),
+                         cases.empty() ? "" : ": " + core::join(cases, ", "), more > 0 ? fmt::format(" and {} more", more) : "");
     }
   }
 
@@ -209,7 +442,34 @@ struct Engine::Impl {
             if (v) out += *v;
           }
           if (!block.empty()) {
-            if (const auto* b = s->find(block)) out += "--- card\n" + index::card_text_without_comments(*b);
+            if (const auto* b = s->find(block)) {
+              out += "--- card\n" + index::card_text_without_comments(*b);
+              // The architect never rewrites a header blind (ADR 0020): an existing api/ is
+              // shown to be updated in place; for a new leaf, a header of the project shows
+              // the style to follow (free functions or interfaces, namespaces).
+              std::size_t budget = 32 * 1024;
+              auto own = s->block_dir(block) / dirs.api;
+              std::error_code ec;
+              if (b->has_code() && fs::is_directory(own, ec) && !fs::is_empty(own, ec)) {
+                out += "--- current api/ of " + block + " (update it in place: keep its style, namespace and every "
+                       "declaration the card still lists)\n";
+                add_files(out, own, "api/", 16384, budget);
+              } else if (b->kind != core::BlockKind::Group) {
+                std::string own_parent = core::parent_id(block);
+                const core::Block* sample = nullptr;
+                for (const auto& x : s->blocks) {
+                  if (x.id == block || !x.has_code() || x.kind == core::BlockKind::Shared) continue;
+                  auto d = s->block_dir(x.id) / dirs.api;
+                  if (!fs::is_directory(d, ec) || fs::is_empty(d, ec)) continue;
+                  if (sample == nullptr || core::parent_id(x.id) == own_parent) sample = &x;
+                  if (core::parent_id(x.id) == own_parent) break;
+                }
+                if (sample != nullptr) {
+                  out += "--- api/ of " + sample->id + " (the style of this project's headers: follow it)\n";
+                  add_files(out, s->block_dir(sample->id) / dirs.api, sample->id + ":api/", 4096, budget);
+                }
+              }
+            }
           }
         }
         return out;
@@ -232,9 +492,10 @@ struct Engine::Impl {
         add_files(out, s->block_dir(block) / dirs.api, "api/", 16384, budget);
         Sandbox sb(*s, block, role);
         out += "--- neighbor api\n";
+        auto used = used_identifiers(*s, block, role, v ? *v : std::string());
         for (const auto& n : sb.neighbor_blocks()) {
           if (n == "shared.probe") continue;
-          add_files(out, s->block_dir(n) / dirs.api, n + ":api/", 8192, budget);
+          add_neighbor_api(out, s->block_dir(n) / dirs.api, n + ":api/", used, budget);
         }
         if (b->kind == core::BlockKind::Entry) {
           out += "--- links of the schema (wire exactly these)\n";
@@ -248,7 +509,7 @@ struct Engine::Impl {
           out += "--- impl\n";
           add_files(out, s->block_dir(block) / dirs.impl, "impl/", 8192, budget);
           out += "--- tests/unit\n";
-          add_files(out, s->block_dir(block) / dirs.tests / "unit", "tests/unit/", 8192, budget);
+          list_tests(out, s->block_dir(block) / dirs.tests / "unit", "tests/unit/");
           out += "--- tests/contract (written by the tester)\n";
           add_files(out, s->block_dir(block) / dirs.tests / "contract", "tests/contract/", 0, budget, true);
         } else {
@@ -271,9 +532,10 @@ struct Engine::Impl {
 
   // --- leaves ---------------------------------------------------------------------------------
 
+  // approve_now: Auto approves the worker's card diff in its run, which goes on (ADR 0026).
   LeafOutcome run_worker(const std::string& block, const std::string& tid, const std::string& task,
                          const std::string& difficulty, const std::string& prompt_name = "worker",
-                         const std::string& fixed_tier = "") {
+                         const std::string& fixed_tier = "", const LeafToolHost::ApproveNow& approve_now = {}) {
     LeafOutcome out;
     auto s = schema();
     if (!s) {
@@ -294,7 +556,7 @@ struct Engine::Impl {
     }
     std::string tier = fixed_tier;
     std::string reason;
-    if (auto p = cfg.pin(block); tier.empty() && !p.tier.empty()) {
+    if (auto p = cfg.pin(block, "worker"); tier.empty() && !p.tier.empty()) {
       tier = p.tier;
       reason = "pinned by " + p.by;
     }
@@ -311,6 +573,62 @@ struct Engine::Impl {
     auto system = prompt(prompt_name, {{"block", block}});
     auto context = context_for(Role::Worker, block);
     int level = core::trail_level(block);
+    // Access to the own api/ in a ticket (ADR 0020): a frozen api lets constant values change
+    // (tuning a number is not a contract change); an api unfrozen by an approved @change is
+    // brought in line with the card by the worker itself. Outside tickets api/ is read-only.
+    ApiAccess api_access = ApiAccess::None;
+    std::string api_note;
+    std::string users_note;
+    if (auto users = Sandbox(*s, block, Role::Worker).user_blocks(); !users.empty()) {
+      users_note = "--- blocks that use this block (their api/ is readable as <block>:api/<file>)\n" + core::join(users, ", ") + "\n";
+    }
+    if (!tid.empty() && prompt_name == "worker") {
+      auto st = index::StateStore(root).load();
+      bool frozen = st && st->frozen_api.contains(block);
+      bool any_frozen = st && !st->frozen_api.empty();
+      bool has_api = !index::block_api_hash(index::collect_code_files(*s), block).empty();
+      if (frozen) {
+        api_access = ApiAccess::ValuesOnly;
+        api_note = "--- api/ of this block\nfrozen: its declarations, types and signatures are the contract. Values of "
+                   "constants in api/ may be changed and new constexpr constants added when the ticket asks for it "
+                   "(that is not a contract change).\n";
+      } else if (any_frozen && has_api) {
+        api_access = ApiAccess::Full;
+        bool behind = false;
+        std::vector<std::string> differ;
+        {
+          std::lock_guard lk(mu);
+          auto snap = idx->snapshot();
+          for (const auto& d : snap.drift) {
+            if (d.block != block || d.code != "D04") continue;
+            if (d.severity == "E") behind = true;
+            else differ.push_back(d.message);
+          }
+        }
+        // Behind its card (D04 E): the worker catches up. Other parameter counts (D04 W): either
+        // side may be right. Already in line: an old unfreeze, not a request; telling it "the
+        // card changed" made a worker look for work that was not there.
+        if (behind) {
+          api_note = "--- api/ of this block\nunfrozen and behind its card: an approved @change added declarations to the "
+                     "card that api/ lacks (see the drift in the last build/test). Bring api/ in line with the card: add "
+                     "or change exactly those declarations, in the style and namespace of the existing header, keep "
+                     "every other declaration (new constexpr constants the ticket needs are allowed besides). Then the "
+                     "impl. Report api=changed.\n";
+        } else if (!differ.empty()) {
+          api_note = fmt::format("--- api/ of this block\nunfrozen; api/ and the card differ: {}. When the card is right, change "
+                                 "api/ to match it (report api=changed); when api/ is right (say, a parameter with a default that "
+                                 "keeps the old calls), keep it and report needs_contract_change with the card line in proposal.\n",
+                                 core::join(differ, "; "));
+        } else {
+          // Constants are never on a card: "only what the card names" made the worker of config
+          // refuse new constants a frozen api/ would take (flappy T-0014).
+          api_note = "--- api/ of this block\nunfrozen but already in line with its card: as in a frozen api/, add new "
+                     "constexpr constants and change values of constants when the ticket needs them (a card never names "
+                     "constants); any other declaration changes only when the ticket needs one the card names and api/ "
+                     "lacks.\n";
+        }
+      }
+    }
     int at_tier = 0;
     std::string history;
     for (int attempt = 1; attempt <= 12; ++attempt) {
@@ -319,7 +637,7 @@ struct Engine::Impl {
         auto t = tickets.load(tid);
         if (t) task_text += core::path_view(*t, block) + "\n";
       }
-      task_text += "--- task\n" + task + "\n--- last build/test\n" + last_tests(block);
+      task_text += api_note + users_note + "--- task\n" + task + "\n--- last build/test\n" + last_tests(block);
       if (!history.empty()) task_text += "--- previous attempts (do not repeat them)\n" + history;
       AgentSpec spec;
       spec.role = Role::Worker;
@@ -334,8 +652,32 @@ struct Engine::Impl {
       spec.max_steps = cfg.max_steps_worker;
       spec.max_tokens = cfg.max_tokens_per_run;
       spec.timeout = std::chrono::seconds(cfg.run_timeout_s);
-      LeafToolHost host(Sandbox(*s, block, Role::Worker), Role::Worker, *tests, {block});
+      Sandbox sandbox(*s, block, Role::Worker);
+      sandbox.set_api_access(api_access);
+      LeafToolHost host(std::move(sandbox), Role::Worker, *tests, {block});
+      if (approve_now) host.set_approve_now(approve_now);
       auto res = runner().run(spec, host);
+      if (host.approved_in_run()) {
+        // A later attempt starts from the card and the access the approval gave.
+        context = context_for(Role::Worker, block);
+        api_access = ApiAccess::Full;
+        api_note = "--- api/ of this block\nunfrozen by a change approved in this ticket: bring it in line with the card "
+                   "(add or change exactly what the card names, keep every other declaration), then the impl. Report "
+                   "api=changed.\n";
+      }
+      if (host.api_written()) {
+        if (api_access == ApiAccess::ValuesOnly) {
+          // Only values changed (the tool refused anything else): the contract holds, so the
+          // frozen hash follows the file and check reports no D05.
+          if (auto s2 = schema()) {
+            auto h = index::block_api_hash(index::collect_code_files(*s2), block);
+            if (!h.empty()) (void)index::StateStore(root).freeze_api(block, h);
+          }
+          out.api_note = "constants tuned or added, declarations unchanged (re-frozen)";
+        } else {
+          out.api_note = "changed to the card (karkas approve api " + block + " freezes it)";
+        }
+      }
       out.tokens += res.tokens;
       out.cost += res.cost;
       out.attempts = attempt;
@@ -366,6 +708,10 @@ struct Engine::Impl {
             if (d) {
               out.proposal.clear();
               for (const auto& l : *d) out.proposal.push_back(std::string(1, l.op) + " " + l.text);
+            } else {
+              // Keep the reason the proposal was rejected so the caller can tell the human
+              // (a worker often sends a unified diff of api/ instead of a KSL card diff).
+              out.proposal_error = d.error().message;
             }
           }
         }
@@ -386,7 +732,7 @@ struct Engine::Impl {
                              {{"at", block}, {"model", tier}, {"attempt", std::to_string(attempt)}, {"outcome", status}}));
       out.status = status;
       if (status == "fixed" || status == "done" || status == "not_here" || status == "needs_contract_change" ||
-          status == "needs_info") {
+          status == "needs_info" || status == "needs_tester") {
         return out;
       }
       ++at_tier;
@@ -394,7 +740,7 @@ struct Engine::Impl {
                              shorten(out.fix, 120), shorten(out.test_text.empty() ? res.outcome : out.test_text, 160));
       bool exhausted = res.outcome == "budget" || res.outcome == "max_steps" || res.outcome == "timeout";
       if (at_tier >= cfg.attempts_before_escalation || exhausted) {
-        auto nt = next_tier(tier);
+        auto nt = next_tier(cfg, tier);
         if (nt.empty() || cfg.tier(nt) == nullptr) {
           out.status = "escalated";
           return out;
@@ -408,7 +754,8 @@ struct Engine::Impl {
     return out;
   }
 
-  LeafOutcome run_tester(const std::string& block, const std::string& tid, bool integration = false) {
+  LeafOutcome run_tester(const std::string& block, const std::string& tid, bool integration = false,
+                         const std::string& fix_task = "") {
     LeafOutcome out;
     auto s = schema();
     if (!s) {
@@ -428,10 +775,10 @@ struct Engine::Impl {
       return out;
     }
     if (!integration) (void)code::write_mocks(*s, block);
-    std::string tier = cfg.pin(block).tier;
-    if (tier.empty()) {
-      tier = integration ? tier_for("integration_tester", "medium") : (b->est.value == "L" ? "medium" : tier_for("tester", "cheap"));
-    }
+    // A model pinned for the block, then the role of [roles]; the defaults only when neither
+    // is configured (a project on other models never falls back to a hard-coded tier).
+    std::string tier = integration ? tier_for("integration_tester", "medium", block)
+                                   : tier_for("tester", b->est.value == "L" ? "medium" : "cheap", block);
     AgentSpec spec;
     spec.role = Role::Tester;
     spec.role_name = integration ? "integration_tester" : "tester";
@@ -442,25 +789,55 @@ struct Engine::Impl {
     spec.context_text = context_for(Role::Tester, block);
     spec.task_text = integration ? fmt::format("Write the integration tests of group {} now.", block)
                                  : "Write the contract tests of this leaf now: one TEST_CASE per inv of the card.";
+    if (!fix_task.empty()) {
+      spec.task_text.clear();
+      if (!tid.empty()) {
+        if (auto t = tickets.load(tid)) spec.task_text = core::path_view(*t, block) + "\n";
+      }
+      spec.task_text += "--- task\n" + fix_task + "\n--- last build/test\n" + last_tests(block);
+    }
     spec.max_steps = cfg.max_steps_tester;
     spec.max_tokens = cfg.max_tokens_per_run;
     spec.timeout = std::chrono::seconds(cfg.run_timeout_s);
-    LeafToolHost host(Sandbox(*s, block, Role::Tester), Role::Tester, *tests, {block});
-    auto res = runner().run(spec, host);
-    out.tokens = res.tokens;
-    out.cost = res.cost;
-    out.tier = tier;
-    out.attempts = 1;
-    out.reads = res.reads;
-    if (res.terminal_tool == "report") {
-      auto rep = json::parse(res.terminal_input, nullptr, false);
-      out.status = rep.is_object() ? rep.value("status", "done") : "done";
-      if (rep.is_object()) out.tests = sget(rep, "tests");
-    } else {
-      out.status = res.outcome == "cancelled" ? "cancelled" : "failed";
-      out.cause = res.outcome;
+    // A tester with a task of a ticket (correct a test, cover new invariants) starts at its tier and
+    // escalates on failure like a worker (ADR 0026): leaf work starts cheap, a hard test goes up.
+    const bool may_escalate = !tid.empty() && !fix_task.empty();
+    const std::string base_task = spec.task_text;
+    std::string history;
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+      spec.tier = tier;
+      spec.attempt = attempt;
+      spec.task_text = history.empty() ? base_task : base_task + "\n--- previous attempts (do not repeat them)\n" + history;
+      LeafToolHost host(Sandbox(*s, block, Role::Tester), Role::Tester, *tests, {block});
+      auto res = runner().run(spec, host);
+      out.tokens += res.tokens;
+      out.cost += res.cost;
+      out.tier = tier;
+      out.attempts = attempt;
+      out.reads.insert(out.reads.end(), res.reads.begin(), res.reads.end());
+      if (res.terminal_tool == "report") {
+        auto rep = json::parse(res.terminal_input, nullptr, false);
+        out.status = rep.is_object() ? rep.value("status", "done") : "done";
+        if (rep.is_object()) {
+          out.tests = sget(rep, "tests");
+          out.cause = sget(rep, "cause");
+          out.fix = sget(rep, "fix");
+          out.files = sget(rep, "files");
+        }
+      } else {
+        out.status = res.outcome == "cancelled" ? "cancelled" : "failed";
+        out.cause = res.outcome;
+      }
+      out.test_text = host.last_test_text();
+      if (out.status != "failed" || !may_escalate) return out;
+      auto nt = next_tier(cfg, tier);
+      if (nt.empty() || cfg.tier(nt) == nullptr) return out;
+      history += fmt::format("attempt {} ({}): {} -> {}\n", attempt, tier, shorten(out.cause, 200), shorten(out.test_text, 200));
+      say(fmt::format("tester {}: escalating {} -> {}", block, tier, nt));
+      trail(tid, level_entry(core::trail_level(block), spec.role_name,
+                             {{"at", block}, {"model", tier}, {"attempt", std::to_string(attempt)}, {"outcome", "failed"}}));
+      tier = nt;
     }
-    out.test_text = host.last_test_text();
     return out;
   }
 
@@ -480,8 +857,8 @@ struct Engine::Impl {
     spec.system_text = prompt("asked", {{"block", block}});
     spec.context_text = context_for(b->has_code() ? Role::Worker : Role::Navigator, block);
     spec.task_text = "Question: " + question;
-    spec.max_steps = 4;
-    spec.max_tokens = 40000;
+    spec.max_steps = 6;  // read a file or two, then answer; 4 ran out before the answer (T-0004)
+    spec.max_tokens = cfg.max_tokens_per_run;
     spec.timeout = std::chrono::seconds(300);
     AskToolHost host(*idx, *s, block);
     auto res = runner().run(spec, host);
@@ -491,8 +868,14 @@ struct Engine::Impl {
       if (j.is_object()) answer = sget(j, "text");
     }
     if (answer.empty()) answer = res.final_text.empty() ? "no answer (" + res.outcome + ")" : res.final_text;
-    // At most ~80 tokens (10.5).
-    while (core::estimate_tokens(answer) > 80 && answer.size() > 20) answer = answer.substr(0, answer.size() * 9 / 10);
+    // At most ~80 tokens (10.5), cut on a code point and a word boundary, never mid-word.
+    if (core::estimate_tokens(answer) > 80) {
+      std::size_t keep = answer.size();
+      while (keep > 20 && core::estimate_tokens(std::string_view(answer).substr(0, keep)) > 78) keep = keep * 9 / 10;
+      auto cut = core::truncate_utf8(answer, keep);
+      if (auto sp = cut.find_last_of(" \n"); sp != std::string::npos && sp > cut.size() / 2) cut.resize(sp);
+      answer = cut + "...";
+    }
     core::TrailEntry e;
     e.type = core::TrailEntry::Type::Answer;
     e.attrs = {{"at", block}};
@@ -501,13 +884,25 @@ struct Engine::Impl {
     return answer;
   }
 
-  SchemaCallbacks callbacks(const std::string& tid) {
+  SchemaCallbacks callbacks(const std::string& tid, const std::map<std::string, std::string>* answered = nullptr) {
     SchemaCallbacks cb;
     cb.ask = [this, tid](const std::string& b, const std::string& q) { return ask(b, q, tid); };
     cb.run_tests = [this](const std::string& b) {
       auto r = tests->build_and_test({b});
       return r ? r->text : r.error().message;
     };
+    cb.check_change = [this](const std::string& diff) -> std::string {
+      auto ok = check_proposal(root, diff);
+      return ok ? std::string() : ok.error().message;
+    };
+    if (answered != nullptr) {
+      cb.excluded = [answered](const std::string& b) -> std::string {
+        for (const auto& [blk, why] : *answered) {
+          if (core::Schema::is_under(blk, b)) return blk == b ? why : blk + " " + why;
+        }
+        return {};
+      };
+    }
     return cb;
   }
 };
@@ -545,6 +940,8 @@ Engine::Engine(fs::path root, core::Config cfg, EngineOptions opts) : root_(core
     m.providers = [this](const std::string& tier) -> kk::Result<std::unique_ptr<llm::IProvider>> {
       const auto* t = cfg_.tier(tier);
       if (t == nullptr) return kk::fail("config", fmt::format("no [models.{}] in karkas.toml", tier));
+      // Mode "mcp" (ADR 0024): every turn goes to the MCP client; the engine stays the same.
+      if (cfg_.mcp()) return std::unique_ptr<llm::IProvider>(std::make_unique<llm::McpBridgeProvider>(root_ / ".karkas" / "mcp", cfg_.mcp_wait_s));
       return llm::make_provider(*t, cfg_, *impl_->http);
     };
   }
@@ -653,10 +1050,16 @@ kk::Result<std::string> Engine::expand(const std::string& block, bool all) {
     spec.role_name = "architect";
     spec.block = id;
     spec.tier = m.tier_for("architect", "strong", id);
+    std::error_code ec;
+    auto api_dir = s->block_dir(id) / s->project.dirs.api;
+    bool has_api = !group && fs::is_directory(api_dir, ec) && !fs::is_empty(api_dir, ec);
     std::string job = group ? fmt::format("decompose group {} into 2-9 children (ids {}.<child>) and write api/ headers "
                                           "for every child that is a leaf",
                                           id, id)
-                            : fmt::format("write the api/ headers of leaf {} from its card", id);
+                      : has_api ? fmt::format("update the api/ headers of leaf {} to its card: keep the existing style, "
+                                              "namespace and declarations, add or change only what the card requires",
+                                              id)
+                                : fmt::format("write the api/ headers of leaf {} from its card", id);
     spec.system_text = m.prompt("architect", {{"job", job}, {"target", id}});
     spec.context_text = m.context_for(Role::Architect, id);
     spec.task_text = "Do it now: " + job + ". Keep links consistent with the neighbors shown above.";
@@ -762,7 +1165,8 @@ kk::Result<std::string> Engine::approve(const std::string& what, const std::stri
     auto g = code::write_cmake(*s3);
     if (!g) return std::unexpected(g.error());
     m.reindex();
-    out += "generated: probe, skeletons, mocks, CMakeLists.txt\nnext: karkas implement all\n";
+    out += cfg_.mcp() ? "generated: probe, skeletons, mocks, CMakeLists.txt\nnext: kk_implement (MCP; or `karkas implement all` in the background)\n"
+                      : "generated: probe, skeletons, mocks, CMakeLists.txt\nnext: karkas implement all\n";
     return out;
   }
   if (what.starts_with("C-")) {
@@ -774,7 +1178,8 @@ kk::Result<std::string> Engine::approve(const std::string& what, const std::stri
     if (!r->issues.empty()) return kk::fail("approve", "the change breaks the schema:\n" + issues_text(r->issues));
     if (auto w = m.changes.set_status(what, "approved"); !w) return std::unexpected(w.error());
     std::string out = fmt::format("{} approved: {} card(s) written\n", what, r->files.size());
-    // Contract changes of frozen blocks: unfreeze and mark dependents (12.4).
+    // Contract changes of frozen blocks: unfreeze and mark dependents (12.4). Only card lines
+    // touch a contract; a block that gains constants only keeps its frozen api/ (ADR 0026).
     auto st = store.load();
     std::set<std::string> touched;
     std::vector<std::string> fresh;
@@ -782,8 +1187,39 @@ kk::Result<std::string> Engine::approve(const std::string& what, const std::stri
     for (const auto& d : c->diff) {
       if (d.text.starts_with("@block ")) {
         current = std::string(core::trim(std::string_view(d.text).substr(7)));
-        if (d.op == '~') touched.insert(current);
         if (d.op == '+') fresh.push_back(current);
+        continue;
+      }
+      if (!current.empty() && !is_const_line(d.text) &&
+          std::find(fresh.begin(), fresh.end(), current) == fresh.end()) {
+        touched.insert(current);
+      }
+    }
+    // The mechanical part of the change, written by the program (ADR 0026): its constants, and the
+    // declarations of new fn whose types the header can take. The workers find them done.
+    std::vector<std::string> mech;
+    std::set<std::string> const_blocks;
+    if (auto consts = change_constants(c->diff); consts && !consts->empty()) {
+      if (auto sc = core::load_schema(root_)) {
+        if (auto w = write_constants(*sc, *consts)) {
+          mech.insert(mech.end(), w->begin(), w->end());
+        } else {
+          out += "constants not written (the worker adds them): " + w.error().message + "\n";
+        }
+      }
+      for (const auto& k : *consts) const_blocks.insert(k.block);
+    }
+    if (auto sd = core::load_schema(root_)) {
+      auto decl = write_declarations(*sd, c->diff);
+      mech.insert(mech.end(), decl.begin(), decl.end());
+    }
+    for (const auto& line : mech) out += line + "\n";
+    // New constants keep a frozen contract: the frozen hash follows the header (no D05).
+    if (auto sf = core::load_schema(root_)) {
+      auto files = index::collect_code_files(*sf);
+      for (const auto& id : const_blocks) {
+        if (touched.contains(id) || !st || !st->frozen_api.contains(id)) continue;
+        if (auto h = index::block_api_hash(files, id); !h.empty()) (void)store.freeze_api(id, h);
       }
     }
     m.reindex();
@@ -794,9 +1230,18 @@ kk::Result<std::string> Engine::approve(const std::string& what, const std::stri
         out += fmt::format("{}: api unfrozen, dependents marked needs_review\n", id);
       }
     }
-    // Note on the originating ticket ("orchestrator T-0051").
+    // Note on the originating ticket ("orchestrator T-0051"), naming the blocks it opened: the
+    // orchestrator reads it and goes there, not to a block unfrozen long before.
+    std::vector<std::string> opened;
+    for (const auto& id : touched) {
+      if (st && st->frozen_api.contains(id)) opened.push_back(id);
+    }
     for (const auto& part : core::split_ws(c->from.value)) {
-      if (core::is_record_id(part) && part[0] == 'T') m.note(part, what + " approved");
+      if (core::is_record_id(part) && part[0] == 'T') {
+        m.note(part, what + " approved" +
+                         (opened.empty() ? std::string() : ": api of " + core::join(opened, ", ") + " unfrozen, its worker updates it") +
+                         (mech.empty() ? std::string() : "; written by the program: " + core::join(mech, "; ")));
+      }
     }
     // New blocks need an api/ from the architect, except imported code (files), which
     // already has it; groups made only of imported blocks need nothing either.
@@ -825,7 +1270,22 @@ kk::Result<std::string> Engine::approve(const std::string& what, const std::stri
       m.reindex();
       return out;
     }
-    for (const auto& id : touched) out += fmt::format("next: karkas expand {}  (update the api/ to the new card)\n", id);
+    // A change that came from a ticket continues there: the worker of each unfrozen block
+    // brings its api/ in line with the card and implements it (ADR 0020).
+    std::vector<std::string> from_tickets;
+    for (const auto& part : core::split_ws(c->from.value)) {
+      if (core::is_record_id(part) && part[0] == 'T') from_tickets.push_back(part);
+    }
+    if (!from_tickets.empty() && !touched.empty()) {
+      for (const auto& tid : from_tickets) {
+        out += fmt::format("next: karkas ticket run {}  (the workers update the api/ of {} to the cards)\n", tid,
+                           core::join(std::vector<std::string>(touched.begin(), touched.end()), ", "));
+      }
+      out += "then: karkas approve api (freezes the updated contracts)\n";
+      m.reindex();
+      return out;
+    }
+    for (const auto& id : touched) out += fmt::format("next: karkas expand {}  (the architect updates the api/ to the new card)\n", id);
     out += "then: karkas approve api, karkas implement <block>\n";
     m.reindex();
     return out;
@@ -975,27 +1435,60 @@ kk::Result<std::string> Engine::debug(const std::string& symptom, const std::vec
   return run_ticket(t->id);
 }
 
-kk::Result<std::string> Engine::run_ticket(const std::string& id) {
+kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
   auto& m = *impl_;
   auto lock = m.tickets.lock(id, "karkas run_ticket");
   if (!lock) return std::unexpected(lock.error());
   auto t = m.tickets.load(id);
   if (!t) return std::unexpected(t.error());
-  if (t->status.value == "closed") return id + " is closed\n";
+  // A closed ticket runs again only on purpose (--force): its result did not convince the human, or
+  // it closed too early (flappy T-0014 before its fix of the engine closed with its HUD part undone).
+  if (t->status.value == "closed" && !force) return id + " is closed (karkas ticket run " + id + " --force reopens it)\n";
+  // Statuses, drift and test freshness as the project is now (a human may have edited cards or
+  // code since the last command): the agents' tools and notes read the index.
+  m.reindex();
   auto s0 = m.schema();
   if (!s0) return std::unexpected(s0.error());
   if (core::has_errors(core::check_schema(*s0))) {
     return kk::fail("ticket", "schema errors (E) block the agents; run karkas check");
   }
+  // The same run twice gives the same answer: when the last run stopped on something only a
+  // human resolves and nothing changed since, no model is started (ADR 0020).
+  if (!force) {
+    if (auto why = m.blocked_reason(*t); !why.empty()) return kk::fail("ticket", why);
+  }
   bool bug = t->kind_enum() == core::TicketKind::Bug;
   m.set_status(id, core::TicketStatus::Descending);
   std::string current = "root";
   std::string difficulty;
-  std::map<std::string, int> not_here;  // scope → count of children that said not_here
+  std::map<std::string, int> not_here;         // scope → count of children that said not_here
+  std::map<std::string, std::string> answered;  // block → what it answered in this run (not sent again)
+  std::vector<core::ResultLine> done_lines;     // leaves finished in this run (a feature over blocks)
+  std::vector<std::string> done_blocks;
+  std::set<std::string> inv_tested;             // leaves whose new invariants went to the tester in this run
+  std::map<std::string, std::string> retask;    // leaf → what its next worker run must do first
+  // The plan of a feature (ADR 0026): the blocks the orchestrator listed in `next`, sent one after
+  // another without asking it again; it hears of the ticket only when a block does not end done.
+  struct PlanStep {
+    std::string block, difficulty, why;
+  };
+  std::deque<PlanStep> plan;
+  bool planned = false;
+  int plan_no = 0;
+  int plan_total = 0;
+  bool reviewed = false;     // one review of the orchestrator's change by its leaves per run
+  std::string review_gaps;   // what the leaves found, for the orchestrator's next decision
+  int root_visits = 0;
+  constexpr int kMaxRootVisits = 8;  // orchestrator decisions in one run (leaves of a feature + bounces)
+  constexpr int kMaxLeavesDone = 10;  // leaves of one feature in one run (a plan has up to 9)
   metrics::Tokens total;
   double cost = 0;
   auto finish = [&](core::TicketStatus st, std::vector<core::ResultLine> lines) -> std::string {
-    lines.push_back({"cost", fmt::format("in={} out={} cache_read={} usd={:.4f}", total.input, total.output, total.cache_read, cost), {}, 0});
+    // The status line stays first: it starts a result block (the path view finds the latest).
+    if (!done_lines.empty()) lines.insert(lines.begin() + (lines.empty() ? 0 : 1), done_lines.begin(), done_lines.end());
+    lines.push_back({"state", m.state_hash(), {}, 0});
+    lines.push_back({"cost", fmt::format("in={} out={} cache_read={} usd={:.4f}{}", total.input, total.output, total.cache_read, cost,
+                                         cfg_.mcp() ? " (MCP: an estimate of the client's tokens from the turns)" : ""), {}, 0});
     (void)m.tickets.add_result(id, lines);
     m.set_status(id, st);
     m.reindex();
@@ -1006,11 +1499,174 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id) {
   // `karkas ticket run` continues it; no escalation.
   auto stopped = [&](const std::string& role, const std::string& at) -> kk::Result<std::string> {
     m.note(id, fmt::format("stopped by the user at {}{}", at, role.empty() ? "" : " (" + role + ")"));
+    // Blocks finished before the stop keep their result lines (what changed, which files).
+    if (!done_lines.empty()) {
+      std::vector<core::ResultLine> lines = {{"status", "stopped", {}, 0}};
+      lines.insert(lines.end(), done_lines.begin(), done_lines.end());
+      // The fingerprint like any result: the next run tells "the project changed since" from
+      // "nothing changed" (without it, the orchestrator was told "an older run").
+      lines.push_back({"state", m.state_hash(), {}, 0});
+      lines.push_back({"cost", fmt::format("in={} out={} cache_read={} usd={:.4f}{}", total.input, total.output, total.cache_read, cost,
+                                         cfg_.mcp() ? " (MCP: an estimate of the client's tokens from the turns)" : ""), {}, 0});
+      (void)m.tickets.add_result(id, lines);
+    }
     m.set_status(id, core::TicketStatus::Open);
     m.reindex();
     m.say(id + " stopped by the user");
     return kk::fail("cancelled", fmt::format("{} stopped by the user at {}; continue with: karkas ticket run {}", id, at, id));
   };
+  // What a leaf answered goes on the trail as a fact right after its outcome: the agents
+  // above see it in their path view (earlier descents), not only the human in the result.
+  auto answer_fact = [&](const std::string& block, const std::string& status, const std::string& text) {
+    if (text.empty()) return;
+    core::TrailEntry f;
+    f.type = core::TrailEntry::Type::Fact;
+    f.text = shorten(block + " " + status + ": " + text, 240);
+    m.trail(id, f);
+  };
+  // "Auto" ([agents] auto_approve): a proposed change is approved at once and the descent goes
+  // back to the orchestrator, which now finds the unfrozen api/ in its scope. At most 3 per run.
+  int auto_approved = 0;
+  auto auto_approve = [&](const std::string& change) -> bool {
+    if (!cfg_.auto_approve || auto_approved >= 3) return false;
+    auto a = approve(change);
+    if (!a) {
+      m.note(id, fmt::format("auto-approval of {} failed: {}", change, shorten(a.error().message, 200)));
+      return false;
+    }
+    ++auto_approved;
+    m.note(id, change + " approved automatically (auto_approve)");
+    m.say(fmt::format("{}: {} approved automatically", id, change));
+    current = "root";
+    return true;
+  };
+  // Auto approves a worker's card diff in its own run, which goes on with the new card (ADR 0026).
+  auto approve_now = [&](const std::string& block) -> LeafToolHost::ApproveNow {
+    if (!cfg_.auto_approve) return {};
+    return [&, block](const std::string& reason, const std::string& diff) -> kk::Result<std::string> {
+      if (auto_approved >= 3) return kk::fail("auto", "three changes were approved automatically in this run already");
+      auto c = propose_change(root_, "worker " + id, shorten(reason.empty() ? "contract change requested by the worker" : reason, 200), diff);
+      if (!c) return std::unexpected(c.error());
+      auto a = approve(c->id);
+      if (!a) {
+        m.note(id, fmt::format("auto-approval of {} failed: {}", c->id, shorten(a.error().message, 200)));
+        return std::unexpected(a.error());
+      }
+      ++auto_approved;
+      m.note(id, fmt::format("{} approved automatically (auto_approve); the worker of {} goes on in the same run", c->id, block));
+      m.say(fmt::format("{}: {} approved automatically", id, c->id));
+      m.reindex();
+      std::string card;
+      {
+        std::lock_guard lk(m.mu);
+        auto v = m.idx->view(block, 2);
+        card = v ? *v : "";
+      }
+      std::string written;
+      for (const auto& line : core::split(*a, '\n')) {
+        if (core::contains(line, "written to api/") || core::contains(line, ": declared `")) written += line + "\n";
+      }
+      return fmt::format("{} approved automatically (Auto). The card of {} now reads:\n{}\n{}api/ is unfrozen for this change: "
+                         "bring it in line with the card, then the impl, and report done with api=changed when the tests "
+                         "pass. Other blocks of the change are sent after yours.",
+                         c->id, block, card, written.empty() ? "" : "Written by the program:\n" + written);
+    };
+  };
+  auto read_plan = [](const json& in) {
+    std::deque<PlanStep> out;
+    if (in.contains("next") && in["next"].is_array()) {
+      for (const auto& st : in["next"]) {
+        if (st.is_object()) out.push_back({sget(st, "block"), sget(st, "difficulty"), sget(st, "why")});
+      }
+    }
+    return out;
+  };
+  auto plan_text = [](const std::deque<PlanStep>& steps) {
+    std::vector<std::string> parts;
+    for (const auto& st : steps) parts.push_back(st.block + " (" + st.difficulty + ")");
+    return core::join(parts, ", ");
+  };
+  // Sends the next block of the plan, as if the orchestrator dispatched it.
+  auto start_step = [&]() {
+    auto st = plan.front();
+    plan.pop_front();
+    ++plan_no;
+    m.trail(id, level_entry(0, "orchestrator",
+                            {{"at", "root"}, {"pick", st.block}, {"difficulty", st.difficulty}, {"why", shorten(st.why, 160)},
+                             {"plan", fmt::format("{}/{}", plan_no, plan_total)}}));
+    m.say(fmt::format("plan {}/{}: {}", plan_no, plan_total, st.block));
+    difficulty = st.difficulty;
+    current = st.block;
+  };
+  // Blocks the approved changes of this ticket change in their cards that no run of the ticket
+  // finished: a plan that skipped one goes back to the orchestrator instead of closing.
+  auto scope_not_done = [&]() {
+    std::set<std::string> done(done_blocks.begin(), done_blocks.end());
+    if (auto t = m.tickets.load(id)) {
+      for (const auto& r : t->result) {
+        if (r.key != "fix" && r.key != "files") continue;
+        auto colon = r.text.find(':');
+        if (colon != std::string::npos) done.insert(r.text.substr(0, colon));
+      }
+    }
+    std::vector<std::string> out;
+    if (auto cs = m.changes.list()) {
+      for (const auto& c : *cs) {
+        if (c.status.value != "approved") continue;
+        auto from = core::split_ws(c.from.value);
+        if (std::find(from.begin(), from.end(), id) == from.end()) continue;
+        std::string at;
+        for (const auto& d : c.diff) {
+          if (d.text.starts_with("@block ")) {
+            at = std::string(core::trim(std::string_view(d.text).substr(7)));
+            continue;
+          }
+          if (at.empty() || is_const_line(d.text) || done.contains(at)) continue;
+          if (std::find(out.begin(), out.end(), at) == out.end()) out.push_back(at);
+        }
+      }
+    }
+    return out;
+  };
+  // After a finished leaf of a feature: the next block of the plan, the end of the plan, or the
+  // orchestrator. Returns the finished ticket when the plan closes it.
+  auto after_done = [&]() -> std::optional<std::string> {
+    if (!planned) {
+      current = "root";
+      return std::nullopt;
+    }
+    if (!plan.empty()) {
+      start_step();
+      return std::nullopt;
+    }
+    planned = false;
+    if (auto missing = scope_not_done(); !missing.empty()) {
+      m.note(id, "the plan is done, but the approved changes of this ticket also change " + core::join(missing, ", ") +
+                     ": back to the orchestrator");
+      current = "root";
+      return std::nullopt;
+    }
+    m.trail(id, level_entry(0, "orchestrator", {{"at", "root"}, {"outcome", "closed"}, {"why", "the planned blocks are done"}}));
+    return finish(core::TicketStatus::Closed,
+                  {{"status", "done", {}, 0}, {"note", "the planned blocks are done: " + core::join(done_blocks, ", "), {}, 0}});
+  };
+  // A plan that waited for a human's approval goes on after it (the orchestrator is not asked again).
+  auto plan_file = m.root / ".karkas" / "tickets" / (id + ".plan.json");
+  if (std::error_code ec; fs::exists(plan_file, ec)) {
+    auto j = json::parse(core::read_file(plan_file).value_or("{}"), nullptr, false);
+    auto change = j.is_object() ? sget(j, "change") : std::string();
+    auto c = change.empty() ? kk::Result<core::Change>(kk::fail("plan", "none")) : m.changes.load(change);
+    if (c && c->status.value == "approved" && !bug) {
+      plan = read_plan(j);
+      planned = !plan.empty();
+      plan_total = static_cast<int>(plan.size());
+      if (planned) {
+        m.note(id, change + " approved: the plan goes on with " + plan_text(plan));
+        start_step();
+      }
+    }
+    if (!c || c->status.value != "pending") fs::remove(plan_file, ec);
+  }
   for (int guard = 0; guard < 30; ++guard) {
     if (core::cancel_requested()) return stopped("", current);
     auto s = m.schema();
@@ -1022,6 +1678,12 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id) {
 
     if (current == "root" || b->kind == core::BlockKind::Group) {
       bool orch = current == "root";
+      if (orch && ++root_visits > kMaxRootVisits) {
+        m.note(id, fmt::format("the orchestrator decided {} times in one run without an end", kMaxRootVisits));
+        return finish(core::TicketStatus::Escalated,
+                      {{"status", "escalated", {}, 0},
+                       {"note", "the descent did not converge in one run; the earlier descents are in the path view (karkas ticket show " + id + " --path --at root)", {}, 0}});
+      }
       std::string role = orch ? "orchestrator" : "navigator";
       std::string tier = orch ? m.tier_for("orchestrator", "strong", "")
                               : (m.navigator_tier.contains(current) ? m.navigator_tier[current]
@@ -1034,11 +1696,78 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id) {
       spec.tier = tier;
       spec.system_text = m.prompt(role, {{"block", current}});
       spec.context_text = m.context_for(spec.role, current);
-      spec.task_text = core::path_view(*ticket, current) + (orch ? "\nDecide: dispatch, propose_change or close." : "\nDecide: dispatch to a child or report not_here.");
+      std::string decide;
+      if (!orch) {
+        decide = "\nDecide: dispatch to a child or report not_here.";
+      } else if (!done_blocks.empty()) {
+        decide = fmt::format("\nFinished in this run: {}. Decide: dispatch the next block that still has to change for "
+                             "this ticket, or close with verdict done when the whole request is in place (escalate if "
+                             "only a human can go on).",
+                             core::join(done_blocks, ", "));
+      } else {
+        decide = "\nDecide: dispatch, propose_change, escalate or close.";
+      }
+      // Is the last result still about the project as it is? Its advice ("a human adds X")
+      // may be done already: the state fingerprint tells.
+      if (orch && root_visits == 1 && !ticket->result.empty()) {
+        std::string last_state;
+        for (const auto& r : ticket->result) {
+          if (r.key == "status") last_state.clear();
+          if (r.key == "state") last_state = r.text;
+        }
+        if (last_state.empty()) {
+          decide += "\nThe last result comes from an older run without a state fingerprint: check the current status of "
+                    "the blocks it names before you act on its advice.";
+        } else if (last_state != m.state_hash()) {
+          decide += "\nThe cards or api/ changed since the last result: its advice may be done or outdated; check the "
+                    "current status of the blocks it names before you act on it.";
+        } else {
+          decide += "\nNothing changed in the cards or api/ since the last result.";
+        }
+        if (force) {
+          decide += "\nThe human ran this ticket again on purpose (--force): the last result's conclusion did not convince "
+                    "them. Check the current status yourself before you repeat it.";
+        }
+      }
+      // The agreed scope of a feature: the approved changes of this ticket, their reasons and
+      // blocks. A worker's "other blocks need X" is checked against it, not taken as an order.
+      if (orch) {
+        if (auto cs = m.changes.list()) {
+          std::string scope;
+          for (const auto& c : *cs) {
+            if (c.status.value != "approved") continue;
+            auto from = core::split_ws(c.from.value);
+            if (std::find(from.begin(), from.end(), id) == from.end()) continue;
+            std::vector<std::string> blocks;
+            for (const auto& d : c.diff) {
+              if (d.text.starts_with("@block ")) blocks.push_back(std::string(core::trim(std::string_view(d.text).substr(7))));
+            }
+            scope += fmt::format("\n- {} ({}): {}", c.id, core::join(blocks, ", "), shorten(c.reason.value, 200));
+          }
+          if (!scope.empty()) {
+            decide += "\nApproved changes of this ticket (the agreed scope; a block outside it needs a reason in the ticket, "
+                      "not only a worker's guess):" + scope;
+          }
+        }
+      }
+      if (orch && !plan.empty()) {
+        decide += "\nPlanned and not sent yet: " + plan_text(plan) + " (a new dispatch replaces the plan; list them in next to keep them).";
+      }
+      if (orch && !review_gaps.empty()) {
+        decide += "\nThe blocks of your change found gaps; it was set aside. Propose it again with them closed:\n- " + review_gaps;
+        review_gaps.clear();
+      }
+      if (!answered.empty()) {
+        decide += "\nAlready answered in this run (do not send them the ticket again):";
+        for (const auto& [blk, why] : answered) decide += "\n- " + blk + ": " + why;
+      }
+      spec.task_text = core::path_view(*ticket, current) + decide;
       spec.max_steps = orch ? cfg_.max_steps_orchestrator : cfg_.max_steps_navigator;
       spec.max_tokens = cfg_.max_tokens_per_run;
       spec.timeout = std::chrono::seconds(cfg_.run_timeout_s);
-      SchemaToolHost host(*m.idx, spec.role, current, m.callbacks(id));
+      auto cbs = m.callbacks(id, &answered);
+      cbs.plans = orch && !bug;
+      SchemaToolHost host(*m.idx, spec.role, current, std::move(cbs));
       auto res = m.runner().run(spec, host);
       total += res.tokens;
       cost += res.cost;
@@ -1047,26 +1776,91 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id) {
       int level = core::trail_level(current);
       if (res.terminal_tool == "dispatch") {
         std::string pick = sget(in, "block");
-        m.trail(id,
-                level_entry(level, role,
-                            {{"at", current},
-                             {"suspect", core::join(sarr(in, "suspect"), ",")},
-                             {"ruled_out", core::join(sarr(in, "ruled_out"), ",")},
-                             {"pick", pick},
-                             {"difficulty", sget(in, "difficulty")},
-                             {"why", shorten(sget(in, "why"), 160)}}),
-                sarr(in, "new_facts"));
+        std::vector<core::Attr> attrs = {{"at", current},
+                                         {"suspect", core::join(sarr(in, "suspect"), ",")},
+                                         {"ruled_out", core::join(sarr(in, "ruled_out"), ",")},
+                                         {"pick", pick},
+                                         {"difficulty", sget(in, "difficulty")},
+                                         {"why", shorten(sget(in, "why"), 160)}};
+        if (orch) {
+          // A new decision of the orchestrator replaces any plan; `next` makes the new one.
+          plan = bug ? std::deque<PlanStep>{} : read_plan(in);
+          planned = !plan.empty();
+          plan_no = 1;
+          plan_total = 1 + static_cast<int>(plan.size());
+          if (planned) {
+            attrs.push_back({"plan", fmt::format("1/{}", plan_total)});
+            attrs.push_back({"then", core::join([&] {
+                               std::vector<std::string> b;
+                               for (const auto& st : plan) b.push_back(st.block);
+                               return b;
+                             }(), ",")});
+          }
+        }
+        m.trail(id, level_entry(level, role, attrs), sarr(in, "new_facts"));
         m.say(fmt::format("{} {} -> {}", role, current, pick));
         difficulty = sget(in, "difficulty");
         current = pick;
         continue;
       }
       if (orch && res.terminal_tool == "propose_change") {
-        auto d = parse_diff(sget(in, "diff"));
-        if (!d) return std::unexpected(d.error());
-        auto c = m.changes.create("orchestrator " + id, sget(in, "reason"), *d);
-        if (!c) return std::unexpected(c.error());
+        // The same checks as a worker's proposal (the tool already refused a bad diff).
+        auto c = propose_change(root_, "orchestrator " + id, shorten(sget(in, "reason"), 200), sget(in, "diff"));
+        if (!c) {
+          m.note(id, "orchestrator proposal refused: " + c.error().message);
+          return finish(core::TicketStatus::Escalated,
+                        {{"status", "escalated", {}, 0}, {"note", "the orchestrator's change is not applicable: " + c.error().message, {}, 0}});
+        }
         m.trail(id, level_entry(0, role, {{"at", "root"}, {"outcome", "change"}, {"why", shorten("proposed " + c->id, 160)}}));
+        // review_changes: the leaves the change touches say whether their card is enough, before
+        // anyone approves it — cheaper than a second change after a worker finds the gap.
+        if (cfg_.review_changes && !reviewed) {
+          reviewed = true;
+          std::map<std::string, std::vector<std::string>> lines_of;
+          std::string at;
+          for (const auto& d : c->diff) {
+            if (d.text.starts_with("@block ")) {
+              at = d.op == '~' ? std::string(core::trim(std::string_view(d.text).substr(7))) : std::string();
+              continue;
+            }
+            if (!at.empty()) lines_of[at].push_back(std::string(1, d.op) + " " + d.text);
+          }
+          std::vector<std::string> gaps;
+          for (const auto& [blk, lines] : lines_of) {
+            const auto* lb = s->find(blk);
+            if (lb == nullptr || lb->kind != core::BlockKind::Leaf || lb->external()) continue;
+            auto q = fmt::format("The ticket: {}\nThe change of your card:\n{}\nIs this card enough for your block's part of the "
+                                 "ticket (the declarations your code and tests will need)? Answer \"yes\", or name the card line "
+                                 "that is missing.",
+                                 shorten(ticket->task.set ? ticket->task.value : ticket->symptom.value, 400), core::join(lines, "\n"));
+            auto a = m.ask(blk, q, id);
+            if (!core::to_lower(std::string(core::trim(a))).starts_with("yes")) gaps.push_back(blk + ": " + shorten(a, 300));
+          }
+          if (!gaps.empty()) {
+            (void)m.changes.set_status(c->id, "rejected");
+            m.note(id, c->id + " set aside after its blocks reviewed it: " + shorten(core::join(gaps, "; "), 400));
+            review_gaps = core::join(gaps, "\n- ");
+            continue;  // back to the orchestrator, which amends the change
+          }
+        }
+        auto steps = bug ? std::deque<PlanStep>{} : read_plan(in);
+        if (auto_approve(c->id)) {
+          if (!steps.empty()) {
+            plan = std::move(steps);
+            planned = true;
+            plan_no = 0;
+            plan_total = static_cast<int>(plan.size());
+            start_step();
+          }
+          continue;
+        }
+        if (!steps.empty()) {
+          // Kept for the run after the approval, which goes on with it.
+          json pj = {{"change", c->id}, {"next", json::array()}};
+          for (const auto& st : steps) pj["next"].push_back({{"block", st.block}, {"difficulty", st.difficulty}, {"why", st.why}});
+          (void)core::write_file(plan_file, pj.dump(2) + "\n");
+          m.note(id, "planned after the approval of " + c->id + ": " + plan_text(steps));
+        }
         return finish(core::TicketStatus::Escalated,
                       {{"status", "waiting", {}, 0}, {"note", c->id + " needs human approval (karkas approve " + c->id + ")", {}, 0}});
       }
@@ -1075,12 +1869,18 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id) {
         return finish(core::TicketStatus::Closed,
                       {{"status", sget(in, "verdict"), {}, 0}, {"note", sget(in, "note").empty() ? "closed by the orchestrator" : sget(in, "note"), {}, 0}});
       }
+      if (orch && res.terminal_tool == "escalate") {
+        auto note = sget(in, "note");
+        m.trail(id, level_entry(0, role, {{"at", "root"}, {"outcome", "escalated"}, {"why", shorten(note, 160)}}));
+        return finish(core::TicketStatus::Escalated, {{"status", "escalated", {}, 0}, {"note", note, {}, 0}});
+      }
       if (!orch && res.terminal_tool == "report") {
         m.trail(id, level_entry(level, role, {{"at", current}, {"outcome", "not_here"}, {"why", shorten(sget(in, "cause"), 160)}}));
+        answered[current] = "not_here: " + shorten(sget(in, "cause"), 160);
         std::string up = b->parent.empty() ? "root" : b->parent;
         if (++not_here[up] >= 2) {
           // Twice not_here on one level: go one more level up with a stronger navigator (11.3).
-          auto nt = next_tier(m.navigator_tier.contains(up) ? m.navigator_tier[up] : m.tier_for("navigator", "medium", up));
+          auto nt = next_tier(cfg_, m.navigator_tier.contains(up) ? m.navigator_tier[up] : m.tier_for("navigator", "medium", up));
           if (!nt.empty()) m.navigator_tier[up] = nt;
           not_here[up] = 0;
           up = up == "root" ? "root" : (s->find(up) != nullptr && !s->find(up)->parent.empty() ? s->find(up)->parent : "root");
@@ -1090,7 +1890,7 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id) {
       }
       // No decision: stronger model for this level, then the human (11.3).
       if (!orch) {
-        auto nt = next_tier(tier);
+        auto nt = next_tier(cfg_, tier);
         if (!nt.empty() && cfg_.tier(nt) != nullptr) {
           m.navigator_tier[current] = nt;
           continue;
@@ -1103,53 +1903,207 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id) {
     // Leaf: worker with routing and escalation.
     m.set_status(id, core::TicketStatus::Fixing);
     std::string task = bug ? "Find and fix the cause of the bug in the ticket. Add a unit test that reproduces it first."
-                           : "Implement the change requested in the ticket inside this block.";
-    auto lo = m.run_worker(current, id, task, difficulty);
+                           : "Implement the part of the ticket's change that belongs to this block. If other blocks must "
+                             "change too, do not wait for them: finish this block and name them in fix.";
+    if (auto rt = retask.find(current); rt != retask.end()) {
+      task = rt->second + "\n" + task;
+      retask.erase(rt);
+    }
+    auto lo = m.run_worker(current, id, task, difficulty, "worker", "", approve_now(current));
     total += lo.tokens;
     cost += lo.cost;
     if (lo.status == "cancelled") return stopped("worker", current);
     if (lo.status == "fixed" || lo.status == "done") {
       m.set_status(id, core::TicketStatus::Verifying);
-      auto plan = regression_plan(*s, m.idx->dependent_blocks(current), current, false);
+      // An edited api/ (constant values or the card's declarations) is re-tested with every
+      // dependent (12.4): a tuned number is checked where it is used.
+      auto plan = regression_plan(*s, m.idx->dependent_blocks(current), current, !lo.api_note.empty());
       auto tr = m.tests->build_and_test(plan.labels);
       std::string verify = tr ? shorten(tr->text, 300) : tr.error().message;
       bool green = tr && tr->ok;
-      // History of the leaf, written by the program (3.10).
-      if (auto blk = core::load_block_file(s->block_dir(current) / "block.ksl", current)) {
-        blk->add_hist(id, shorten(lo.cause.empty() ? lo.fix : lo.cause + " -> " + lo.fix, 120));
-        (void)core::write_file(s->block_dir(current) / "block.ksl", core::write_block(*blk));
+      // History of the leaf, written by the program (3.10); only kinds whose card takes hist
+      // lines (leaf, entry): a hist line in a shared card is a schema error (E08) that stops
+      // every agent afterwards.
+      if (b->kind == core::BlockKind::Leaf || b->kind == core::BlockKind::Entry) {
+        if (auto blk = core::load_block_file(s->block_dir(current) / "block.ksl", current)) {
+          blk->add_hist(id, shorten(lo.cause.empty() ? lo.fix : lo.cause + " -> " + lo.fix, 120));
+          (void)core::write_file(s->block_dir(current) / "block.ksl", core::write_block(*blk));
+        }
+      }
+      // New invariants of this leaf, agreed in this ticket: the worker writes no contract tests
+      // (12.1), so the tester adds theirs now — or the new promises stay unchecked (flappy
+      // T-0013: rules.columns gained four inv lines, its contract tests stayed 12/12).
+      std::string inv_line;
+      if (!bug && green && b->kind == core::BlockKind::Leaf && !inv_tested.contains(current)) {
+        auto invs = ticket_invariants(m.changes, id, current);
+        if (!invs.empty()) {
+          inv_tested.insert(current);
+          std::string tt = "The card of this leaf gained these invariants in this ticket (approved changes):\n- " +
+                           core::join(invs, "\n- ") +
+                           "\nThe worker has implemented them. Add a contract TEST_CASE for each one to tests/contract/, "
+                           "through the api/ only; keep the existing tests (change one only when a changed or removed inv "
+                           "of the card makes it wrong). Run test() and report done when the tests of the block pass; if "
+                           "a new test fails because the code breaks the invariant, report done with that in cause.";
+          auto tf = m.run_tester(current, id, false, tt);
+          total += tf.tokens;
+          cost += tf.cost;
+          if (tf.status == "cancelled") return stopped("tester", current);
+          m.trail(id, level_entry(core::trail_level(current), "tester",
+                                  {{"at", current}, {"model", tf.tier}, {"attempt", "1"}, {"outcome", tf.status}}));
+          auto tr2 = m.tests->build_and_test(plan.labels);
+          verify = tr2 ? shorten(tr2->text, 300) : tr2.error().message;
+          green = tr2 && tr2->ok;
+          if (green) {
+            inv_line = tf.status == "done"
+                           ? fmt::format("{}: contract tests for {} new invariant(s) by the tester", current, invs.size())
+                           : fmt::format("{}: no contract tests for its {} new invariant(s) yet (tester {}: {})", current,
+                                         invs.size(), tf.status, shorten(tf.cause, 160));
+          } else if (tf.status == "done") {
+            // The new tests fail against the code: once more to the worker, with the failures.
+            answer_fact(current, "tester", "contract tests for the new invariants added; they fail: " + verify);
+            retask[current] = "The tester added contract tests for the new invariants of this block and they fail:\n" + verify +
+                              "\nMake them pass without touching tests/contract; if a test checks what the card does not "
+                              "say, report needs_tester with the flaw.";
+            continue;
+          }
+        }
+      }
+      if (!bug && green) {
+        // A feature often spans blocks: the orchestrator sees what is done and sends the
+        // next block, or closes the ticket (11.3 for features; ADR 0020).
+        std::string what = lo.fix.empty() ? lo.cause : lo.fix;
+        done_lines.push_back({"fix", current + ": " + what, {}, 0});
+        if (!lo.files.empty()) done_lines.push_back({"files", current + ": " + lo.files, {}, 0});
+        if (!lo.api_note.empty()) done_lines.push_back({"api", current + ": " + lo.api_note, {}, 0});
+        if (!inv_line.empty()) done_lines.push_back({"tests", inv_line, {}, 0});
+        done_lines.push_back({"verify", current + ": " + verify, {}, 0});
+        done_blocks.push_back(current);
+        answered[current] = "done: " + shorten(what, 160);
+        answer_fact(current, lo.status, what);
+        if (static_cast<int>(done_blocks.size()) >= kMaxLeavesDone) {
+          return finish(core::TicketStatus::Closed,
+                        {{"status", "done", {}, 0},
+                         {"note", fmt::format("{} blocks done in one run; run the ticket again if more must change", kMaxLeavesDone), {}, 0}});
+        }
+        if (auto fin = after_done()) return *fin;
+        continue;
       }
       std::vector<core::ResultLine> lines = {{"status", lo.status, {}, 0}};
       if (!lo.cause.empty()) lines.push_back({"cause", lo.cause, {}, 0});
       if (!lo.fix.empty()) lines.push_back({"fix", lo.fix, {}, 0});
       if (!lo.files.empty()) lines.push_back({"files", lo.files, {}, 0});
-      lines.push_back({"api", "unchanged", {}, 0});
+      lines.push_back({"api", lo.api_note.empty() ? "unchanged" : lo.api_note, {}, 0});
       lines.push_back({"verify", (green ? "" : "REGRESSION ") + verify, {}, 0});
       return finish(green ? core::TicketStatus::Closed : core::TicketStatus::Escalated, lines);
     }
-    if (lo.status == "not_here" || lo.status == "needs_info") {
-      if (!lo.cause.empty()) {
-        core::TrailEntry f;
-        f.type = core::TrailEntry::Type::Fact;
-        f.text = shorten(current + " " + lo.status + ": " + lo.cause, 200);
-        m.trail(id, f);
+    if (lo.status == "needs_tester") {
+      // The cause is in a contract test of this block: the tester owns tests/contract and
+      // fixes it without reading impl/ (12.1); the worker's finding is its task.
+      answer_fact(current, lo.status, lo.cause);
+      std::string fix_task = "The worker of this block found the cause of the ticket in a contract test (tests/contract): " +
+                             lo.cause + (lo.fix.empty() ? "" : "\nSuggested fix: " + lo.fix) +
+                             "\nCorrect the contract test so that it checks its invariant without this flaw. Never weaken or "
+                             "drop an invariant. Run test() and report done when the tests of the block pass, failed otherwise.";
+      // New invariants of the leaf in this feature go to the same tester run, not to a second one.
+      std::vector<std::string> invs;
+      if (!bug && b->kind == core::BlockKind::Leaf && !inv_tested.contains(current)) {
+        invs = ticket_invariants(m.changes, id, current);
+        if (!invs.empty()) {
+          inv_tested.insert(current);
+          fix_task += "\nThe card of this leaf also gained these invariants in this ticket: add a contract TEST_CASE for each one, "
+                      "through the api/ only:\n- " +
+                      core::join(invs, "\n- ");
+        }
       }
+      auto tf = m.run_tester(current, id, false, fix_task);
+      total += tf.tokens;
+      cost += tf.cost;
+      if (tf.status == "cancelled") return stopped("tester", current);
+      m.trail(id, level_entry(core::trail_level(current), "tester",
+                              {{"at", current}, {"model", tf.tier}, {"attempt", "1"}, {"outcome", tf.status}}));
+      auto plan = regression_plan(*s, m.idx->dependent_blocks(current), current, false);
+      auto tr = m.tests->build_and_test(plan.labels);
+      std::string verify = tr ? shorten(tr->text, 300) : tr.error().message;
+      bool green = tf.status == "done" && tr && tr->ok;
+      // What both changed: the worker's files and api/ (it may have done its part before it found
+      // the flawed test), then the tester's.
+      std::string files = lo.files;
+      std::string tester_files = tf.files.empty() ? "tests/contract (tester)" : tf.files;
+      files += (files.empty() ? "" : ", ") + tester_files;
+      if (!bug && green) {
+        // A feature goes on (flappy T-0014 closed here with its HUD part undone): this leaf is done,
+        // the orchestrator sends the next block or closes.
+        std::string what = shorten(tf.fix.empty() ? lo.fix : tf.fix, 300);
+        done_lines.push_back({"fix", current + ": " + what, {}, 0});
+        done_lines.push_back({"files", current + ": " + files, {}, 0});
+        if (!lo.api_note.empty()) done_lines.push_back({"api", current + ": " + lo.api_note, {}, 0});
+        if (!invs.empty()) {
+          done_lines.push_back({"tests", fmt::format("{}: contract tests for {} new invariant(s) by the tester", current, invs.size()), {}, 0});
+        }
+        done_lines.push_back({"verify", current + ": " + verify, {}, 0});
+        done_blocks.push_back(current);
+        answered[current] = "done (after the tester fixed a contract test): " + shorten(what, 140);
+        answer_fact(current, "done", what);
+        if (static_cast<int>(done_blocks.size()) >= kMaxLeavesDone) {
+          return finish(core::TicketStatus::Closed,
+                        {{"status", "done", {}, 0},
+                         {"note", fmt::format("{} blocks done in one run; run the ticket again if more must change", kMaxLeavesDone), {}, 0}});
+        }
+        if (auto fin = after_done()) return *fin;
+        continue;
+      }
+      std::vector<core::ResultLine> lines = {{"status", green ? "fixed" : "escalated", {}, 0}, {"cause", lo.cause, {}, 0}};
+      if (!tf.fix.empty() || !lo.fix.empty()) lines.push_back({"fix", tf.fix.empty() ? lo.fix : tf.fix, {}, 0});
+      lines.push_back({"files", files, {}, 0});
+      lines.push_back({"api", lo.api_note.empty() ? "unchanged" : lo.api_note, {}, 0});
+      lines.push_back({"verify", (green ? "" : "REGRESSION ") + verify, {}, 0});
+      if (!green) lines.push_back({"note", "the tester could not make the contract tests pass; a human checks the test", {}, 0});
+      return finish(green ? core::TicketStatus::Closed : core::TicketStatus::Escalated, lines);
+    }
+    if (lo.status == "not_here" || lo.status == "needs_info") {
+      answer_fact(current, lo.status, lo.cause);
+      answered[current] = lo.status + ": " + shorten(lo.cause, 160);
       std::string up = b->parent.empty() ? "root" : b->parent;
       ++not_here[up];
       current = up;
       continue;
     }
     if (lo.status == "needs_contract_change") {
-      std::vector<core::DiffLine> diff;
-      if (auto d = parse_diff(core::join(lo.proposal, "\n"))) diff = *d;
-      auto c = m.changes.create("worker " + id, lo.cause.empty() ? "contract change requested by the worker" : lo.cause, diff);
-      std::string cid = c ? c->id : "?";
-      return finish(core::TicketStatus::Escalated,
-                    {{"status", "needs_contract_change", {}, 0}, {"cause", lo.cause, {}, 0},
-                     {"note", cid + " needs human approval", {}, 0}});
+      // Only a KSL card diff that passes the same checks as propose_change becomes a @change.
+      std::string rejected = lo.proposal_error;
+      if (!lo.proposal.empty()) {
+        auto reason = shorten(lo.cause.empty() ? "contract change requested by the worker" : lo.cause, 200);
+        auto c = propose_change(root_, "worker " + id, reason, core::join(lo.proposal, "\n"));
+        if (c && auto_approve(c->id)) {
+          answer_fact(current, lo.status, lo.cause);
+          continue;
+        }
+        if (c) {
+          return finish(core::TicketStatus::Escalated,
+                        {{"status", "needs_contract_change", {}, 0}, {"cause", lo.cause, {}, 0},
+                         {"note", c->id + " needs human approval (karkas approve " + c->id + ")", {}, 0}});
+        }
+        rejected = c.error().message;
+      }
+      // No applicable card diff: up to the orchestrator (11.3), which sees the worker's cause
+      // and proposes the change itself, sends another block or gives the ticket to the human.
+      // The block is not sent the same ticket again in this run.
+      std::string cause = lo.cause;
+      auto add = [&cause](const std::string& part) {
+        if (part.empty()) return;
+        if (!cause.empty()) cause += "; ";
+        cause += part;
+      };
+      add(lo.fix);
+      if (!rejected.empty()) add("proposal rejected: " + rejected);
+      answer_fact(current, lo.status, cause);
+      answered[current] = "needs_contract_change: " + shorten(cause, 200);
+      current = "root";
+      continue;
     }
     return finish(core::TicketStatus::Escalated,
-                  {{"status", "escalated", {}, 0}, {"cause", lo.cause, {}, 0},
+                  {{"status", "escalated", {}, 0},
+                   {"cause", lo.cause, {}, 0},
                    {"note", "the strongest tier failed; a human gets the ticket with its full history", {}, 0}});
   }
   return finish(core::TicketStatus::Escalated, {{"status", "escalated", {}, 0}, {"note", "descent did not converge", {}, 0}});

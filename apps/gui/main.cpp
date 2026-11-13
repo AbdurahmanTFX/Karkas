@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "cursors.hpp"
 #include "kk/core/config.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
@@ -137,8 +138,11 @@ int main(int argc, char** argv) {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
-  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
-  io.IniFilename = nullptr;  // the panel layout is rebuilt each start (window ids are language independent)
+  // Panels lie on the edges over the schema (ui_shell.cpp, ADR 0021): no docking.
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigWindowsResizeFromEdges = true;  // panels are resized at their inner border
+  io.ConfigWindowsMoveFromTitleBarOnly = true;  // a drag inside a window selects text or pans, never moves it
+  io.IniFilename = nullptr;  // positions come from gui.json
   float xs = 1.0f;
   float ys = 1.0f;
   glfwGetWindowContentScale(window, &xs, &ys);
@@ -156,6 +160,52 @@ int main(int argc, char** argv) {
   io.FontGlobalScale = settings.ui_scale;
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init("#version 330");
+  // Mouse cursors of the desktop's theme (cursors.hpp): the GLFW ones are the old X11 set when
+  // the cursor library cannot resolve the theme (its hand points to the upper right).
+  struct ThemeCursors {
+    GLFWcursor* c[ImGuiMouseCursor_COUNT] = {};
+    ImGuiMouseCursor last = -2;
+    bool any = false;
+  } cursors;
+  {
+    int size = 24;
+    if (const char* s = std::getenv("XCURSOR_SIZE"); s != nullptr && std::atoi(s) > 0) size = std::clamp(std::atoi(s), 8, 256);
+    auto make = [&](ImGuiMouseCursor i, std::vector<std::string> names, int standard) {
+      if (auto img = kk::gui::load_theme_cursor(names, size)) {
+        GLFWimage gi{img->width, img->height, img->rgba.data()};
+        cursors.c[i] = glfwCreateCursor(&gi, img->xhot, img->yhot);
+        cursors.any = cursors.any || cursors.c[i] != nullptr;
+      }
+      if (cursors.c[i] == nullptr && standard != 0) cursors.c[i] = glfwCreateStandardCursor(standard);
+    };
+    make(ImGuiMouseCursor_Arrow, {"default", "left_ptr", "arrow"}, GLFW_ARROW_CURSOR);
+    make(ImGuiMouseCursor_TextInput, {"text", "xterm", "ibeam"}, GLFW_IBEAM_CURSOR);
+    make(ImGuiMouseCursor_ResizeAll, {"all-scroll", "move", "fleur", "size_all"}, GLFW_RESIZE_ALL_CURSOR);
+    make(ImGuiMouseCursor_ResizeNS, {"ns-resize", "row-resize", "sb_v_double_arrow", "size_ver", "v_double_arrow"}, GLFW_RESIZE_NS_CURSOR);
+    make(ImGuiMouseCursor_ResizeEW, {"ew-resize", "col-resize", "sb_h_double_arrow", "size_hor", "h_double_arrow"}, GLFW_RESIZE_EW_CURSOR);
+    make(ImGuiMouseCursor_ResizeNESW, {"nesw-resize", "fd_double_arrow", "size_bdiag"}, GLFW_RESIZE_NESW_CURSOR);
+    make(ImGuiMouseCursor_ResizeNWSE, {"nwse-resize", "bd_double_arrow", "size_fdiag"}, GLFW_RESIZE_NWSE_CURSOR);
+    make(ImGuiMouseCursor_Hand, {"pointer", "hand2", "pointing_hand", "hand1", "hand"}, GLFW_POINTING_HAND_CURSOR);
+    make(ImGuiMouseCursor_Wait, {"wait", "watch"}, 0);
+    make(ImGuiMouseCursor_Progress, {"progress", "left_ptr_watch", "half-busy"}, 0);
+    make(ImGuiMouseCursor_NotAllowed, {"not-allowed", "crossed_circle", "forbidden", "no-drop"}, GLFW_NOT_ALLOWED_CURSOR);
+    // The theme's cursors replace the backend's (which would set its own every frame).
+    if (cursors.any) io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+  }
+  auto apply_cursor = [&] {
+    if (!cursors.any) return;
+    ImGuiMouseCursor cur = ImGui::GetMouseCursor();
+    if (io.MouseDrawCursor || cur == ImGuiMouseCursor_None) {
+      if (cursors.last != -1) glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+      cursors.last = -1;
+      return;
+    }
+    if (cur == cursors.last) return;
+    if (cursors.last == -1) glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    GLFWcursor* c = cur >= 0 && cur < ImGuiMouseCursor_COUNT ? cursors.c[cur] : nullptr;
+    glfwSetCursor(window, c != nullptr ? c : cursors.c[ImGuiMouseCursor_Arrow]);
+    cursors.last = cur;
+  };
 
   // Redraw on events only (14.8): near 0% CPU while idle; ~20 fps while agents work
   // (pulsing blocks). One extra frame after every event lets ImGui settle hovers/popups.
@@ -187,6 +237,7 @@ int main(int argc, char** argv) {
         bool open = true;
         if (auto chosen = picker.draw(&open, true)) root = *chosen;
         render(window);
+        apply_cursor();
         // Headless check of the welcome screen: capture once the script is done.
         if (frames > 0 && ++picker_frames >= frames && script->done() && !root) {
           if (!screenshot.empty()) screenshot_to(window, screenshot);
@@ -226,8 +277,15 @@ int main(int argc, char** argv) {
       int phase = 0;  // headless: 0 wait for the level, 1 run the script, 2 let the model follow, 3 done
       int settle_frames = 0;
       auto start = std::chrono::steady_clock::now();
+      // KARKAS_GUI_PROFILE=1: CPU time of a frame (UI + render submit), every 60 frames.
+      const bool profile = std::getenv("KARKAS_GUI_PROFILE") != nullptr;
+      double prof_sum = 0;
+      double prof_max = 0;
+      double prof_draw = 0;
+      int prof_n = 0;
       while (glfwWindowShouldClose(window) == 0) {
         auto model = worker.model();
+        auto t0 = std::chrono::steady_clock::now();
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         if (phase == 1) script->step(io);
@@ -235,10 +293,24 @@ int main(int argc, char** argv) {
         ui.request().char_w = ImGui::CalcTextSize("abcdefghijklmnopqrstuvwxyz").x / 26.0f;
         ui.request().line_h = ImGui::GetTextLineHeightWithSpacing();
         bool animate = ui.draw(model, first);
+        double draw_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         first = false;
         if (ui.quit_requested()) glfwSetWindowShouldClose(window, GLFW_TRUE);
         worker.set_request(ui.request());
         render(window);
+        apply_cursor();
+        if (profile) {
+          double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+          prof_sum += ms;
+          prof_max = std::max(prof_max, ms);
+          prof_draw += draw_ms;
+          if (++prof_n == 60) {
+            std::cerr << "karkas-gui: frame cpu avg " << prof_sum / prof_n << " ms (ui " << prof_draw / prof_n << " ms), max " << prof_max
+                      << " ms\n";
+            prof_sum = prof_max = prof_draw = 0;
+            prof_n = 0;
+          }
+        }
         ++frame;
         if (auto req = ui.take_open_request(); req && *req != *root) {
           next_project = *req;
@@ -277,6 +349,9 @@ int main(int argc, char** argv) {
   }
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplGlfw_Shutdown();
+  for (auto* c : cursors.c) {
+    if (c != nullptr) glfwDestroyCursor(c);
+  }
   ImGui::DestroyContext();
   glfwDestroyWindow(window);
   glfwTerminate();

@@ -27,9 +27,11 @@ struct EngineOptions {
 };
 
 struct LeafOutcome {
-  std::string status;  // fixed | done | failed | not_here | needs_contract_change | needs_info | escalated
+  std::string status;  // fixed | done | failed | not_here | needs_contract_change | needs_info | needs_tester | escalated
   std::string cause, fix, files, tests, api;
   std::vector<std::string> proposal;
+  std::string proposal_error;  // why the worker's proposal was not usable as a KSL diff (if any)
+  std::string api_note;        // what happened to the own api/ (values re-frozen, changed to the card)
   std::string tier;
   int attempts = 0;
   metrics::Tokens tokens;
@@ -62,7 +64,9 @@ class Engine {
   kk::Result<std::string> task(const std::string& description);
   kk::Result<std::string> debug(const std::string& symptom, const std::vector<std::string>& facts,
                                 const std::string& origin = "human");
-  kk::Result<std::string> run_ticket(const std::string& id);
+  // force: run even when the last run stopped on something only a human resolves and
+  // nothing changed since (otherwise refused without starting a model, ADR 0020).
+  kk::Result<std::string> run_ticket(const std::string& id, bool force = false);
   // ask(block, question): short cheap agent; the answer is appended to the trail (10.5).
   kk::Result<std::string> ask(const std::string& block, const std::string& question, const std::string& ticket);
 

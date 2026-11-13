@@ -26,7 +26,8 @@ bool Cleared::hides(const index::TestRow& t) const {
 }
 
 bool Cleared::empty() const {
-  return tickets.empty() && tickets_before == 0 && runs.empty() && runs_before == 0 && tests.empty() && tests_before == 0;
+  return tickets.empty() && tickets_before == 0 && runs.empty() && runs_before == 0 && tests.empty() && tests_before == 0 &&
+         changes.empty();
 }
 
 void Cleared::clear_ticket(const index::TicketRow& t) { tickets[t.id] = t.created_at; }
@@ -74,6 +75,7 @@ Cleared load_cleared(const std::filesystem::path& project_root) {
     c.runs_before = j.value("runs_before", std::int64_t{0});
     c.tests = j.value("tests", std::map<std::string, std::int64_t>{});
     c.tests_before = j.value("tests_before", std::int64_t{0});
+    c.changes = j.value("changes", std::set<std::string>{});
   } catch (const json::exception&) {
     return Cleared{};
   }
@@ -87,7 +89,8 @@ kk::VoidResult save_cleared(const std::filesystem::path& project_root, const Cle
     return {};
   }
   json j = {{"tickets", c.tickets}, {"tickets_before", c.tickets_before}, {"runs", c.runs},
-            {"runs_before", c.runs_before}, {"tests", c.tests},           {"tests_before", c.tests_before}};
+            {"runs_before", c.runs_before}, {"tests", c.tests},           {"tests_before", c.tests_before},
+            {"changes", c.changes}};
   return core::write_file(cleared_path(project_root), j.dump(2) + "\n");
 }
 

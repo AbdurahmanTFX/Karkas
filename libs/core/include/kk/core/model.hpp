@@ -199,7 +199,7 @@ struct TrailEntry {
 };
 
 struct ResultLine {
-  std::string key;  // status | cause | fix | files | tests | api | verify | cost | note
+  std::string key;  // status | cause | fix | files | tests | api | verify | cost | note | state
   std::string text;
   Trivia trivia;
   int line = 0;

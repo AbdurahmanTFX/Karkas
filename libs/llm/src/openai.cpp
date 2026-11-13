@@ -16,7 +16,11 @@ OpenAICompatProvider::OpenAICompatProvider(IHttpTransport& http, OpenAIOptions o
 std::string OpenAICompatProvider::request_json(const Request& req) {
   json j;
   j["model"] = req.model;
-  j["max_tokens"] = req.max_tokens;
+  // 0 = no limit from karkas: the provider's own maximum (DeepSeek allows very long answers).
+  if (req.max_tokens > 0) j["max_tokens"] = req.max_tokens;
+  // Reasoning effort (DeepSeek, OpenAI: low | high | max); sent only when configured, so a
+  // backend that does not know the field never sees it.
+  if (!req.effort.empty()) j["reasoning_effort"] = req.effort;
   json msgs = json::array();
   std::string sys;
   for (const auto& b : req.system) {
@@ -34,6 +38,9 @@ std::string OpenAICompatProvider::request_json(const Request& req) {
           calls.push_back({{"id", b.id}, {"type", "function"}, {"function", {{"name", b.name}, {"arguments", b.input_json}}}});
         }
       }
+      // A turn that was only hidden reasoning (cut at the output limit) has neither content nor
+      // tool calls: the API refuses such a message (HTTP 400), so it is left out.
+      if (text.empty() && calls.empty()) continue;
       a["content"] = text.empty() ? json(nullptr) : json(text);
       if (!calls.empty()) a["tool_calls"] = calls;
       msgs.push_back(std::move(a));
@@ -63,7 +70,9 @@ std::string OpenAICompatProvider::request_json(const Request& req) {
     }
     j["tools"] = std::move(tools);
   }
-  return j.dump();
+  // Invalid UTF-8 (a source file in another encoding, a model's output) must not abort the
+  // process: it is replaced by U+FFFD.
+  return j.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
 kk::Result<Response> OpenAICompatProvider::parse_response(const std::string& body) {
@@ -85,6 +94,16 @@ kk::Result<Response> OpenAICompatProvider::parse_response(const std::string& bod
   std::string finish = ch.value("finish_reason", "");
   r.stop_reason = finish == "tool_calls" ? "tool_use" : finish == "length" ? "max_tokens" : "end_turn";
   const auto& msg = ch.value("message", json::object());
+  // Hidden reasoning (DeepSeek reasoning_content): kept for the run journal only. It is not
+  // sent back: the API drops the reasoning of earlier turns (the prompt does not grow with it).
+  if (msg.contains("reasoning_content") && msg["reasoning_content"].is_string() &&
+      !msg["reasoning_content"].get<std::string>().empty()) {
+    ContentBlock b;
+    b.type = ContentBlock::Type::Other;
+    b.text = msg["reasoning_content"].get<std::string>();
+    b.raw_json = json{{"type", "reasoning"}, {"text", b.text}}.dump(-1, ' ', false, json::error_handler_t::replace);
+    r.content.push_back(std::move(b));
+  }
   if (msg.contains("content") && msg["content"].is_string() && !msg["content"].get<std::string>().empty()) {
     r.content.push_back(ContentBlock::make_text(msg["content"].get<std::string>()));
   }
@@ -109,6 +128,9 @@ kk::Result<Response> OpenAICompatProvider::parse_response(const std::string& bod
     if (u.contains("prompt_tokens_details") && u["prompt_tokens_details"].is_object()) {
       r.usage.cache_read_tokens = u["prompt_tokens_details"].value("cached_tokens", std::int64_t{0});
       r.usage.input_tokens -= r.usage.cache_read_tokens;
+    }
+    if (u.contains("completion_tokens_details") && u["completion_tokens_details"].is_object()) {
+      r.usage.reasoning_tokens = u["completion_tokens_details"].value("reasoning_tokens", std::int64_t{0});
     }
   }
   return r;

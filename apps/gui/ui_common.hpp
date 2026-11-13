@@ -3,6 +3,8 @@
 #include <imgui.h>
 
 #include <cmath>
+#include <cstdio>
+#include <ctime>
 #include <map>
 #include <string>
 
@@ -81,6 +83,40 @@ inline void status_dot(const std::string& status, bool active, double pulse) {
   dl->AddCircleFilled(ImVec2(p.x + r + 1, p.y + ImGui::GetTextLineHeight() * 0.5f), r, ImGui::GetColorU32(c));
   ImGui::Dummy(ImVec2(r * 2 + 4, ImGui::GetTextLineHeight()));
   ImGui::SameLine();
+}
+
+// Local time of a unix moment: "14:05" today, "12.11 14:05" this year, "12.11.2025" before; "" for 0.
+inline std::string when(std::int64_t unix_s) {
+  if (unix_s <= 0) return {};
+  std::time_t t = static_cast<std::time_t>(unix_s);
+  std::time_t now = std::time(nullptr);
+  std::tm a{};
+  std::tm b{};
+  localtime_r(&t, &a);
+  localtime_r(&now, &b);
+  char buf[32];
+  if (a.tm_year == b.tm_year && a.tm_yday == b.tm_yday) {
+    std::strftime(buf, sizeof buf, "%H:%M", &a);
+  } else if (a.tm_year == b.tm_year) {
+    std::strftime(buf, sizeof buf, "%d.%m %H:%M", &a);
+  } else {
+    std::strftime(buf, sizeof buf, "%d.%m.%Y", &a);
+  }
+  return buf;
+}
+
+// "45 s", "3 min 12 s", "1 h 05 min".
+inline std::string duration_text(std::int64_t s) {
+  if (s < 0) s = 0;
+  char buf[32];
+  if (s < 60) {
+    std::snprintf(buf, sizeof buf, "%lld s", static_cast<long long>(s));
+  } else if (s < 3600) {
+    std::snprintf(buf, sizeof buf, "%lld min %02lld s", static_cast<long long>(s / 60), static_cast<long long>(s % 60));
+  } else {
+    std::snprintf(buf, sizeof buf, "%lld h %02lld min", static_cast<long long>(s / 3600), static_cast<long long>(s % 3600 / 60));
+  }
+  return buf;
 }
 
 inline ImVec4 with_alpha(ImVec4 c, float a) {

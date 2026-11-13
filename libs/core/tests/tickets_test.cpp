@@ -94,7 +94,9 @@ TEST_CASE("tickets: new facts fold under the budget, original facts stay") {
   kk::test::TempDir d{"tk"};
   TicketStore store(d.path());
   auto t = spec_ticket(store);
-  for (int i = 0; i < 12; ++i) {
+  // Repeated attempts fold into one trail line (repeats=N), so it takes many observations to
+  // reach the budget.
+  for (int i = 0; i < 30; ++i) {
     REQUIRE(store.append(t.id, level(2, "worker", {{"at", "stream.ring"}, {"attempt", std::to_string(i + 1)}}),
                          std::vector<std::string>{fmt::format("observed value {} at step {} with a fairly long explanation of the probe", i, i)}));
   }
@@ -104,8 +106,85 @@ TEST_CASE("tickets: new facts fold under the budget, original facts stay") {
   CHECK(estimate_tokens(v) <= 600);
   CHECK(contains(v, "facts in ticket file"));
   CHECK(contains(v, "fact    contract stream.ring/no_drop FAIL"));
-  CHECK(contains(v, "observed value 11"));  // the latest new fact is kept
+  CHECK(contains(v, "observed value 29"));  // the latest new fact is kept
   CHECK_FALSE(contains(v, "observed value 0 "));
+  CHECK(contains(v, "repeats=30"));
+}
+
+TEST_CASE("tickets: the root view tells the orchestrator how its earlier descents ended") {
+  kk::test::TempDir d{"tk"};
+  TicketStore store(d.path());
+  auto t = store.create(TicketKind::Feature, "human", "add a slow pickup", {});
+  REQUIRE(t);
+  // Three runs: each dispatched to the same leaf, which asked for a contract change.
+  for (int run = 0; run < 3; ++run) {
+    REQUIRE(store.append(t->id, level(0, "orchestrator",
+                                      {{"at", "root"}, {"suspect", "dsp.echo,stream.ring"}, {"pick", "dsp.echo"},
+                                       {"difficulty", "S"}, {"why", fmt::format("try {}", run)}}),
+                         std::vector<std::string>{"status dsp.echo drift D04"}));
+    REQUIRE(store.append(t->id, level(2, "worker", {{"at", "dsp.echo"}, {"model", "cheap"}, {"attempt", "1"},
+                                                    {"outcome", "needs_contract_change"}})));
+    REQUIRE(store.add_result(t->id, {{"status", "needs_contract_change", {}, 0},
+                                     {"cause", fmt::format("api/echo.hpp lacks set_mix (run {})", run), {}, 0},
+                                     {"cost", "in=1 out=1", {}, 0}}));
+  }
+  auto loaded = store.load(t->id);
+  REQUIRE(loaded);
+  auto v = path_view(*loaded, "root");
+  // The own decision is shown once, with its suspects and the number of repeats.
+  CHECK(contains(v, "suspect=dsp.echo,stream.ring pick=dsp.echo"));
+  CHECK(contains(v, "repeats=3"));
+  CHECK(contains(v, "why=\"try 2\""));
+  CHECK_FALSE(contains(v, "why=\"try 0\""));
+  // A repeated observation appears once.
+  CHECK(v.find("status dsp.echo drift D04") == v.rfind("status dsp.echo drift D04"));
+  // How the descents ended, folded.
+  CHECK(contains(v, "--- earlier descents from here (oldest first)"));
+  CHECK(contains(v, "tried   dsp.echo -> worker at dsp.echo: needs_contract_change (x3)"));
+  // The latest result, without its cost line.
+  CHECK(contains(v, "--- last result\nstatus  needs_contract_change\ncause   api/echo.hpp lacks set_mix (run 2)\n"));
+  CHECK_FALSE(contains(v, "in=1 out=1"));
+  // The leaf where the descents ended sees the latest result too; another branch does not.
+  auto leaf = path_view(*loaded, "dsp.echo");
+  CHECK(contains(leaf, "cause   api/echo.hpp lacks set_mix (run 2)"));
+  CHECK(contains(leaf, "outcome=needs_contract_change repeats=3"));
+  CHECK_FALSE(contains(leaf, "--- earlier descents"));
+  CHECK_FALSE(contains(path_view(*loaded, "stream.ring"), "lacks set_mix"));
+}
+
+TEST_CASE("tickets: two proposed changes stay two lines of the path view, not one with repeats=2") {
+  kk::test::TempDir d{"tk"};
+  TicketStore store(d.path());
+  auto t = store.create(TicketKind::Feature, "human", "breathing columns", {});
+  REQUIRE(t);
+  for (const char* c : {"C-0006", "C-0007"}) {
+    REQUIRE(store.append(t->id, level(0, "orchestrator", {{"at", "root"}, {"outcome", "change"}, {"why", std::string("proposed ") + c}})));
+  }
+  auto loaded = store.load(t->id);
+  REQUIRE(loaded);
+  auto v = path_view(*loaded, "root");
+  CHECK(contains(v, "why=\"proposed C-0006\""));
+  CHECK(contains(v, "why=\"proposed C-0007\""));
+  CHECK_FALSE(contains(v, "repeats=2"));
+}
+
+TEST_CASE("tickets: below the root the last result of a feature shows only the lines of that block") {
+  kk::test::TempDir d{"tk"};
+  TicketStore store(d.path());
+  auto t = store.create(TicketKind::Feature, "human", "pace", {});
+  REQUIRE(t);
+  REQUIRE(store.append(t->id, level(0, "orchestrator", {{"at", "root"}, {"pick", "view.hud"}})));
+  REQUIRE(store.append(t->id, level(2, "worker", {{"at", "view.hud"}, {"outcome", "needs_contract_change"}})));
+  REQUIRE(store.add_result(t->id, {{"status", "done", {}, 0},
+                                   {"fix", "config: constants added", {}, 0},
+                                   {"files", "config: api/config.hpp", {}, 0},
+                                   {"fix", "view.hud: shows the pace", {}, 0}}));
+  auto loaded = store.load(t->id);
+  REQUIRE(loaded);
+  auto hud = path_view(*loaded, "view.hud");
+  CHECK(contains(hud, "fix     view.hud: shows the pace"));
+  CHECK_FALSE(contains(hud, "config: constants added"));
+  CHECK(contains(path_view(*loaded, "root"), "config: constants added"));
 }
 
 TEST_CASE("tickets: append-only is enforced") {

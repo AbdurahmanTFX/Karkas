@@ -34,7 +34,7 @@ agents::AgentSpec spec() {
 }
 }  // namespace
 
-TEST_CASE("loop: tool use until a terminal tool; prefix order and moving cache marker (9.4, 9.6)") {
+TEST_CASE("loop: tool use until a terminal tool, prefix order and moving cache marker (9.4, 9.6)") {
   test::TempDir d{"loop"};
   auto cfg = test::test_config();
   test::ScriptedModel m;
@@ -99,6 +99,33 @@ TEST_CASE("loop: step limit, token budget, nudge and refusal") {
     auto r = runner.run(s, host);
     CHECK(r.outcome == "budget");
     CHECK(r.steps == 2);
+  }
+  {
+    // Cache reads count a tenth: 10 steps re-reading a 30k prefix stay under a 100k budget.
+    test::ScriptedModel m;
+    for (int i = 0; i < 9; ++i) m.tool("read_file", {{"path", "x"}}, {500, 300, 0, 0, 30000});
+    m.tool("report", {{"status", "fixed"}});
+    agents::AgentRunner runner(d.path(), cfg, m.factory(), nullptr);
+    Host host;
+    auto s = spec();
+    s.max_steps = 20;
+    s.max_tokens = 100000;
+    auto r = runner.run(s, host);
+    CHECK(r.outcome == "terminal");
+    CHECK(r.steps == 10);
+  }
+  {
+    // No budget by default: only the steps limit a run.
+    test::ScriptedModel m;
+    for (int i = 0; i < 4; ++i) m.tool("read_file", {{"path", "x"}}, {900000, 90000, 0, 0, 0});
+    m.tool("report", {{"status", "fixed"}});
+    agents::AgentRunner runner(d.path(), cfg, m.factory(), nullptr);
+    Host host;
+    auto s = spec();
+    s.max_steps = 10;
+    s.max_tokens = 0;
+    auto r = runner.run(s, host);
+    CHECK(r.outcome == "terminal");
   }
   {
     test::ScriptedModel m;

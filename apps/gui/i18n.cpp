@@ -11,6 +11,14 @@ namespace {
 
 std::atomic<int> g_lang{static_cast<int>(Lang::En)};
 
+// Texts added with the panels of ADR 0021 (tickets, changes, windows, chat feed).
+const std::unordered_map<std::string_view, const char*>& ru_more() {
+  static const std::unordered_map<std::string_view, const char*> m = {
+#include "i18n_more.inc"
+  };
+  return m;
+}
+
 const std::unordered_map<std::string_view, const char*>& ru() {
   static const std::unordered_map<std::string_view, const char*> m = {
       // windows and menus
@@ -438,7 +446,9 @@ Lang lang_from_env() {
 const char* tr(const char* en) {
   if (lang() == Lang::En) return en;
   auto it = ru().find(en);
-  return it == ru().end() ? en : it->second;
+  if (it != ru().end()) return it->second;
+  auto jt = ru_more().find(en);
+  return jt == ru_more().end() ? en : jt->second;
 }
 
 std::string title(const char* en) { return std::string(tr(en)) + "###" + en; }
@@ -450,6 +460,18 @@ const char* tr_kind(const std::string& k) {
   if (k == "entry") return "вход";
   if (k == "shared") return "общий";
   return k.c_str();
+}
+
+const char* tr_ticket_status(const std::string& s) {
+  if (lang() == Lang::En) return s.c_str();
+  if (s == "open") return "открыт";
+  if (s == "descending") return "спуск";
+  if (s == "fixing") return "исправление";
+  if (s == "verifying") return "проверка";
+  if (s == "closed") return "закрыт";
+  if (s == "escalated") return "у человека";
+  if (s == "waiting") return "ждёт решения";
+  return s.c_str();
 }
 
 const char* tr_status(const std::string& s) {

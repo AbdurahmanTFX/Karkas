@@ -24,6 +24,7 @@ void apply(float scale);  // ImGui style and colors
 void load_fonts(float scale, const std::string& configured_ui_font);
 ImFont* ui_font();
 ImFont* heading_font();  // small medium-weight font for section titles
+ImFont* display_font();  // the same, rasterized large (names of blocks drawn as cards)
 ImFont* mono_font();     // code
 ImFont* icon_font_big(); // icons only, large (activity bar)
 

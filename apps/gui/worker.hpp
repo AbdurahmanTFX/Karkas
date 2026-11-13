@@ -25,6 +25,33 @@ namespace kk::gui {
 
 namespace fs = std::filesystem;
 
+// A selected schema change drawn on the schema before it is applied (ADR 0021): new blocks,
+// ports added or removed, links added or removed, the blocks it edits, and the level (with
+// the groups to open in place) that shows all of it.
+struct GhostPort {
+  std::string block, name, dir;  // dir: in | out | fn
+  bool added = true;
+};
+struct GhostLink {
+  std::string kind, src_block, src_port, dst_block, dst_port;
+  bool added = true;
+};
+struct GhostBlock {
+  std::string id, kind, purpose;
+  std::vector<GhostPort> ports;
+};
+struct ChangeGhost {
+  std::string id;
+  std::vector<GhostBlock> blocks;
+  std::vector<GhostPort> ports;
+  std::vector<GhostLink> links;
+  std::vector<std::string> touched;  // existing blocks whose cards change
+  std::string scope;                 // level to open ("" = root)
+  std::vector<std::string> expand;   // groups of that level to open in place
+  std::string error;
+  [[nodiscard]] bool empty() const { return blocks.empty() && ports.empty() && links.empty() && touched.empty(); }
+};
+
 struct Request {
   std::string scope;      // "" = root
   std::string selected;   // block
@@ -52,6 +79,8 @@ struct Model {
   std::vector<core::Change> changes;
   std::vector<metrics::ActiveRun> active;
   std::string card_text, view_text, code_text, ticket_text, change_preview;
+  ChangeGhost ghost;         // of the selected change
+  std::string change_cards;  // its cards before → after (unified diff)
   std::vector<std::string> files;  // code files of the selected block (relative to root)
   std::string pending_title, pending_preview, pending_error;
   bool has_pending = false;
@@ -81,6 +110,8 @@ class Worker {
   void undo();
   void approve_change(const std::string& id);
   void reject_change(const std::string& id);
+  // Replaces the diff of a pending change (checked like an agent's proposal first).
+  void edit_change(const std::string& id, const std::string& diff_text);
   void save_positions(const std::string& view, std::map<std::string, layout::Pos> pos);
   void open_in_editor(const std::string& rel_file, int line);
   // Opens a folder of the project in the system file manager (xdg-open): "" = the root.
