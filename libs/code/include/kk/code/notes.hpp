@@ -22,4 +22,14 @@ struct NotesImport {
 // from the titles (transliterated), unique among their siblings. Nothing but blocks/**/block.ksl is written.
 kk::Result<NotesImport> import_notes(const std::filesystem::path& root);
 
+// Edits of notes from the schema (karkas-gui): plain file edits, no KSL diff.
+// A [[link]] to `dst` on a new last line of note `src` (its file is created when missing).
+kk::VoidResult add_note_link(const core::Schema& s, const std::string& src, const std::string& dst);
+// Every [[link]] of note `src` that names `dst` becomes plain text: "[[Name]]" → "Name",
+// "[[Name|shown]]" → "shown". Returns how many.
+kk::Result<int> remove_note_link(const core::Schema& s, const std::string& src, const std::string& dst);
+// A new title (purpose) of note or topic `id`; the [[links]] of other notes that named it by its old title
+// name it by the new one (a shown text after '|' is kept). Returns the notes whose text changed.
+kk::Result<std::vector<std::string>> retitle_note(const core::Schema& s, const std::string& id, const std::string& title);
+
 }  // namespace kk::code

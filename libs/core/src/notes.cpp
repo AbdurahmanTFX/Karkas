@@ -76,8 +76,11 @@ std::string note_file(const Block& b) {
   return b.dir.empty() ? std::string(kNoteFileName) : b.dir + "/" + std::string(kNoteFileName);
 }
 
-std::vector<NoteRef> parse_note_refs(std::string_view text) {
-  std::vector<NoteRef> out;
+namespace {
+
+// Calls f(begin, end, name, inner, line) for each [[link]]: [begin, end) spans the brackets.
+template <typename F>
+void each_ref(std::string_view text, F f) {
   int line = 1;
   for (std::size_t i = 0; i < text.size(); ++i) {
     if (text[i] == '\n') {
@@ -88,12 +91,36 @@ std::vector<NoteRef> parse_note_refs(std::string_view text) {
     auto end = text.find("]]", i + 2);
     auto nl = text.find('\n', i + 2);
     if (end == std::string_view::npos || (nl != std::string_view::npos && nl < end)) continue;
-    auto name = std::string(trim(text.substr(i + 2, end - i - 2)));
+    auto inner = std::string(text.substr(i + 2, end - i - 2));
+    auto name = std::string(trim(inner));
     // [[name|shown text]]: the part before '|' names the note.
     if (auto bar = name.find('|'); bar != std::string::npos) name = std::string(trim(std::string_view(name).substr(0, bar)));
-    if (!name.empty()) out.push_back(NoteRef{.name = name, .line = line, .target = {}, .matches = 0});
+    if (!name.empty()) f(i, end + 2, name, inner, line);
     i = end + 1;
   }
+}
+
+}  // namespace
+
+std::vector<NoteRef> parse_note_refs(std::string_view text) {
+  std::vector<NoteRef> out;
+  each_ref(text, [&](std::size_t, std::size_t, const std::string& name, const std::string&, int line) {
+    out.push_back(NoteRef{.name = name, .line = line, .target = {}, .matches = 0});
+  });
+  return out;
+}
+
+std::string rewrite_note_refs(std::string_view text, const RefRewrite& f) {
+  std::string out;
+  std::size_t done = 0;
+  each_ref(text, [&](std::size_t begin, std::size_t end, const std::string& name, const std::string& inner, int) {
+    auto r = f(name, inner);
+    if (!r) return;
+    out.append(text.substr(done, begin - done));
+    out += *r;
+    done = end;
+  });
+  out.append(text.substr(done));
   return out;
 }
 

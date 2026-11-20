@@ -83,3 +83,40 @@ TEST_CASE("notes: a folder with code stays a code project, an empty one too unle
   CHECK(core::is_notes_project(s->project));
   CHECK(s->project.idea.value == "my thoughts");
 }
+
+TEST_CASE("notes: links added and removed from the schema, titles changed with the links that named them") {
+  test::TempDir d{"vault_edit"};
+  test::write(d / "project.ksl", "@project vault\nlang notes\n");
+  test::write(d / "blocks/game/block.ksl", "@block game\npurpose Игра про кота\nkind leaf\n");
+  test::write(d / "blocks/game/note.txt", "Кот. См. [[Сюжет|историю]] и [[story]].");
+  test::write(d / "blocks/story/block.ksl", "@block story\npurpose Сюжет\nkind leaf\n");
+  test::write(d / "blocks/music/block.ksl", "@block music\npurpose Музыка\nkind leaf\n");  // no note.txt yet
+  auto load = [&] {
+    auto s = core::load_schema(d.path());
+    REQUIRE(s);
+    return std::move(*s);
+  };
+  // A link from a note without a file yet: the file is made.
+  REQUIRE(code::add_note_link(load(), "music", "game"));
+  CHECK(test::read(d / "blocks/music/note.txt") == "[[Игра про кота]]\n");
+  REQUIRE(code::add_note_link(load(), "game", "music"));
+  CHECK(test::read(d / "blocks/game/note.txt") == "Кот. См. [[Сюжет|историю]] и [[story]].\n[[Музыка]]\n");
+
+  // The title changes: [[Сюжет|историю]] follows (its shown text kept), [[story]] (by id) stays.
+  auto changed = code::retitle_note(load(), "story", "Сюжет игры");
+  REQUIRE(changed);
+  CHECK(*changed == std::vector<std::string>{"game"});
+  CHECK(test::read(d / "blocks/game/note.txt") == "Кот. См. [[Сюжет игры|историю]] и [[story]].\n[[Музыка]]\n");
+  CHECK(load().find("story")->purpose.value == "Сюжет игры");
+  CHECK_FALSE(code::retitle_note(load(), "story", "  "));
+
+  // Every link to story goes: plain text stays.
+  auto n = code::remove_note_link(load(), "game", "story");
+  REQUIRE(n);
+  CHECK(*n == 2);
+  CHECK(test::read(d / "blocks/game/note.txt") == "Кот. См. историю и story.\n[[Музыка]]\n");
+  int refs = 0;
+  for (const auto& l : load().links()) refs += l.kind == core::LinkKind::Ref && l.dst_block == "story" ? 1 : 0;
+  CHECK(refs == 0);
+  CHECK_FALSE(code::add_note_link(load(), "game", "nothing"));
+}

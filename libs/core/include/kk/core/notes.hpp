@@ -3,6 +3,8 @@
 // note (leaf) is a text file — <block folder>/note.txt, or the file its card lists (notes that were
 // in the folder before Karkas). Notes link to each other by [[name]] in their text; the schema
 // loader reads those links, the schema draws them as "ref" lines. Nothing is generated or built.
+#include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,6 +25,12 @@ inline constexpr std::string_view kNoteFileName = "note.txt";
 
 // The [[links]] of a text, in order (names trimmed; empty ones and ones spanning lines skipped).
 std::vector<NoteRef> parse_note_refs(std::string_view text);
+
+// The text with each [[link]] replaced by what `f` returns for it, the brackets included (nullopt keeps it).
+// `f` gets the name and the whole text between the brackets ("name|shown"); the same links as
+// parse_note_refs.
+using RefRewrite = std::function<std::optional<std::string>(const std::string& name, const std::string& inner)>;
+std::string rewrite_note_refs(std::string_view text, const RefRewrite& f);
 
 // The blocks a [[name]] fits: a block id ("ideas.game", or with '/'), else the notes and topics whose
 // title (purpose) or last id segment equals the name, ignoring case and repeated spaces.
