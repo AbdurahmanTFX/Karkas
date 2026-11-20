@@ -133,7 +133,7 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
   if (settings_.show_inspector) draw_inspector(*m);
   draw_bottom(*m);
   draw_settings_window(m);
-  if (!notes_) draw_chat_window(m);
+  draw_chat_window(m);
   draw_dialogs(*m);
   if (notes_) draw_note_dialogs(*m);
   order_windows();
@@ -485,10 +485,10 @@ void Ui::set_project_root(std::filesystem::path root) {
   // What the project is (ADR 0038): the mode, its words and panels follow.
   notes_ = is_notes_project_dir(root_);
   set_notes_kinds(notes_);
-  if (notes_) show_chat_ = false;
   reload_models();
   cleared_ = load_cleared(root_);
   chat_ = std::make_unique<Chat>(root_, find_karkas_cli(), wake_);
+  chat_->set_notes(notes_);  // a message is a request to the notes assistant (ADR 0039)
   chat_serial_ = ~0ULL;
   run_ = std::make_unique<RunSession>(root_, find_karkas_cli(), wake_);
   run_serial_ = ~0ULL;
@@ -522,7 +522,7 @@ void Ui::draw_menu(const Model* m) {
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_N)) show_picker(true);
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Comma)) show_settings_ = !show_settings_;
   if (notes_ && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S)) autosave_notes(true);
-  if (!notes_ && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O)) {
+  if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O)) {
     show_chat_ = !show_chat_;
     chat_focus_ = show_chat_;
   }
@@ -565,10 +565,10 @@ void Ui::draw_menu(const Model* m) {
   if (ImGui::BeginMenu(tr("View"))) {
     if (ImGui::MenuItem(with_icon(Icon::Files, tr("Explorer")).c_str(), nullptr, side_ == SideView::Explorer)) side_ = SideView::Explorer;
     if (ImGui::MenuItem(with_icon(Icon::Search, tr("Search")).c_str(), "Ctrl+Shift+F", side_ == SideView::Search)) side_ = SideView::Search;
-    if (!notes_ && ImGui::MenuItem(with_icon(Icon::Changes, tr("Schema changes")).c_str(), nullptr, side_ == SideView::Changes)) {
+    if (ImGui::MenuItem(with_icon(Icon::Changes, notes_ ? tr("AI proposals") : tr("Schema changes")).c_str(), nullptr, side_ == SideView::Changes)) {
       side_ = SideView::Changes;
     }
-    if (!notes_ && ImGui::MenuItem(with_icon(Icon::Chat, tr("Orchestrator chat")).c_str(), "Ctrl+Shift+O", show_chat_)) {
+    if (ImGui::MenuItem(with_icon(Icon::Chat, notes_ ? tr("Notes assistant") : tr("Orchestrator chat")).c_str(), "Ctrl+Shift+O", show_chat_)) {
       show_chat_ = !show_chat_;
       chat_focus_ = show_chat_;
     }
@@ -660,13 +660,12 @@ void Ui::draw_activity_bar(const Model* m) {
     int pending = 0;
     if (m != nullptr) {
       for (const auto& c : m->changes) pending += c.status.value == "pending" ? 1 : 0;
+      for (const auto& p : m->proposals) pending += p.status == "pending" ? 1 : 0;  // notes (ADR 0039)
     }
     button(SideView::Explorer, Icon::Files, tr("Explorer"), 0);
     button(SideView::Search, Icon::Search, tr("Search"), 0);
-    if (!notes_) {  // notes have no agents and no proposed changes (ADR 0038)
-      button(SideView::Changes, Icon::Changes, tr("Schema changes"), pending);
-      button(SideView::Chat, Icon::Chat, tr("Orchestrator chat"), 0);
-    }
+    button(SideView::Changes, Icon::Changes, notes_ ? tr("AI proposals") : tr("Schema changes"), pending);
+    button(SideView::Chat, Icon::Chat, notes_ ? tr("Notes assistant") : tr("Orchestrator chat"), 0);
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - w - 4);
     button(SideView::Settings, Icon::Gear, tr("Settings"), 0);
   }
@@ -703,7 +702,7 @@ void Ui::draw_status_bar(const Model* m) {
         bottom_select_ = "drift";
       }
       // The mode of the agents' model (ADR 0024); in mode mcp, the turns waiting for the client.
-      if (!notes_) {
+      {
         std::string mode = cfg_.mcp() ? "MCP" : "API";
         std::size_t waiting = cfg_.mcp() ? mcp_waiting().size() : 0;
         std::string label = waiting > 0 ? fmt::format("{} · {} {}", mode, waiting, tr("waiting")) : mode;
@@ -722,7 +721,7 @@ void Ui::draw_status_bar(const Model* m) {
           open_live("");  // follow the agent that works now
         }
       }
-      if (!notes_) {
+      {
         double total = 0;
         for (const auto& r : m->runs) total += r.cost_usd;
         if (total > 0 && status_item("st_cost", with_icon(Icon::Coins, fmt::format("${:.2f}", total)), text, tr("Total cost of all agent runs"))) {
@@ -765,8 +764,12 @@ void Ui::draw_status_bar(const Model* m) {
 void Ui::draw_side_bar(const Model* m) {
   tree_hover_.clear();
   if (!settings_.show_side) return;
-  const std::array<const char*, 4> titles = {"EXPLORER", "SEARCH", "SCHEMA CHANGES", "SETTINGS"};
-  const std::array<const char*, 4> tabs = {"Explorer", "Search", "Schema changes", "Settings"};
+  std::array<const char*, 4> titles = {"EXPLORER", "SEARCH", "SCHEMA CHANGES", "SETTINGS"};
+  std::array<const char*, 4> tabs = {"Explorer", "Search", "Schema changes", "Settings"};
+  if (notes_) {  // the notes assistant's proposals (ADR 0039)
+    titles[2] = "AI PROPOSALS";
+    tabs[2] = "AI proposals";
+  }
   auto view = static_cast<std::size_t>(side_);
   bool open = true;
   bool visible = begin_tile(Tile::Side, tr(tabs[view]), &open, theme::kSideBg, ImVec2(8, 8));
@@ -797,6 +800,8 @@ void Ui::draw_side_bar(const Model* m) {
     side_explorer(*m);
   } else if (side_ == SideView::Search) {
     side_search(*m);
+  } else if (notes_) {
+    side_proposals(*m);
   } else {
     side_changes(*m);
   }

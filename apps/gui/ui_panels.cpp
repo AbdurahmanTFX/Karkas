@@ -116,7 +116,7 @@ void Ui::draw_bottom(const Model& m) {
   for (const auto& d : m.snap->drift) (d.severity == "E" ? errors : warnings)++;
   std::size_t tickets = 0;
   for (const auto& t : m.snap->tickets) tickets += cleared_.hides(t) ? 0 : 1;
-  // Notes (ADR 0038): broken [[links]] are their problems; no tickets, agents, builds, costs or runs.
+  // Notes (ADR 0038): broken [[links]] are their problems; no tickets, builds or runs.
   const char* drift_name = notes_ ? tr("Problems") : tr("Drift");
   std::string drift_label = m.snap->drift.empty() ? std::string(drift_name) : fmt::format("{} {}·{}", drift_name, errors, warnings);
   struct Tab {
@@ -141,7 +141,8 @@ void Ui::draw_bottom(const Model& m) {
   bool keep_select = false;
   for (const auto& tab : tabs) {
     if (!tab_visible(tab.key)) continue;
-    if (notes_ && tab.tile != Tile::Drift) continue;
+    // Notes (ADR 0038, 0039): problems, and the assistant's runs and costs.
+    if (notes_ && tab.tile != Tile::Drift && tab.tile != Tile::Agents && tab.tile != Tile::Costs) continue;
     // Brings its tab forward; kept until its window exists (the first frames of a new layout).
     bool select = bottom_select_ == tab.key;
     if (select) ImGui::SetNextWindowFocus();

@@ -117,7 +117,8 @@ TEST_CASE("notes agent: a request becomes an answer and a proposal, nothing is w
   CHECK(p->scope == "plan.start");
   auto preview = agents::notes_proposal_preview(rig.d.path(), *p);
   CHECK(core::contains(preview, "~~~ plan.start \"Запуск\"\n Шаг 1: собрать команду.\n-Бюджет — отдельно.\n+[[Бюджет]] — отдельно.\n+Шаг 2: офис.\n"));
-  CHECK(core::contains(preview, "+++ new note plan.ofis \"Офис\" in plan\n+Аренда, см. [[Бюджет]]."));
+  CHECK(core::contains(preview, "+++ new note plan.ofis \"Офис\" in plan\n+Аренда, см. [[Бюджет]].\n"));
+  CHECK_FALSE(core::contains(preview, "[[Бюджет]].\n+\n"));  // no empty line for the text's last line break
 
   auto ok = agents::approve_notes_proposal(rig.d.path(), "N-0001");
   REQUIRE_MESSAGE(ok, (ok ? "" : ok.error().message));

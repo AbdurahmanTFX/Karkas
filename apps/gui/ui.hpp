@@ -188,6 +188,8 @@ class Ui {
   void notes_toolbar(const Model& m);
   void inspector_note(const Model& m, const index::BlockRow& b);
   void draw_note_dialogs(const Model& m);
+  void side_proposals(const Model& m);                               // the notes assistant's proposals (ADR 0039)
+  void proposal_buttons(const Model* m, const std::string& id);     // show, approve, reject (chat, side bar)
   void open_note(const Model& m, const std::string& id);  // its text in an editor tab
   void autosave_notes(bool all);  // edited note tabs: saved after a pause (all: now)
   [[nodiscard]] const NoteText* note_of(const Model& m, const std::string& id) const;

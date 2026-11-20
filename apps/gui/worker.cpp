@@ -230,6 +230,35 @@ void Worker::retitle_note(const std::string& id, const std::string& title) {
   });
 }
 
+void Worker::approve_proposal(const std::string& id) {
+  post([this, id] {
+    auto r = agents::approve_notes_proposal(root_, id);
+    message_ = r ? std::string(core::trim(*r)) : r.error().message;
+    files_changed_ = true;
+  });
+}
+
+void Worker::reject_proposal(const std::string& id) {
+  post([this, id] {
+    auto r = agents::reject_notes_proposal(root_, id);
+    message_ = r ? std::string(core::trim(*r)) : r.error().message;
+    files_changed_ = true;
+  });
+}
+
+void Worker::link_mention(const std::string& src, const std::string& dst) {
+  post([this, src, dst] {
+    auto s = core::load_schema(root_);
+    if (!s) {
+      message_ = s.error().str();
+      return;
+    }
+    auto r = code::link_mention(*s, src, dst);
+    message_ = !r ? r.error().message : *r ? fmt::format(fmt::runtime(tr("link: {} -> {}")), src, dst) : tr("nothing to link any more");
+    files_changed_ = true;
+  });
+}
+
 void Worker::stop_run(const fs::path& journal) {
   post([this, journal] {
     auto r = metrics::request_stop(root_, journal);
@@ -553,6 +582,28 @@ void Worker::loop() {
     m->engine = engine->name();
     m->notes = notes_;
     m->note_texts = note_texts_;
+    if (notes_) {
+      // The assistant's proposals; the links to suggest for the selected note, worked out again when the
+      // files or the selection change.
+      if (auto list = agents::NotesProposalStore(root_).list()) m->proposals = std::move(*list);
+      if (req.change.starts_with("N-")) {
+        for (const auto& p : m->proposals) {
+          if (p.id == req.change) m->proposal_preview = agents::notes_proposal_preview(root_, p);
+        }
+      }
+      if (reindex || req.selected != mentions_for_) {
+        mentions_.clear();
+        mentions_for_ = req.selected;
+        if (!req.selected.empty()) {
+          if (auto s = core::load_schema(root_)) {
+            mentions_ = code::unlinked_mentions(*s, req.selected);
+            auto of = code::mentions_of(*s, req.selected);
+            mentions_.insert(mentions_.end(), of.begin(), of.end());
+          }
+        }
+      }
+      m->mentions = mentions_;
+    }
     if (idx) {
       auto t0 = std::chrono::steady_clock::now();
       if (reindex || !model_) {

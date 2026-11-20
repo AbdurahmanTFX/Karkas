@@ -46,7 +46,10 @@ struct ChatEntry {
 // `--block <id>` for a block scope); a ticket scope → ticket run <id> --note "<text>";
 // "/<command> args..." → that agent command whatever the scope (quotes keep spaces). Empty
 // with `error` set for an empty message or a command the chat does not run.
-std::vector<std::string> chat_command(ChatMode mode, const std::string& text, std::string* error, const ChatScope& scope = {});
+// In a notes project (`notes`, docs/adr/0039) a message is a request to the notes assistant:
+// notes "<text>", with `--block <id>` for a note or topic.
+std::vector<std::string> chat_command(ChatMode mode, const std::string& text, std::string* error, const ChatScope& scope = {},
+                                      bool notes = false);
 // "T-0004" from "created T-0004" / "@ticket T-0004 ..."; "" when the line names none.
 std::string ticket_in(const std::string& line);
 // Change ids (C-NNNN) named in a text, in order, without repeats.
@@ -64,6 +67,8 @@ class Chat {
 
   // Runs the command of a message; false (with an Error entry) when busy or it cannot start.
   bool send(ChatMode mode, const std::string& text, const ChatScope& scope = {});
+  // A notes project: messages go to the notes assistant (docs/adr/0039).
+  void set_notes(bool on) { notes_ = on; }
   void stop();  // SIGINT: like Ctrl+C in a terminal
   void kill();  // SIGKILL to the whole process group of the command
   [[nodiscard]] bool busy() const;
@@ -90,6 +95,7 @@ class Chat {
   std::optional<std::chrono::steady_clock::time_point> stop_at_;
   std::string ticket_;
   bool quit_ = false;  // the GUI is closing: the reader stops waiting
+  bool notes_ = false;
   std::thread thread_;
 };
 

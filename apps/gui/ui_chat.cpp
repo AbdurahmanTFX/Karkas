@@ -19,6 +19,7 @@
 #include "kk/core/config.hpp"
 #include "kk/core/text.hpp"
 #include "theme.hpp"
+#include "kk/agents/notes_agent.hpp"
 #include "ui.hpp"
 #include "selectable.hpp"
 #include "widgets.hpp"
@@ -199,6 +200,28 @@ void Ui::chat_scope_bar(const Model* m) {
   ui::muted("%s", tr("Request:"));
   ImGui::SameLine();
   bool project = chat_scope_.kind == ChatScope::Kind::Project;
+  if (notes_) {  // the notes assistant (ADR 0039): all notes, or one note or topic; no tickets
+    if (ui::toggle("sc_project", Icon::Home, tr("all notes"), &project, tr("The assistant gets the request about all the notes"))) chat_scope_ = {};
+    std::string block = chat_scope_.kind == ChatScope::Kind::Block ? chat_scope_.id : req_.selected;
+    const auto* b = m != nullptr && !block.empty() ? m->snap->block(block) : nullptr;
+    if (b != nullptr) {
+      ImGui::SameLine(0, 2);
+      bool on = chat_scope_.kind == ChatScope::Kind::Block;
+      std::string label = fmt::format("{} {}", b->kind == "group" ? tr("topic") : tr("note"), ui::ellipsize(b->purpose, ImGui::GetFontSize() * 12));
+      if (ui::toggle("sc_block", b->kind == "group" ? Icon::Folder : Icon::File, label.c_str(), &on,
+                     tr("The request is about this note or topic: the assistant starts there"))) {
+        chat_scope_ = {ChatScope::Kind::Block, block};
+      }
+    }
+    std::string what = chat_scope_.kind == ChatScope::Kind::Block && b != nullptr
+                           ? fmt::format(fmt::runtime(tr("About \"{}\": the assistant reads it first; it may still read and propose for other notes.")),
+                                         b->purpose)
+                           : std::string(tr("About all notes: the assistant reads the overview, searches and reads what it needs."));
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextColored(chat_scope_.kind == ChatScope::Kind::Block ? rgb(110, 190, 250) : rgb(150, 150, 150), "%s", what.c_str());
+    ImGui::PopTextWrapPos();
+    return;
+  }
   if (ui::toggle("sc_project", Icon::Home, tr("whole project"), &project,
                  tr("The orchestrator gets the request for the whole project and decides which blocks change"))) {
     chat_scope_ = {};
@@ -259,9 +282,14 @@ void Ui::chat_entry(const Model* m, const ChatEntry& e, std::size_t i) {
     case ChatEntry::Kind::User: {
       ImGui::Spacing();
       bubble(with_alpha(kUser, 0.16f), wrap, [&] {
-        const char* mode = e.mode == "bug" ? tr("bug") : e.mode == "command" ? tr("command") : tr("task");
+        const char* mode = e.mode == "bug" ? tr("bug") : e.mode == "command" ? tr("command") : e.mode == "notes" ? tr("request") : tr("task");
         std::string where;
-        if (e.scope.starts_with("block ")) where = " · " + fmt::format(fmt::runtime(tr("block {}")), e.scope.substr(6));
+        if (e.scope.starts_with("block ")) {
+          auto id = e.scope.substr(6);
+          const auto* b = notes_ && m != nullptr ? m->snap->block(id) : nullptr;  // a note by its title (ADR 0039)
+          where = " · " + (b != nullptr ? fmt::format("{} «{}»", b->kind == "group" ? tr("topic") : tr("note"), b->purpose)
+                                        : fmt::format(fmt::runtime(tr("block {}")), id));
+        }
         if (e.scope.starts_with("ticket ")) where = " · " + fmt::format(fmt::runtime(tr("ticket {}")), e.scope.substr(7));
         ImGui::TextColored(kUser, "%s", with_icon(Icon::Chat, fmt::format("{} · {}{}", tr("you"), mode, where)).c_str());
         if (!at.empty()) {
@@ -283,7 +311,7 @@ void Ui::chat_entry(const Model* m, const ChatEntry& e, std::size_t i) {
     }
     case ChatEntry::Kind::Result: {
       ImGui::Spacing();
-      ImGui::TextColored(kAgent, "%s", with_icon(Icon::Agent, tr("orchestrator")).c_str());
+      ImGui::TextColored(kAgent, "%s", with_icon(Icon::Agent, notes_ ? tr("assistant") : tr("orchestrator")).c_str());
       if (!at.empty()) {
         ImGui::SameLine();
         ui::muted("%s", at.c_str());
@@ -321,6 +349,7 @@ void Ui::chat_entry(const Model* m, const ChatEntry& e, std::size_t i) {
         if (!e.ticket.empty()) ImGui::SameLine(0, 4);
         change_buttons(m, c);
       }
+      for (const auto& p : agents::proposals_in(e.text)) proposal_buttons(m, p);  // the notes assistant (ADR 0039)
       break;
     }
     case ChatEntry::Kind::Error: {
@@ -345,7 +374,15 @@ void Ui::chat_dialog(const Model* m) {
   float footer = input_h + ImGui::GetFrameHeightWithSpacing() + ImGui::GetTextLineHeightWithSpacing() + 8;
   ImGui::BeginChild("conversation", ImVec2(0, -footer), ImGuiChildFlags_None);
   chat_sel_.begin();
-  if (chat_cache_.empty()) {
+  if (chat_cache_.empty() && notes_) {
+    ImGui::PushTextWrapPos(0);
+    ui::muted("%s", tr("Ask the notes assistant: what the notes say, what is missing, to write or extend a note, to link notes, "
+                       "to sort them into topics. It reads the notes and answers; what it would write or link comes as a "
+                       "proposal N-0001 that you approve or reject (Auto: applied at once)."));
+    ImGui::Spacing();
+    ui::muted("%s", tr("Commands: /proposal list, /proposal approve N-0001, /notes \"...\"."));
+    ImGui::PopTextWrapPos();
+  } else if (chat_cache_.empty()) {
     ImGui::PushTextWrapPos(0);
     ui::muted("%s", tr("Write what to do. The message goes to the orchestrator exactly like karkas task \"...\" "
                        "(or karkas debug for a bug): a ticket is created, the orchestrator and the navigators descend "
@@ -632,7 +669,8 @@ void Ui::draw_chat_window(const Model* m) {
   ImGui::PushStyleColor(ImGuiCol_TitleBg, IM_COL32(44, 44, 48, 255));
   ImGui::PushStyleColor(ImGuiCol_TitleBgActive, IM_COL32(52, 52, 58, 255));
   // A tile like the panels (ADR 0032): floating by default, docked as a tile, or a window of the desktop.
-  bool open = begin_tile(Tile::Chat, with_icon(Icon::Chat, tr("Orchestrator")), &show_chat_, theme::kSideBg, ImGui::GetStyle().WindowPadding);
+  bool open = begin_tile(Tile::Chat, with_icon(Icon::Chat, notes_ ? tr("Notes assistant") : tr("Orchestrator")), &show_chat_, theme::kSideBg,
+                         ImGui::GetStyle().WindowPadding);
   ImGui::PopStyleColor(2);
   if (!open) {
     ImGui::End();
@@ -650,18 +688,24 @@ void Ui::draw_chat_window(const Model* m) {
   ImGui::SameLine();
   bool task = chat_mode_ == 0;
   bool bug = chat_mode_ == 1;
-  ImGui::BeginDisabled(chat_scope_.kind == ChatScope::Kind::Ticket);  // a message about a ticket keeps the ticket's kind
-  if (ui::toggle("m_task", Icon::Plus, tr("task"), &task, tr("A feature or change: karkas task \"...\""))) chat_mode_ = 0;
-  ImGui::SameLine(0, 2);
-  if (ui::toggle("m_bug", Icon::Warning, tr("bug"), &bug, tr("A symptom to find and fix: karkas debug \"...\""))) chat_mode_ = 1;
-  ImGui::EndDisabled();
+  if (notes_) {  // one kind of message: a request to the notes assistant (ADR 0039)
+    ImGui::TextUnformatted(with_icon(Icon::Chat, tr("request to the notes assistant")).c_str());
+  } else {
+    ImGui::BeginDisabled(chat_scope_.kind == ChatScope::Kind::Ticket);  // a message about a ticket keeps the ticket's kind
+    if (ui::toggle("m_task", Icon::Plus, tr("task"), &task, tr("A feature or change: karkas task \"...\""))) chat_mode_ = 0;
+    ImGui::SameLine(0, 2);
+    if (ui::toggle("m_bug", Icon::Warning, tr("bug"), &bug, tr("A symptom to find and fix: karkas debug \"...\""))) chat_mode_ = 1;
+    ImGui::EndDisabled();
+  }
   ImGui::SameLine(0, 12);
   mode_switch("chat_mode");
   ImGui::SameLine(0, 12);
   bool autop = cfg_.auto_approve;
   if (ui::toggle("auto", Icon::Bolt, tr("Auto"), &autop,
-                 tr("Auto: schema changes the agents propose are approved at once and the work goes on without you "
-                    "([agents] auto_approve in karkas.toml)"))) {
+                 notes_ ? tr("Auto: the assistant's proposals are written at once, without your review ([agents] auto_approve in "
+                             "karkas.toml)")
+                        : tr("Auto: schema changes the agents propose are approved at once and the work goes on without you "
+                             "([agents] auto_approve in karkas.toml)"))) {
     set_auto(autop);
   }
   // Clear and the tile's place at the right end; on the next line when the tile is narrow.

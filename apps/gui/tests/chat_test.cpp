@@ -137,3 +137,13 @@ TEST_CASE("chat: Stop is Ctrl+C for the command, Kill ends its process group") {
     CHECK(chat.wait(std::chrono::seconds(5)));
   }
 }
+
+TEST_CASE("chat: in a notes project a message is a request to the notes assistant (ADR 0039)") {
+  std::string err;
+  gui::ChatScope note{gui::ChatScope::Kind::Block, "plan.start"};
+  CHECK(gui::chat_command(ChatMode::Task, " допиши план ", &err, {}, true) == std::vector<std::string>{"notes", "допиши план"});
+  CHECK(gui::chat_command(ChatMode::Bug, "свяжи", &err, note, true) == std::vector<std::string>{"notes", "--block", "plan.start", "свяжи"});
+  CHECK(gui::chat_command(ChatMode::Task, "/proposal approve N-0001", &err, {}, true) ==
+        std::vector<std::string>{"proposal", "approve", "N-0001"});
+  CHECK(gui::chat_command(ChatMode::Task, "/notes \"что нового?\"", &err) == std::vector<std::string>{"notes", "что нового?"});
+}

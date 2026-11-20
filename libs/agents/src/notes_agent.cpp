@@ -241,7 +241,9 @@ std::string notes_proposal_preview(const fs::path& root, const NotesProposal& p)
       out += fmt::format("+++ new topic {} \"{}\" in {}\n", e.id, e.title, e.parent.empty() ? "the top level" : e.parent);
     } else if (e.kind == "note") {
       out += fmt::format("+++ new note {} \"{}\" in {}\n", e.id, e.title, e.parent.empty() ? "the top level" : e.parent);
-      for (const auto& l : core::split(e.text, '\n', false)) out += "+" + l + "\n";
+      auto lines = core::split(e.text, '\n', false);
+      if (!lines.empty() && lines.back().empty()) lines.pop_back();  // the text's last line break
+      for (const auto& l : lines) out += "+" + l + "\n";
     } else {
       const core::Block* b = s ? s->find(e.id) : nullptr;
       std::string title = b != nullptr ? b->purpose.value : e.id;

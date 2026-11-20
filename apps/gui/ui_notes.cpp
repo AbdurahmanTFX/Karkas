@@ -285,6 +285,84 @@ void Ui::draw_note_dialogs(const Model& m) {
   if (!open) note_dialog_.clear();
 }
 
+// --- the assistant's proposals (ADR 0039) -------------------------------------------------------------
+
+void Ui::proposal_buttons(const Model* m, const std::string& id) {
+  bool pending = false;
+  if (m != nullptr) {
+    for (const auto& p : m->proposals) pending |= p.id == id && p.status == "pending";
+  }
+  ImGui::PushID(id.c_str());
+  if (ui::icon_button("show_p", Icon::Eye, tr("Show what the proposal changes, note by note"), false, id.c_str())) {
+    side_ = SideView::Changes;
+    settings_.show_side = true;
+    req_.change = id;
+  }
+  if (pending) {
+    ImGui::SameLine(0, 4);
+    if (ui::icon_button("approve_p", Icon::Check, tr("Approve: the notes are written"), false, tr("Approve"))) w_.approve_proposal(id);
+    ImGui::SameLine(0, 4);
+    if (ui::icon_button("reject_p", Icon::Close, tr("Reject"), false, tr("Reject"))) w_.reject_proposal(id);
+  }
+  ImGui::PopID();
+}
+
+void Ui::side_proposals(const Model& m) {
+  if (m.proposals.empty()) {
+    ui::muted("%s", tr("no proposals yet"));
+    ImGui::Spacing();
+    ImGui::PushTextWrapPos(0);
+    ui::muted("%s", tr("Ask the notes assistant in the chat: what it would write or link comes here as a proposal; nothing is "
+                       "written before you approve it."));
+    ImGui::PopTextWrapPos();
+    return;
+  }
+  // The list, then the selected proposal: its request, its edits as diffs, approve / reject.
+  float list_h = std::min(static_cast<float>(m.proposals.size()) * ImGui::GetTextLineHeightWithSpacing() * 2.2f + 8,
+                          ImGui::GetContentRegionAvail().y * 0.4f);
+  ImGui::BeginChild("plist", ImVec2(0, list_h));
+  for (const auto& p : m.proposals) {
+    ImGui::PushID(p.id.c_str());
+    bool sel = req_.change == p.id;
+    if (ImGui::Selectable("##p", sel, 0, ImVec2(0, ImGui::GetTextLineHeight() * 2.1f))) req_.change = sel ? "" : p.id;
+    ImVec2 mn = ImGui::GetItemRectMin();
+    float w = ImGui::GetItemRectSize().x;
+    auto* dl = ImGui::GetWindowDrawList();
+    ImVec4 sc = p.status == "pending" ? rgb(240, 200, 30) : p.status == "approved" ? rgb(115, 201, 145) : rgb(150, 150, 150);
+    const char* st = p.status == "pending" ? tr("waits") : p.status == "approved" ? tr("approved") : tr("rejected");
+    std::string head = fmt::format("{}  {}", p.id, st);
+    dl->AddText(ImVec2(mn.x + 4, mn.y), ImGui::GetColorU32(sc), head.c_str());
+    dl->AddText(ImVec2(mn.x + 4, mn.y + ImGui::GetTextLineHeight()), ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                ui::ellipsize(p.summary.empty() ? p.request : p.summary, w - 8).c_str());
+    ImGui::PopID();
+  }
+  ImGui::EndChild();
+  ImGui::Separator();
+  const agents::NotesProposal* cur = nullptr;
+  for (const auto& p : m.proposals) {
+    if (p.id == req_.change) cur = &p;
+  }
+  if (cur == nullptr) {
+    ui::muted("%s", tr("Select a proposal to see what it changes."));
+    return;
+  }
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextUnformatted(cur->summary.c_str());
+  ui::muted("%s", fmt::format(fmt::runtime(tr("request: {}")), cur->request).c_str());
+  ImGui::PopTextWrapPos();
+  proposal_buttons(&m, cur->id);
+  ImGui::Spacing();
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::col(theme::kEditorBg));
+  ImGui::BeginChild("pdiff", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+  if (m.req.change == cur->id) {
+    ui::diff_text(m.proposal_preview);
+  } else {
+    ui::muted("%s", tr("loading..."));
+  }
+  ImGui::EndChild();
+  ImGui::PopStyleColor();
+}
+
 // --- inspector ----------------------------------------------------------------------------------------
 
 void Ui::inspector_note(const Model& m, const index::BlockRow& b) {
@@ -320,6 +398,13 @@ void Ui::inspector_note(const Model& m, const index::BlockRow& b) {
   if (ui::icon_button("nt_remove", Icon::Trash, tr("Remove"))) {
     note_dialog_ = "remove";
     note_target_ = b.id;
+  }
+  ImGui::SameLine(0, 2);
+  if (ui::icon_button("nt_ask", Icon::Chat, tr("Ask the notes assistant about this (the chat, limited to it)"), false, tr("Ask"))) {
+    chat_scope_ = {ChatScope::Kind::Block, b.id};
+    scope_seen_block_ = req_.selected;
+    show_chat_ = true;
+    chat_focus_ = true;
   }
   ImGui::Spacing();
   auto link_row = [&](const std::string& id, const char* key) {
@@ -381,6 +466,22 @@ void Ui::inspector_note(const Model& m, const index::BlockRow& b) {
   if (ui::section(fmt::format("{} ({})###nt_in", tr("LINKED FROM"), in.size()).c_str())) {
     for (const auto& id : in) link_row(id, "in");
     if (in.empty()) ui::muted("%s", tr("no note links here yet"));
+  }
+  // Plain words that name a title (ADR 0039): links to suggest, made in one click — no model.
+  if (m.req.selected == b.id && !m.mentions.empty() &&
+      ui::section(fmt::format("{} ({})###nt_ment", tr("MENTIONS WITHOUT A LINK"), m.mentions.size()).c_str())) {
+    for (std::size_t i = 0; i < m.mentions.size(); ++i) {
+      const auto& mn = m.mentions[i];
+      ImGui::PushID(static_cast<int>(i));
+      bool here = mn.src == b.id;  // this note names another one, or another note names this one
+      if (ui::icon_button("ment_link", Icon::Link, tr("Make these words a [[link]]"), false, tr("Link"))) w_.link_mention(mn.src, mn.dst);
+      ImGui::SameLine();
+      ImGui::PushTextWrapPos(0);
+      ImGui::TextUnformatted(here ? fmt::format(fmt::runtime(tr("names \"{}\": {}")), block_title(m, mn.dst), mn.text).c_str()
+                                  : fmt::format(fmt::runtime(tr("\"{}\" names it: {}")), block_title(m, mn.src), mn.text).c_str());
+      ImGui::PopTextWrapPos();
+      ImGui::PopID();
+    }
   }
   if (n != nullptr) {
     ImGui::Spacing();

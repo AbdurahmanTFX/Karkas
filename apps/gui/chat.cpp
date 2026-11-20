@@ -90,13 +90,17 @@ std::string ChatScope::str() const {
   return "";
 }
 
-std::vector<std::string> chat_command(ChatMode mode, const std::string& text, std::string* error, const ChatScope& scope) {
+std::vector<std::string> chat_command(ChatMode mode, const std::string& text, std::string* error, const ChatScope& scope, bool notes) {
   auto t = std::string(core::trim(text));
   auto fail = [&](const std::string& e) {
     if (error != nullptr) *error = e;
     return std::vector<std::string>{};
   };
   if (t.empty()) return fail("empty message");
+  if (t[0] != '/' && notes) {
+    if (scope.kind == ChatScope::Kind::Block && !scope.id.empty()) return {"notes", "--block", scope.id, t};
+    return {"notes", t};
+  }
   if (t[0] != '/') {
     if (scope.kind == ChatScope::Kind::Ticket && !scope.id.empty()) return {"ticket", "run", scope.id, "--note", t};
     if (scope.kind == ChatScope::Kind::Block && !scope.id.empty()) return {mode == ChatMode::Bug ? "debug" : "task", "--block", scope.id, t};
@@ -106,8 +110,8 @@ std::vector<std::string> chat_command(ChatMode mode, const std::string& text, st
   if (w.empty()) return fail("a command after '/', for example /ticket run T-0001");
   // Commands of the agents and the ones that look at their results; nothing that starts
   // servers, rewrites the schema by itself or runs benchmarks.
-  static const std::set<std::string> allowed = {"task", "debug", "ticket", "ask",  "approve", "change", "implement",
-                                                "expand", "design", "test", "check", "cost", "view"};
+  static const std::set<std::string> allowed = {"task",   "debug", "ticket", "ask",  "approve", "change", "implement", "expand",
+                                                "design", "test",  "check",  "cost", "view",    "notes",  "proposal"};
   if (!allowed.contains(w[0])) {
     std::string list;
     for (const auto& a : allowed) list += (list.empty() ? "" : ", ") + a;
@@ -232,7 +236,7 @@ void Chat::clear() {
 
 bool Chat::send(ChatMode mode, const std::string& text, const ChatScope& scope) {
   std::string error;
-  auto args = chat_command(mode, text, &error, scope);
+  auto args = chat_command(mode, text, &error, scope, notes_);
   std::unique_lock lk(mu_);
   if (busy_) {
     lk.unlock();
@@ -240,7 +244,7 @@ bool Chat::send(ChatMode mode, const std::string& text, const ChatScope& scope) 
     return false;
   }
   bool command = !core::trim(text).empty() && core::trim(text)[0] == '/';
-  add_locked({ChatEntry::Kind::User, std::string(core::trim(text)), command ? "command" : (mode == ChatMode::Bug ? "bug" : "task"),
+  add_locked({ChatEntry::Kind::User, std::string(core::trim(text)), command ? "command" : notes_ ? "notes" : (mode == ChatMode::Bug ? "bug" : "task"),
               scope.kind == ChatScope::Kind::Ticket ? scope.id : "", 0, command ? "" : scope.str()});
   if (args.empty()) {
     add_locked({ChatEntry::Kind::Error, error, "", "", 0});

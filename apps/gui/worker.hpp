@@ -15,6 +15,8 @@
 
 #include "cleared.hpp"
 #include "kk/agents/edit.hpp"
+#include "kk/agents/notes_agent.hpp"
+#include "kk/code/notes.hpp"
 #include "kk/core/config.hpp"
 #include "kk/core/model.hpp"
 #include "kk/index/index.hpp"
@@ -106,6 +108,11 @@ struct Model {
   RunInfo run;
   bool notes = false;                           // a notes project (project.ksl: lang notes)
   std::shared_ptr<const std::map<std::string, NoteText>> note_texts;  // notes projects: block id → its note
+  // The notes assistant (ADR 0039): its proposals (newest first), the selected one's preview (req.change
+  // = N-NNNN), and the links to suggest for the selected note (its plain mentions, and of it in others).
+  std::vector<agents::NotesProposal> proposals;
+  std::string proposal_preview;
+  std::vector<code::Mention> mentions;
   std::string message;
   std::string engine;
   double index_ms = 0;
@@ -152,6 +159,9 @@ class Worker {
   void link_notes(const std::string& src, const std::string& dst);
   void unlink_notes(const std::string& src, const std::string& dst);
   void retitle_note(const std::string& id, const std::string& title);
+  void approve_proposal(const std::string& id);
+  void reject_proposal(const std::string& id);
+  void link_mention(const std::string& src, const std::string& dst);
   // Asks one agent run to stop (its stop file; ADR 0019).
   void stop_run(const fs::path& journal);
   // Saves the rows removed from the bottom panels (.karkas/cleared.json).
@@ -185,6 +195,8 @@ class Worker {
   bool notes_ = false;
   std::shared_ptr<const std::map<std::string, NoteText>> note_texts_;
   void load_notes();  // notes_ and note_texts_ from the project as it is on disk
+  std::vector<code::Mention> mentions_;
+  std::string mentions_for_;  // the note they are of
   std::uint64_t serial_ = 0;
 };
 
