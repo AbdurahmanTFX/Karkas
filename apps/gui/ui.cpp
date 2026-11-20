@@ -1770,11 +1770,22 @@ void Ui::draw_graph(const Model& m) {
   }
   g_prof.mark(5);
 
+  // The prototype of this level (ADR 0035): ghost blocks and dependencies the human sketches.
+  if (proto_on_ && sketch_.scope == scope) {
+    draw_sketch(m, underlay_channel);
+  } else {
+    sketch_nodes_.clear();
+    sketch_pin_of_.clear();
+  }
+
   // Draw a link from an out port or fn to a consumer (14.6).
   if (ed::BeginCreate(rgb(255, 255, 255), 2.0f)) {
     ed::PinId a;
     ed::PinId b;
-    if (ed::QueryNewLink(&a, &b) && a && b) {
+    bool queried = ed::QueryNewLink(&a, &b) && a && b;
+    if (queried && (sketch_pin_of_.contains(a.Get()) || sketch_pin_of_.contains(b.Get()))) {
+      sketch_new_link(a.Get(), b.Get(), pin_of);  // a dependency of the prototype
+    } else if (queried) {
       auto pa = core::split(pin_of[a.Get()], ':', false);
       auto pb = core::split(pin_of[b.Get()], ':', false);
       // Provider: an out port or a fn. Consumer: an in port; a block's "out" point (it calls the
@@ -1810,6 +1821,16 @@ void Ui::draw_graph(const Model& m) {
     }
     ed::NodeId nid;
     while (ed::QueryDeletedNode(&nid)) {
+      if (auto sk = sketch_nodes_.find(nid.Get()); sk != sketch_nodes_.end()) {
+        if (ed::AcceptDeletedItem(true)) {  // a block of the prototype goes with its dependencies
+          auto id = sk->second;
+          std::erase_if(sketch_.blocks, [&](const agents::SketchBlock& b) { return sketch_.id_of(b) == id; });
+          std::erase_if(sketch_.links, [&](const agents::SketchLink& l) { return l.from == id || l.to == id; });
+          sketch_placed_.erase(id);
+          save_prototype();
+        }
+        continue;
+      }
       if (ed::AcceptDeletedItem(false) && node_of.contains(nid.Get())) {
         auto id = node_of[nid.Get()];
         w_.propose([=](const core::Schema& s) { return agents::op_remove_block(s, id); });
@@ -1823,7 +1844,10 @@ void Ui::draw_graph(const Model& m) {
   auto dbl = ed::GetDoubleClickedNode();
   std::string go_into;
   bool shift = ImGui::GetIO().KeyShift;
-  if (dbl && node_of.contains(dbl.Get()) && !shift) {
+  if (dbl && sketch_nodes_.contains(dbl.Get())) {
+    sketch_target_ = sketch_nodes_[dbl.Get()];  // edit the prototype block
+    sketch_dialog_ = true;
+  } else if (dbl && node_of.contains(dbl.Get()) && !shift) {
     const auto* b = snap.block(node_of[dbl.Get()]);
     if (b->kind == "group") {
       go_into = b->id;
@@ -1876,9 +1900,14 @@ void Ui::draw_graph(const Model& m) {
   if (suppress_bg_menu_ > 0) {
     --suppress_bg_menu_;
     (void)ed::ShowBackgroundContextMenu();
-  } else if (ed::ShowNodeContextMenu(&ctx) && node_of.contains(ctx.Get())) {
-    target_ = node_of[ctx.Get()];
-    ImGui::OpenPopup("node_menu");
+  } else if (ed::ShowNodeContextMenu(&ctx) && (node_of.contains(ctx.Get()) || sketch_nodes_.contains(ctx.Get()))) {
+    if (sketch_nodes_.contains(ctx.Get())) {
+      sketch_target_ = sketch_nodes_[ctx.Get()];
+      ImGui::OpenPopup("sketch_menu");
+    } else {
+      target_ = node_of[ctx.Get()];
+      ImGui::OpenPopup("node_menu");
+    }
   } else if (ed::ShowLinkContextMenu(&link_ctx) && line_of.contains(link_ctx.Get())) {
     menu_links_ = links_of(link_ctx.Get());
     menu_line_key_ = planned[line_of[link_ctx.Get()]].key;
@@ -1945,6 +1974,11 @@ void Ui::draw_graph(const Model& m) {
     ImGui::EndPopup();
   }
   if (ImGui::BeginPopup("bg_menu")) {
+    if (proto_on_ && ImGui::MenuItem(with_icon(Icon::Sketch, tr("Add a prototype block here")).c_str())) {
+      sketch_new_pos_ = ed::ScreenToCanvas(ImGui::GetMousePosOnOpeningCurrentPopup());
+      sketch_target_.clear();
+      sketch_dialog_ = true;
+    }
     if (ImGui::MenuItem(with_icon(Icon::Plus, tr("Add block...")).c_str())) {
       dialog_ = "add_block";
       target_ = scope;
@@ -1962,6 +1996,7 @@ void Ui::draw_graph(const Model& m) {
     if (ImGui::MenuItem(with_icon(Icon::Folder, tr("Show project folder")).c_str())) w_.open_folder("");
     ImGui::EndPopup();
   }
+  sketch_popups(m);
   ed::Resume();
   // Fit the view when a level is opened (not after every move or resize).
   if (navigated_view_ != view) {
@@ -2102,6 +2137,238 @@ void Ui::save_bends() {
     out << j.dump(2) << "\n";
   }
   std::filesystem::rename(tmp, dir / "bends.json", ec);
+}
+
+// --- prototype on the canvas (ADR 0035) ------------------------------------------------------
+
+namespace {
+
+const ImVec4 kSketch = rgb(186, 126, 255);   // a block or dependency of the prototype
+const ImVec4 kSketchKept = rgb(110, 220, 140);  // ... that the schema keeps
+
+agents::SchemaShape shape_of_snapshot(const index::Snapshot& snap) {
+  agents::SchemaShape s;
+  std::set<std::string> parents;
+  for (const auto& b : snap.blocks) {
+    s.blocks.insert(b.id);
+    if (!b.parent.empty()) parents.insert(b.parent);
+  }
+  for (const auto& b : snap.blocks) {
+    if (b.kind == "group" && !parents.contains(b.id)) s.childless_groups.insert(b.id);
+  }
+  for (const auto& l : snap.links) s.links.emplace_back(l.src_block, l.dst_block);
+  return s;
+}
+
+// A dashed curve from `a` (leaving to the right) to `b` (entering from the left), with an arrow.
+void dashed_curve(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float thick, bool dotted) {
+  float dx = std::max(40.0f, std::fabs(b.x - a.x) * 0.5f);
+  ImVec2 c1(a.x + dx, a.y);
+  ImVec2 c2(b.x - dx, b.y);
+  auto at = [&](float t) {
+    float u = 1 - t;
+    return ImVec2(u * u * u * a.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * b.x,
+                  u * u * u * a.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * b.y);
+  };
+  constexpr int kSeg = 48;
+  ImVec2 prev = a;
+  for (int k = 1; k <= kSeg; ++k) {
+    ImVec2 q = at(static_cast<float>(k) / kSeg);
+    bool on = dotted ? (k % 3 == 0) : (k % 4 != 3);
+    if (on) dl->AddLine(prev, q, col, thick);
+    prev = q;
+  }
+  ImVec2 t0 = at(0.96f);
+  ImVec2 d(b.x - t0.x, b.y - t0.y);
+  float len = std::max(0.001f, std::sqrt(d.x * d.x + d.y * d.y));
+  d = ImVec2(d.x / len, d.y / len);
+  ImVec2 n(-d.y, d.x);
+  float s = 7.0f + thick;
+  dl->AddTriangleFilled(b, ImVec2(b.x - d.x * s + n.x * s * 0.55f, b.y - d.y * s + n.y * s * 0.55f),
+                        ImVec2(b.x - d.x * s - n.x * s * 0.55f, b.y - d.y * s - n.y * s * 0.55f), col);
+}
+
+}  // namespace
+
+void Ui::draw_sketch(const Model& m, int underlay_channel) {
+  for (const auto& [id, p] : sketch_apply_) {
+    ed::SetNodePosition(hid("node:" + id), p);  // a realized block goes where the human drew it
+    placed_[id] = {p.x, p.y};
+  }
+  sketch_apply_.clear();
+  sketch_nodes_.clear();
+  sketch_pin_of_.clear();
+  sketch_socks_.clear();
+  const auto& snap = *m.snap;
+  // What the schema keeps of the prototype, once it was given to the agents.
+  agents::SketchCheck check;
+  bool checked = !sketch_.sent.empty();
+  if (checked) check = agents::check_sketch(sketch_, shape_of_snapshot(snap));
+  float scale = std::max(0.6f, settings_.block_scale);
+  float w = 230.0f * scale;
+  for (const auto& sb : sketch_.blocks) {
+    auto id = sketch_.id_of(sb);
+    // A block the schema has now is drawn by the schema (at the place the human gave it).
+    if (checked && !check.found[id].empty()) continue;
+    auto nid = hid("sketch:" + id);
+    sketch_nodes_[nid] = id;
+    if (!sketch_placed_.contains(id)) {
+      ed::SetNodePosition(nid, ImVec2(sb.x, sb.y));
+      sketch_placed_.insert(id);
+    }
+    ed::PushStyleColor(ed::StyleColor_NodeBg, with_alpha(kSketch, 0.14f));
+    ed::PushStyleColor(ed::StyleColor_NodeBorder, ImVec4(0, 0, 0, 0));  // dashed, below
+    ed::PushStyleVar(ed::StyleVar_NodePadding, ImVec4(12, 8, 12, 10));
+    ed::BeginNode(nid);
+    ImVec2 o = ImGui::GetCursorScreenPos();
+    float inner = w - 24;
+    float lh = ImGui::GetTextLineHeight();
+    // Title: the sketch icon, the name, the kind.
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.93f, 0.86f, 1.0f, 1.0f));
+    ImGui::TextUnformatted(with_icon(Icon::Sketch, sb.name).c_str());
+    ImGui::PopStyleColor();
+    if (!sb.kind.empty()) {
+      ImGui::SameLine(0, 6);
+      ImGui::TextColored(with_alpha(kSketch, 0.9f), "· %s", tr_kind(sb.kind));
+    }
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + inner);
+    if (!sb.purpose.empty()) {
+      ImGui::TextColored(rgb(200, 190, 215), "%s", sb.purpose.c_str());
+    } else {
+      ImGui::TextDisabled("%s", tr("(the architect writes its purpose)"));
+    }
+    ImGui::PopTextWrapPos();
+    if (checked) ImGui::TextColored(rgb(241, 120, 120), "%s", tr("not in the schema"));
+    ImGui::Dummy(ImVec2(inner, 1));
+    // Pins: in on the left, out on the right of the title line.
+    float cy = o.y + lh * 0.5f;
+    ImVec2 in_c(o.x - 12, cy);
+    ImVec2 out_c(o.x + inner + 12, cy);
+    auto pin = [&](const std::string& side, ImVec2 c, bool input) {
+      auto pid = hid("sketchpin:" + id + ":" + side);
+      sketch_pin_of_[pid] = id;
+      ed::PushStyleVar(input ? ed::StyleVar_TargetDirection : ed::StyleVar_SourceDirection, ImVec2(input ? -1.0f : 1.0f, 0.0f));
+      ed::BeginPin(pid, input ? ed::PinKind::Input : ed::PinKind::Output);
+      ed::PinRect(ImVec2(c.x - 9, c.y - 9), ImVec2(c.x + 9, c.y + 9));
+      ed::PinPivotRect(c, c);
+      ed::EndPin();
+      ed::PopStyleVar();
+      ImGui::GetWindowDrawList()->AddCircleFilled(c, 5.0f, ImGui::GetColorU32(kSketch));
+      ImGui::GetWindowDrawList()->AddCircle(c, 5.0f, IM_COL32(30, 20, 40, 255), 0, 1.5f);
+    };
+    pin("in", in_c, true);
+    pin("out", out_c, false);
+    sketch_socks_[id] = {in_c, out_c};
+    ed::EndNode();
+    ed::PopStyleVar();
+    ed::PopStyleColor(2);
+    // A dashed border: a block that is not there yet.
+    if (auto* bg = ed::GetNodeBackgroundDrawList(nid)) {
+      ImVec2 a = ed::GetNodePosition(nid);
+      ImVec2 sz = ed::GetNodeSize(nid);
+      ImVec2 b(a.x + sz.x, a.y + sz.y);
+      ImU32 c = ImGui::GetColorU32(kSketch);
+      auto dash = [&](ImVec2 p, ImVec2 q) {
+        float len = std::max(std::fabs(q.x - p.x), std::fabs(q.y - p.y));
+        int n = std::max(1, static_cast<int>(len / 7.0f));
+        for (int i = 0; i < n; i += 2) {
+          float t0 = static_cast<float>(i) / n;
+          float t1 = std::min(1.0f, static_cast<float>(i + 1) / n);
+          bg->AddLine(ImVec2(p.x + (q.x - p.x) * t0, p.y + (q.y - p.y) * t0), ImVec2(p.x + (q.x - p.x) * t1, p.y + (q.y - p.y) * t1), c, 2.0f);
+        }
+      };
+      dash(a, ImVec2(b.x, a.y));
+      dash(ImVec2(b.x, a.y), b);
+      dash(b, ImVec2(a.x, b.y));
+      dash(ImVec2(a.x, b.y), a);
+    }
+    // The place the human gives it, kept when the drag ends.
+    ImVec2 np = ed::GetNodePosition(nid);
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && (std::fabs(np.x - sb.x) > 0.5f || std::fabs(np.y - sb.y) > 0.5f)) {
+      for (auto& b2 : sketch_.blocks) {
+        if (sketch_.id_of(b2) == id) {
+          b2.x = np.x;
+          b2.y = np.y;
+        }
+      }
+      save_prototype();
+    }
+  }
+  // Dependencies: dashed, from the out point of one block to the in point of the other; a real
+  // block is reached at its border (or the border of the block that shows it on this level).
+  std::set<std::string> shown;
+  for (const auto& n : m.graph.nodes) shown.insert(n.id);
+  auto end_point = [&](const std::string& id, bool out) -> std::optional<ImVec2> {
+    if (auto it = sketch_socks_.find(id); it != sketch_socks_.end()) return out ? it->second.second : it->second.first;
+    std::string target = id;
+    if (checked) {
+      if (auto f = check.found.find(id); f != check.found.end() && !f->second.empty()) target = f->second;
+    }
+    for (std::string x = target; !x.empty(); x = core::parent_id(x)) {
+      if (!shown.contains(x)) continue;
+      auto nid = hid("node:" + x);
+      ImVec2 p = ed::GetNodePosition(nid);
+      ImVec2 sz = ed::GetNodeSize(nid);
+      if (sz.x <= 0) return std::nullopt;
+      return ImVec2(out ? p.x + sz.x : p.x, p.y + std::min(sz.y * 0.5f, 22.0f));
+    }
+    return std::nullopt;
+  };
+  auto* dl = ImGui::GetWindowDrawList();
+  int prev = dl->_Splitter._Current;
+  dl->_Splitter.SetCurrentChannel(dl, underlay_channel);
+  for (std::size_t i = 0; i < sketch_.links.size(); ++i) {
+    const auto& l = sketch_.links[i];
+    auto a = end_point(l.from, true);
+    auto b = end_point(l.to, false);
+    if (!a || !b) continue;
+    int state = checked && i < check.links.size() ? check.links[i] : 0;
+    ImVec4 col = checked && state == 1 ? kSketchKept : kSketch;
+    dashed_curve(dl, *a, *b, ImGui::GetColorU32(with_alpha(col, 0.95f)), 2.5f, checked && state == -1);
+  }
+  dl->_Splitter.SetCurrentChannel(dl, prev);
+  // "+ block" in the bar: the dialog opens with the block at the middle of the free part.
+  if (sketch_add_center_) {
+    sketch_add_center_ = false;
+    ImVec2 c((free_area_.min.x + free_area_.max.x) * 0.5f, (free_area_.min.y + free_area_.max.y) * 0.5f);
+    sketch_new_pos_ = ed::ScreenToCanvas(c);
+    sketch_new_pos_.x -= 115 * scale;
+    sketch_target_.clear();
+    sketch_dialog_ = true;
+  }
+}
+
+void Ui::sketch_new_link(std::uintptr_t a, std::uintptr_t b, const std::map<std::uintptr_t, std::string>& pin_of) {
+  // The block of a pin: a sketch block, or the real block of a port or block point.
+  auto owner = [&](std::uintptr_t p) -> std::string {
+    if (auto it = sketch_pin_of_.find(p); it != sketch_pin_of_.end()) return it->second;
+    if (auto it = pin_of.find(p); it != pin_of.end()) {
+      auto parts = core::split(it->second, ':', false);
+      return parts.empty() ? std::string() : parts[0];
+    }
+    return {};
+  };
+  // Dragged from an in point: the dependency goes the other way.
+  bool reverse = false;
+  for (const auto& [pid, sid] : sketch_pin_of_) {
+    if (pid == a && hid("sketchpin:" + sid + ":in") == a) reverse = true;
+  }
+  std::string from = owner(a);
+  std::string to = owner(b);
+  if (reverse) std::swap(from, to);
+  bool dup = std::any_of(sketch_.links.begin(), sketch_.links.end(), [&](const agents::SketchLink& l) { return l.from == from && l.to == to; });
+  bool ok = !from.empty() && !to.empty() && from != to && !dup;
+  if (!ok) {
+    ed::Suspend();
+    ImGui::SetTooltip("%s", dup ? tr("This dependency is drawn already") : tr("These two points cannot be linked"));
+    ed::Resume();
+    ed::RejectNewItem(rgb(255, 80, 80), 2.0f);
+    return;
+  }
+  if (ed::AcceptNewItem(kSketch, 3.0f)) {
+    sketch_.links.push_back({from, to, ""});
+    save_prototype();
+  }
 }
 
 void reset_canvas_caches() {

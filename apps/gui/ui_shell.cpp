@@ -478,6 +478,8 @@ void Ui::set_project_root(std::filesystem::path root) {
   feed_ = std::make_unique<JournalFeed>(root_ / ".karkas" / "runs");
   live_journal_.clear();
   load_bends();
+  proto_on_ = false;
+  load_prototype();
 }
 
 void Ui::go_to(const Model& m, const std::string& id) {
@@ -1331,7 +1333,8 @@ void Ui::draw_editor(const Model& m) {
   ImVec2 body_min(free_area_.min.x, free_area_.min.y + chrome_h_);
   ImVec2 body_size(std::max(1.0f, free_area_.w()), std::max(1.0f, free_area_.h() - chrome_h_));
   if (editor_tab_ == "#schema") {
-    if (m.snap->blocks.empty() || (m.graph.nodes.empty() && m.req.scope == req_.scope)) {
+    // An empty level explains itself, unless a prototype is drawn on it.
+    if (!proto_on_ && (m.snap->blocks.empty() || (m.graph.nodes.empty() && m.req.scope == req_.scope))) {
       ImGui::SetCursorScreenPos(body_min);
       ImGui::BeginChild("##empty", body_size, ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
       draw_empty(m);
@@ -1430,6 +1433,14 @@ void Ui::draw_schema_toolbar(const Model& m) {
   if (ui::icon_button("tb_fit", Icon::Fit, tr("Fit to view"))) navigate_ = 1;
   ImGui::SameLine(0, 4);
   if (ui::icon_button("tb_up", Icon::ArrowUp, tr("Up one level"), false) && !req_.scope.empty()) enter(core::parent_id(req_.scope));
+  ImGui::SameLine(0, 4);
+  // Prototype mode (ADR 0035): sketch ghost blocks and dependencies, then give them to the architect.
+  bool proto = proto_on_;
+  if (ui::toggle("tb_proto", Icon::Sketch, tr("Prototype"), &proto,
+                 tr("Sketch the blocks and dependencies you want as ghosts; on approval the architect builds the schema from "
+                    "the idea and the sketch, keeping its main logic"))) {
+    set_prototype(proto);
+  }
   if (!pinned_.empty()) {
     ImGui::SameLine(0, 12);
     ImGui::TextColored(rgb(255, 230, 120), "%s", with_icon(Icon::Pin, fmt::format(fmt::runtime(tr("Highlighted: {}")), pinned_.size())).c_str());
@@ -1444,6 +1455,7 @@ void Ui::draw_schema_toolbar(const Model& m) {
     ImGui::SameLine(0, 12);
     ImGui::TextColored(rgb(241, 76, 76), "%s", path_error_.c_str());
   }
+  draw_prototype_bar(m);
 }
 
 void Ui::draw_file_header(const Model& m, const std::string& file) {

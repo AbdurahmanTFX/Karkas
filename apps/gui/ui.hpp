@@ -18,6 +18,7 @@
 #include "chat.hpp"
 #include "feed.hpp"
 #include "cleared.hpp"
+#include "kk/agents/prototype.hpp"
 #include "kk/core/config.hpp"
 #include "kk/llm/mcp_bridge.hpp"
 #include "picker.hpp"
@@ -61,6 +62,7 @@ class Ui {
   Request& request() { return req_; }
   [[nodiscard]] bool quit_requested() const { return quit_; }
   void open_settings() { show_settings_ = true; }
+  void open_prototype() { set_prototype(true); }  // prototype mode (headless checks: --prototype)
   void open_chat() {
     show_chat_ = true;
     chat_focus_ = true;
@@ -188,6 +190,32 @@ class Ui {
   void show_picker(bool create = false);
   void go_to(const Model& m, const std::string& id);  // open the level of a block and select it
   ImVec4 color_of(const Model& m, const std::string& id) { return colors_.get(*m.snap, m.serial, id); }
+  // prototype mode (ui_prototype.cpp, ADR 0035): ghost blocks and dependencies the human
+  // sketches on a level, given to the architect (or the orchestrator) when approved.
+  bool proto_on_ = false;
+  agents::Sketch sketch_;
+  std::string sketch_msg_;                  // the last problem or what was done
+  std::map<std::uintptr_t, std::string> sketch_nodes_;  // node id → sketch block id (this frame)
+  std::map<std::string, std::pair<ImVec2, ImVec2>> sketch_socks_;  // sketch block id → in / out socket (canvas)
+  std::set<std::string> sketch_placed_;     // sketch nodes positioned in the node editor
+  std::set<std::string> sketch_positioned_;  // realized blocks given the sketch's place once
+  std::map<std::string, ImVec2> sketch_apply_;  // ... to be moved there in the node editor now
+  std::string sketch_target_;               // sketch block of the open menu / dialog ("" = a new one)
+  bool sketch_dialog_ = false;
+  bool sketch_add_center_ = false;          // "+ block" pressed: the dialog opens at the view's center
+  ImVec2 sketch_new_pos_{0, 0};
+  std::string sk_name_, sk_purpose_;
+  int sk_kind_ = 0;
+  void load_prototype();
+  void save_prototype();
+  void set_prototype(bool on);
+  void draw_prototype_bar(const Model& m);
+  void draw_sketch(const Model& m, int underlay_channel);  // inside the node editor (ui.cpp)
+  void sketch_new_link(std::uintptr_t a, std::uintptr_t b, const std::map<std::uintptr_t, std::string>& pin_of);
+  void sketch_popups(const Model& m);  // the menu of a sketch block and the block dialog
+  void send_prototype(const Model& m);
+  void place_realized(const Model& m);  // realized blocks take the places the human drew them at
+  std::map<std::uintptr_t, std::string> sketch_pin_of_;  // pin id → sketch block id (this frame)
   // schema (ui.cpp)
   void draw_address(const Model& m);
   void navigate_path(const Model& m, const std::string& text);

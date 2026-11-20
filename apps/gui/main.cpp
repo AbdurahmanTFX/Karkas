@@ -39,7 +39,7 @@ namespace {
 void usage() {
   std::cerr << "usage: karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]\n"
                "                  [--lang en|ru] [--block-scale F] [--settings] [--chat] [--script \"...\"]\n"
-               "                  [--drag x1,y1,x2,y2] [--layout file.ini]\n"
+               "                  [--drag x1,y1,x2,y2] [--layout file.ini] [--prototype]\n"
                "                  [--frames N] [--screenshot out.png] [--version]\n";
 }
 
@@ -77,6 +77,7 @@ int main(int argc, char** argv) {
   bool all_levels = false;
   bool open_settings = false;
   bool open_chat = false;
+  bool open_proto = false;
   std::string script_text;  // headless checks: scripted input (script.hpp)
   int frames = 0;
   for (int i = 1; i < argc; ++i) {
@@ -90,6 +91,7 @@ int main(int argc, char** argv) {
     else if (a == "--block-scale") block_scale = std::strtof(next().c_str(), nullptr);
     else if (a == "--settings") open_settings = true;
     else if (a == "--chat") open_chat = true;
+    else if (a == "--prototype") open_proto = true;
     else if (a == "--layout") layout_file = next();
     else if (a == "--script") script_text += next() + ";";
     else if (a == "--drag") script_text += "drag " + kk::core::replace_all(next(), ",", " ") + ";";
@@ -302,6 +304,7 @@ int main(int argc, char** argv) {
         ui.request().scope = scope;
         ui.request().selected = select;
         ui.request().all_levels = all_levels;
+        if (open_proto) ui.open_prototype();
       }
       bool first = true;
       int frame = 0;

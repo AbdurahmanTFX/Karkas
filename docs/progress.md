@@ -634,3 +634,14 @@
 - GUI chat: "Request:" whole project / block / ticket, following the last selection, with a line
   saying what happens; inspector "Chat" button, ticket menu "Write about this ticket in the chat".
 - Tests 349 (scope_test.cpp, chat commands per mode).
+
+## Addition — prototype mode (docs/adr/0035)
+
+- The human sketches ghost blocks and dependencies on a level (violet, dashed), writes the idea and
+  approves; `karkas design|expand --sketch` (or a task for a level that has blocks) builds from both.
+- The architect keeps the sketch's blocks and dependencies — report(done) is refused until it does or
+  explains each gap — and offers better variants of critical places with propose_alternative, stored as
+  changes C-NNNN to approve or reject on the schema.
+- After the design the schema is checked against the sketch (kept / pending / missing), realized blocks
+  take the places they were drawn at, the rest stay ghosts; "Send again" sends only what is missing.
+- Tests 356; checked under Xvfb (drawing, dialog, dragged dependency, approval command, the comparison).
