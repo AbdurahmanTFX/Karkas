@@ -86,13 +86,16 @@ AutoRegister reg([](CLI::App& cli, App& app) {
 
   auto* task = cli.add_subcommand("task", "a feature or change request through the orchestrator");
   task->add_option("description", text, "what to do")->required();
-  task->callback([&app] { out(engine(app)->task(text)); });
+  static std::string scope;
+  task->add_option("--block", scope, "limit the request to this block and its subtree (the descent starts there)");
+  task->callback([&app] { out(engine(app)->task(text, scope)); });
 
   auto* debug = cli.add_subcommand("debug", "debug by descending the schema: symptom + facts");
   debug->add_option("symptom", text, "symptom in the user's words")->required();
   debug->add_option("--fact", facts, "observed fact (failing test, probe value); repeatable");
   debug->add_option("--origin", origin, "human | tester | orchestrator");
-  debug->callback([&app] { out(engine(app)->debug(text, facts, origin)); });
+  debug->add_option("--block", scope, "limit the search to this block and its subtree (the descent starts there)");
+  debug->callback([&app] { out(engine(app)->debug(text, facts, origin, scope)); });
 
   auto* ask = cli.add_subcommand("ask", "ask one short question to the agent of a block");
   ask->add_option("block", block, "block id")->required();
@@ -157,7 +160,9 @@ AutoRegister reg([](CLI::App& cli, App& app) {
   run->add_option("id", id, "T-NNNN")->required();
   static bool force = false;
   run->add_flag("--force", force, "run even if the last run is blocked on a human and nothing changed since");
-  run->callback([&app] { out(engine(app)->run_ticket(id, force)); });
+  static std::string note;
+  run->add_option("--note", note, "a message about the ticket: added as a fact \"human: ...\", then the ticket runs (forced)");
+  run->callback([&app] { out(engine(app)->run_ticket(id, force, note)); });
 
   auto* change = cli.add_subcommand("change", "schema changes: list | show <id> | reject <id>");
   change->require_subcommand(1);

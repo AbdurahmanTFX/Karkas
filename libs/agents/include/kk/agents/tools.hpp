@@ -22,6 +22,9 @@ struct SchemaCallbacks {
   // Why a block may not be picked again in this run ("not_here: ..."), empty if it may: a
   // child that already answered is not sent the same ticket twice in one descent.
   std::function<std::string(const std::string& block)> excluded;
+  // The block the human limited the ticket to (docs/adr/0034): dispatch and `next` name it or a
+  // block inside it; "" = the whole project.
+  std::string limit;
   // Full check of a proposed KSL diff (the same as a worker's proposal); empty if it is fine.
   std::function<std::string(const std::string& diff)> check_change;
   // A feature's orchestrator may plan: dispatch / propose_change take `next` (ADR 0026).

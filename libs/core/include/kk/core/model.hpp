@@ -209,6 +209,7 @@ struct Ticket {
   std::string id;
   std::vector<Attr> header_attrs;  // e.g. view=path at=stream (path views)
   Scalar kind, origin, status, symptom, task;
+  Scalar scope;  // the block (and its subtree) the human limited the ticket to; unset = the whole project (docs/adr/0034)
   std::vector<TextItem> facts;  // original facts (immutable, 10.1)
   std::vector<TrailEntry> trail;
   std::vector<ResultLine> result;

@@ -38,7 +38,7 @@ Result<std::string> TicketStore::next_id() const {
 }
 
 Result<Ticket> TicketStore::create(TicketKind kind, std::string_view origin, std::string_view text,
-                                   const std::vector<std::string>& facts) {
+                                   const std::vector<std::string>& facts, std::string_view scope) {
   std::error_code ec;
   fs::create_directories(dir(), ec);
   // Retry on races: O_EXCL creation of the file reserves the id.
@@ -50,6 +50,7 @@ Result<Ticket> TicketStore::create(TicketKind kind, std::string_view origin, std
     t.kind = Scalar{std::string(to_string(kind)), {}, 0, 0, true};
     t.origin = Scalar{std::string(origin), {}, 0, 0, true};
     t.status = Scalar{"open", {}, 0, 0, true};
+    if (!scope.empty() && scope != "root") t.scope = Scalar{std::string(scope), {}, 0, 0, true};
     if (kind == TicketKind::Bug) {
       t.symptom = Scalar{std::string(text), {}, 0, 0, true};
     } else {
@@ -138,6 +139,18 @@ Result<Ticket> TicketStore::edit_by_human(std::string_view id, std::string_view 
   if (!l) return fail("tickets", fmt::format("{} is being worked on ({}): stop its agents first", id, l.error().message));
   if (auto w = write_file(file(id), write_ticket(*t)); !w) return std::unexpected(w.error());
   return load(id);
+}
+
+VoidResult TicketStore::add_human_fact(std::string_view id, std::string_view text) const {
+  auto t = load(id);
+  if (!t) return std::unexpected(t.error());
+  auto line = std::string(trim(text));
+  if (line.empty()) return fail("tickets", "the message is empty");
+  for (auto& c : line) {
+    if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+  }
+  t->facts.push_back(TextItem{"human: " + line, {}, 0, 0});
+  return write_file(file(id), write_ticket(*t));
 }
 
 VoidResult TicketStore::append(std::string_view id, const TrailEntry& entry, const std::vector<std::string>& new_facts) const {

@@ -1973,25 +1973,45 @@ kk::Result<std::string> Engine::implement(const std::string& target) {
 
 // --- tickets (13.2, 13.3) --------------------------------------------------------------------
 
-kk::Result<std::string> Engine::task(const std::string& description) {
-  auto t = impl_->tickets.create(core::TicketKind::Feature, "human", description, {});
+namespace {
+// The scope of a new ticket: a known block; "" / "root" = the whole project.
+kk::Result<std::string> checked_scope(index::Index& idx, const std::string& scope) {
+  if (scope.empty() || scope == "root") return std::string();
+  if (idx.snapshot().block(scope) == nullptr) return kk::fail("ticket", "unknown block " + scope + " (the scope of the request)");
+  return scope;
+}
+}  // namespace
+
+kk::Result<std::string> Engine::task(const std::string& description, const std::string& scope) {
+  auto sc = checked_scope(*impl_->idx, scope);
+  if (!sc) return std::unexpected(sc.error());
+  auto t = impl_->tickets.create(core::TicketKind::Feature, "human", description, {}, *sc);
   if (!t) return std::unexpected(t.error());
   impl_->say("created " + t->id);
   return run_ticket(t->id);
 }
 
 kk::Result<std::string> Engine::debug(const std::string& symptom, const std::vector<std::string>& facts,
-                                      const std::string& origin) {
-  auto t = impl_->tickets.create(core::TicketKind::Bug, origin, symptom, facts);
+                                      const std::string& origin, const std::string& scope) {
+  auto sc = checked_scope(*impl_->idx, scope);
+  if (!sc) return std::unexpected(sc.error());
+  auto t = impl_->tickets.create(core::TicketKind::Bug, origin, symptom, facts, *sc);
   if (!t) return std::unexpected(t.error());
   impl_->say("created " + t->id);
   return run_ticket(t->id);
 }
 
-kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
+kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force, const std::string& note) {
   auto& m = *impl_;
   auto lock = m.tickets.lock(id, "karkas run_ticket");
   if (!lock) return std::unexpected(lock.error());
+  // The human's message about the ticket (the chat in ticket mode): a fact every agent sees, and
+  // a reason to run again whatever the last run ended with.
+  if (!core::trim(note).empty()) {
+    if (auto r = m.tickets.add_human_fact(id, note); !r) return std::unexpected(r.error());
+    force = true;
+    m.say(id + ": the human's message added as a fact");
+  }
   auto t = m.tickets.load(id);
   if (!t) return std::unexpected(t.error());
   // A closed ticket runs again only on purpose (--force): its result did not convince the human, or
@@ -2011,6 +2031,11 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
     if (auto why = m.blocked_reason(*t); !why.empty()) return kk::fail("ticket", why);
   }
   bool bug = t->kind_enum() == core::TicketKind::Bug;
+  // The block the human limited the ticket to (docs/adr/0034): the descent stays inside it.
+  const std::string limit = t->scope.set ? t->scope.value : std::string();
+  if (!limit.empty() && s0->find(limit) == nullptr) {
+    return kk::fail("ticket", fmt::format("{}: its scope {} is not a block any more (edit the ticket's scope line)", id, limit));
+  }
   m.set_status(id, core::TicketStatus::Descending);
   std::string current = "root";
   std::string difficulty;
@@ -2270,12 +2295,26 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
     }
     if (!c || c->status.value != "pending") fs::remove(plan_file, ec);
   }
+  // A scoped ticket's first run starts at its block: no orchestrator decision is needed to pick it
+  // (deterministic first, 0.2); later runs and anything that comes back up go to the orchestrator,
+  // which may pick only inside the scope.
+  if (!limit.empty() && !planned &&
+      std::none_of(t->trail.begin(), t->trail.end(), [](const core::TrailEntry& e) { return e.type == core::TrailEntry::Type::Level; })) {
+    m.trail(id, level_entry(0, "human", {{"at", "root"}, {"pick", limit}, {"why", "the human limited the request to this block"}}));
+    m.say(fmt::format("{}: scoped to {}", id, limit));
+    current = limit;
+  }
   for (int guard = 0; guard < 30; ++guard) {
     if (core::cancel_requested()) return stopped("", current);
     auto s = m.schema();
     if (!s) return std::unexpected(s.error());
     auto ticket = m.tickets.load(id);
     if (!ticket) return std::unexpected(ticket.error());
+    if (!limit.empty() && current != "root" && !core::Schema::is_under(limit, current)) {
+      // Going up past the scope (not_here twice on its level): the orchestrator decides, inside the scope.
+      m.note(id, fmt::format("{} is outside the scope {} the human gave: back to the orchestrator", current, limit));
+      current = "root";
+    }
     const core::Block* b = current == "root" ? nullptr : s->find(current);
     if (current != "root" && b == nullptr) return kk::fail("ticket", "unknown block " + current);
 
@@ -2408,7 +2447,7 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
       // The blocks the code index finds for the words of the ticket (ADR 0028): on a big imported project
       // the orchestrator otherwise viewed whole groups to find the place (Endless Sky: 157K characters).
       std::string likely;
-      if (orch && root_visits == 1 && done_blocks.empty()) {
+      if (orch && root_visits == 1 && done_blocks.empty() && limit.empty()) {  // a scoped ticket names its place
         std::lock_guard lk(m.mu);
         auto found = m.idx->locate(ticket->symptom.set ? ticket->symptom.value : ticket->task.value, kLikelyBlocks);
         if (found.starts_with("@locate")) {
@@ -2416,12 +2455,18 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
                    found.substr(found.find('\n') + 1);
         }
       }
+      if (orch && !limit.empty()) {
+        decide += fmt::format("\nThe human limited this ticket to {} and the blocks inside it: dispatch only those (a change may add "
+                              "blocks inside {}); escalate when the request needs a block outside it.",
+                              limit, limit);
+      }
       spec.task_text = core::path_view(*ticket, current) + likely + decide;
       spec.max_steps = orch ? cfg_.max_steps_orchestrator : cfg_.max_steps_navigator;
       spec.max_tokens = cfg_.max_tokens_per_run;
       spec.timeout = std::chrono::seconds(cfg_.run_timeout_s);
       auto cbs = m.callbacks(id, &answered);
       cbs.plans = orch && !bug;
+      if (orch) cbs.limit = limit;
       SchemaToolHost host(*m.idx, spec.role, current, std::move(cbs));
       auto res = m.runner().run(spec, host);
       total += res.tokens;

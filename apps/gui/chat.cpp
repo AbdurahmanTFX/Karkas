@@ -81,14 +81,27 @@ constexpr std::size_t kMaxEntries = 2000;
 
 }  // namespace
 
-std::vector<std::string> chat_command(ChatMode mode, const std::string& text, std::string* error) {
+std::string ChatScope::str() const {
+  switch (kind) {
+    case Kind::Project: return "";
+    case Kind::Block: return "block " + id;
+    case Kind::Ticket: return "ticket " + id;
+  }
+  return "";
+}
+
+std::vector<std::string> chat_command(ChatMode mode, const std::string& text, std::string* error, const ChatScope& scope) {
   auto t = std::string(core::trim(text));
   auto fail = [&](const std::string& e) {
     if (error != nullptr) *error = e;
     return std::vector<std::string>{};
   };
   if (t.empty()) return fail("empty message");
-  if (t[0] != '/') return {mode == ChatMode::Bug ? "debug" : "task", t};
+  if (t[0] != '/') {
+    if (scope.kind == ChatScope::Kind::Ticket && !scope.id.empty()) return {"ticket", "run", scope.id, "--note", t};
+    if (scope.kind == ChatScope::Kind::Block && !scope.id.empty()) return {mode == ChatMode::Bug ? "debug" : "task", "--block", scope.id, t};
+    return {mode == ChatMode::Bug ? "debug" : "task", t};
+  }
   auto w = words(std::string_view(t).substr(1));
   if (w.empty()) return fail("a command after '/', for example /ticket run T-0001");
   // Commands of the agents and the ones that look at their results; nothing that starts
@@ -140,7 +153,7 @@ Chat::Chat(fs::path root, fs::path cli, std::function<void()> wake)
     try {
       auto j = json::parse(line);
       entries_.push_back({kind_from(j.value("kind", "")), j.value("text", ""), j.value("mode", ""), j.value("ticket", ""),
-                          j.value("ts", std::int64_t{0})});
+                          j.value("ts", std::int64_t{0}), j.value("scope", "")});
     } catch (const json::exception&) {
     }
   }
@@ -168,6 +181,7 @@ void Chat::add_locked(ChatEntry e) {
   json j = {{"kind", kind_name(e.kind)}, {"text", e.text}, {"ts", e.ts}};
   if (!e.mode.empty()) j["mode"] = e.mode;
   if (!e.ticket.empty()) j["ticket"] = e.ticket;
+  if (!e.scope.empty()) j["scope"] = e.scope;
   (void)core::append_file(file_, j.dump() + "\n");
   entries_.push_back(std::move(e));
   if (entries_.size() > kMaxEntries) entries_.erase(entries_.begin());
@@ -216,9 +230,9 @@ void Chat::clear() {
   ++serial_;
 }
 
-bool Chat::send(ChatMode mode, const std::string& text) {
+bool Chat::send(ChatMode mode, const std::string& text, const ChatScope& scope) {
   std::string error;
-  auto args = chat_command(mode, text, &error);
+  auto args = chat_command(mode, text, &error, scope);
   std::unique_lock lk(mu_);
   if (busy_) {
     lk.unlock();
@@ -226,7 +240,8 @@ bool Chat::send(ChatMode mode, const std::string& text) {
     return false;
   }
   bool command = !core::trim(text).empty() && core::trim(text)[0] == '/';
-  add_locked({ChatEntry::Kind::User, std::string(core::trim(text)), command ? "command" : (mode == ChatMode::Bug ? "bug" : "task"), "", 0});
+  add_locked({ChatEntry::Kind::User, std::string(core::trim(text)), command ? "command" : (mode == ChatMode::Bug ? "bug" : "task"),
+              scope.kind == ChatScope::Kind::Ticket ? scope.id : "", 0, command ? "" : scope.str()});
   if (args.empty()) {
     add_locked({ChatEntry::Kind::Error, error, "", "", 0});
     lk.unlock();

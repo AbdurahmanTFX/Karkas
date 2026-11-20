@@ -61,12 +61,16 @@ class Engine {
   kk::Result<std::string> implement(const std::string& target);
 
   // --- 13.2 / 13.3 tickets -------------------------------------------------------------------
-  kk::Result<std::string> task(const std::string& description);
+  // scope: a block the human limited the request to (docs/adr/0034): the descent starts at it
+  // (no orchestrator decision for the first step) and the orchestrator picks only inside it.
+  kk::Result<std::string> task(const std::string& description, const std::string& scope = "");
   kk::Result<std::string> debug(const std::string& symptom, const std::vector<std::string>& facts,
-                                const std::string& origin = "human");
+                                const std::string& origin = "human", const std::string& scope = "");
   // force: run even when the last run stopped on something only a human resolves and
   // nothing changed since (otherwise refused without starting a model, ADR 0020).
-  kk::Result<std::string> run_ticket(const std::string& id, bool force = false);
+  // note: a message of the human about the ticket, added as a fact "human: ..." before the run;
+  // the run is then forced (the human gave something new) and a closed ticket reopens.
+  kk::Result<std::string> run_ticket(const std::string& id, bool force = false, const std::string& note = "");
   // ask(block, question): short cheap agent; the answer is appended to the trail (10.5).
   kk::Result<std::string> ask(const std::string& block, const std::string& question, const std::string& ticket);
 

@@ -32,6 +32,24 @@ std::vector<ChatEntry> of_kind(const std::vector<ChatEntry>& all, ChatEntry::Kin
 
 }  // namespace
 
+TEST_CASE("chat: a message in block or ticket mode stays inside its block or goes to its ticket (ADR 0034)") {
+  std::string err;
+  gui::ChatScope block{gui::ChatScope::Kind::Block, "stream.ring"};
+  gui::ChatScope ticket{gui::ChatScope::Kind::Ticket, "T-0003"};
+  CHECK(gui::chat_command(ChatMode::Task, "add reset", &err, block) == std::vector<std::string>{"task", "--block", "stream.ring", "add reset"});
+  CHECK(gui::chat_command(ChatMode::Bug, "drops frames", &err, block) ==
+        std::vector<std::string>{"debug", "--block", "stream.ring", "drops frames"});
+  CHECK(gui::chat_command(ChatMode::Task, " also on seek ", &err, ticket) ==
+        std::vector<std::string>{"ticket", "run", "T-0003", "--note", "also on seek"});
+  CHECK(gui::chat_command(ChatMode::Bug, "also on seek", &err, ticket) ==
+        std::vector<std::string>{"ticket", "run", "T-0003", "--note", "also on seek"});
+  // A /command is that command in any mode.
+  CHECK(gui::chat_command(ChatMode::Task, "/approve C-0002", &err, block) == std::vector<std::string>{"approve", "C-0002"});
+  CHECK(block.str() == "block stream.ring");
+  CHECK(ticket.str() == "ticket T-0003");
+  CHECK(gui::ChatScope{}.str().empty());
+}
+
 TEST_CASE("chat: a message is the karkas command a user would type (ADR 0019)") {
   std::string err;
   CHECK(gui::chat_command(ChatMode::Task, "  add a volume knob ", &err) == std::vector<std::string>{"task", "add a volume knob"});

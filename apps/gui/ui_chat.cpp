@@ -172,6 +172,82 @@ void Ui::change_buttons(const Model* m, const std::string& c) {
   ImGui::PopID();
 }
 
+// --- scope of a message (ADR 0034) -------------------------------------------------------------
+
+void Ui::update_chat_scope(const Model& m) {
+  // The last block or ticket the user selected is what a message is about.
+  if (req_.selected != scope_seen_block_) {
+    scope_seen_block_ = req_.selected;
+    if (!req_.selected.empty()) chat_scope_ = {ChatScope::Kind::Block, req_.selected};
+  }
+  if (req_.ticket != scope_seen_ticket_) {
+    scope_seen_ticket_ = req_.ticket;
+    if (!req_.ticket.empty()) chat_scope_ = {ChatScope::Kind::Ticket, req_.ticket};
+  }
+  // Gone (removed block, cleared ticket): the whole project.
+  bool known = true;
+  if (chat_scope_.kind == ChatScope::Kind::Block) known = m.snap->block(chat_scope_.id) != nullptr;
+  if (chat_scope_.kind == ChatScope::Kind::Ticket) {
+    known = std::any_of(m.snap->tickets.begin(), m.snap->tickets.end(), [&](const index::TicketRow& t) { return t.id == chat_scope_.id; });
+  }
+  if (!known) chat_scope_ = {};
+}
+
+void Ui::chat_scope_bar(const Model* m) {
+  ImGui::AlignTextToFramePadding();
+  ui::muted("%s", tr("Request:"));
+  ImGui::SameLine();
+  bool project = chat_scope_.kind == ChatScope::Kind::Project;
+  if (ui::toggle("sc_project", Icon::Home, tr("whole project"), &project,
+                 tr("The orchestrator gets the request for the whole project and decides which blocks change"))) {
+    chat_scope_ = {};
+  }
+  // The block selected on the schema (or the one the scope names) and the selected ticket.
+  std::string block = chat_scope_.kind == ChatScope::Kind::Block ? chat_scope_.id : req_.selected;
+  if (!block.empty()) {
+    ImGui::SameLine(0, 2);
+    bool on = chat_scope_.kind == ChatScope::Kind::Block;
+    if (ui::toggle("sc_block", Icon::Cube, fmt::format(fmt::runtime(tr("block {}")), core::last_segment(block)).c_str(), &on,
+                   fmt::format(fmt::runtime(tr("Only inside {}: the descent starts at this block, the changes stay in it and its subtree")), block)
+                       .c_str())) {
+      chat_scope_ = {ChatScope::Kind::Block, block};
+    }
+  }
+  std::string ticket = chat_scope_.kind == ChatScope::Kind::Ticket ? chat_scope_.id : req_.ticket;
+  if (!ticket.empty()) {
+    ImGui::SameLine(0, 2);
+    bool on = chat_scope_.kind == ChatScope::Kind::Ticket;
+    if (ui::toggle("sc_ticket", Icon::Ticket, fmt::format(fmt::runtime(tr("ticket {}")), ticket).c_str(), &on,
+                   tr("About this ticket: the message is added to it as the human's fact and the ticket runs again"))) {
+      chat_scope_ = {ChatScope::Kind::Ticket, ticket};
+    }
+  }
+  // What happens to the message, in words, colored by the scope.
+  std::string what;
+  ImVec4 col = rgb(150, 150, 150);
+  if (chat_scope_.kind == ChatScope::Kind::Project) {
+    what = tr("To the whole project: the global orchestrator decides which blocks change.");
+  } else if (chat_scope_.kind == ChatScope::Kind::Block) {
+    const auto* b = m != nullptr ? m->snap->block(chat_scope_.id) : nullptr;
+    what = fmt::format(fmt::runtime(tr("Within block {}: the request starts there and the changes are made in it{}.")), chat_scope_.id,
+                       b != nullptr && b->kind == "group" ? tr(" and the blocks inside it") : "");
+    col = rgb(110, 190, 250);
+  } else {
+    std::string title;
+    if (m != nullptr) {
+      for (const auto& t : m->snap->tickets) {
+        if (t.id == chat_scope_.id) title = t.title;
+      }
+    }
+    what = fmt::format(fmt::runtime(tr("About ticket {}{}: the message is added to the ticket and the ticket goes on.")), chat_scope_.id,
+                       title.empty() ? "" : " (" + ui::ellipsize(title, ImGui::GetFontSize() * 18) + ")");
+    col = rgb(230, 180, 90);
+  }
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextColored(col, "%s", what.c_str());
+  ImGui::PopTextWrapPos();
+}
+
 // --- dialog -----------------------------------------------------------------------------------
 
 void Ui::chat_entry(const Model* m, const ChatEntry& e, std::size_t i) {
@@ -183,7 +259,10 @@ void Ui::chat_entry(const Model* m, const ChatEntry& e, std::size_t i) {
       ImGui::Spacing();
       bubble(with_alpha(kUser, 0.16f), wrap, [&] {
         const char* mode = e.mode == "bug" ? tr("bug") : e.mode == "command" ? tr("command") : tr("task");
-        ImGui::TextColored(kUser, "%s", with_icon(Icon::Chat, fmt::format("{} · {}", tr("you"), mode)).c_str());
+        std::string where;
+        if (e.scope.starts_with("block ")) where = " · " + fmt::format(fmt::runtime(tr("block {}")), e.scope.substr(6));
+        if (e.scope.starts_with("ticket ")) where = " · " + fmt::format(fmt::runtime(tr("ticket {}")), e.scope.substr(7));
+        ImGui::TextColored(kUser, "%s", with_icon(Icon::Chat, fmt::format("{} · {}{}", tr("you"), mode, where)).c_str());
         if (!at.empty()) {
           ImGui::SameLine();
           ui::muted("%s", at.c_str());
@@ -315,7 +394,7 @@ void Ui::chat_dialog(const Model* m) {
   ImGui::PopStyleColor(2);
   ImGui::EndDisabled();
   if ((send || enter) && !busy && !empty) {
-    if (chat_->send(chat_mode_ == 1 ? ChatMode::Bug : ChatMode::Task, chat_input_)) chat_input_[0] = '\0';
+    if (chat_->send(chat_mode_ == 1 ? ChatMode::Bug : ChatMode::Task, chat_input_, chat_scope_)) chat_input_[0] = '\0';
     chat_focus_ = true;
   } else if (enter) {
     chat_focus_ = true;  // keep typing while the previous command runs
@@ -570,9 +649,11 @@ void Ui::draw_chat_window(const Model* m) {
   ImGui::SameLine();
   bool task = chat_mode_ == 0;
   bool bug = chat_mode_ == 1;
+  ImGui::BeginDisabled(chat_scope_.kind == ChatScope::Kind::Ticket);  // a message about a ticket keeps the ticket's kind
   if (ui::toggle("m_task", Icon::Plus, tr("task"), &task, tr("A feature or change: karkas task \"...\""))) chat_mode_ = 0;
   ImGui::SameLine(0, 2);
   if (ui::toggle("m_bug", Icon::Warning, tr("bug"), &bug, tr("A symptom to find and fix: karkas debug \"...\""))) chat_mode_ = 1;
+  ImGui::EndDisabled();
   ImGui::SameLine(0, 12);
   mode_switch("chat_mode");
   ImGui::SameLine(0, 12);
@@ -612,6 +693,7 @@ void Ui::draw_chat_window(const Model* m) {
       ui::muted("%s", tr("stopping..."));
     }
   }
+  chat_scope_bar(m);  // what the message is about: the project, a block, a ticket (ADR 0034)
   // Mode mcp: the agents wait for their model — an MCP client. Say who waits and what to do.
   if (cfg_.mcp()) {
     const auto& waiting = mcp_waiting();

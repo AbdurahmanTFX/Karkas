@@ -245,10 +245,11 @@ void Ui::bottom_tickets(const Model& m) {
       if (ImGui::BeginPopupContextItem("ctx")) {
         ImGui::TextDisabled("%s", t->id.c_str());
         ImGui::Separator();
-        if (t->status != "closed" && ImGui::MenuItem(with_icon(Icon::Chat, tr("Continue in the chat")).c_str())) {
+        if (ImGui::MenuItem(with_icon(Icon::Chat, tr("Write about this ticket in the chat")).c_str())) {
+          chat_scope_ = {ChatScope::Kind::Ticket, t->id};  // a message is added to the ticket, which runs again
           show_chat_ = true;
           chat_focus_ = true;
-          std::snprintf(chat_input_, sizeof chat_input_, "/ticket run %s", t->id.c_str());
+          chat_window_focus_ = true;
         }
         if (ImGui::MenuItem(with_icon(Icon::Copy, tr("Copy")).c_str())) ImGui::SetClipboardText((t->id + " " + t->title).c_str());
         if (ImGui::MenuItem(with_icon(Icon::Close, tr("Remove from this list")).c_str())) remove = true;

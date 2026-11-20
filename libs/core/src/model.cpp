@@ -265,6 +265,7 @@ const std::vector<DirectiveSpec>& directive_table() {
       {"ticket", "status", 1, "open|descending|fixing|verifying|closed|escalated", ""},
       {"ticket", "symptom", 1, "<text>", ""},
       {"ticket", "task", 1, "<text>", ""},
+      {"ticket", "scope", 1, "<block>", ""},
       {"ticket", "fact", -1, "<text>", ""},
       // @report (10.6)
       {"report", "status", 1, "fixed|done|failed|needs_contract_change|needs_info|not_here", ""},
@@ -362,6 +363,16 @@ Result<Scalar> scalar_word(const Record& rec, const Line& l,
                 loc_of(rec, l, (*t)[0].col));
   }
   return Scalar{w, l.trivia, l.line, l.col, true};
+}
+
+// One block id (ident(.ident)*): the scope of a ticket (docs/adr/0034).
+Result<Scalar> scalar_block(const Record& rec, const Line& l) {
+  auto s = scalar_word(rec, l);
+  if (!s) return s;
+  if (!is_block_path(s->value)) {
+    return fail("S04", fmt::format("'{}' must be a block id (a.b.c), got '{}'", l.directive, s->value), loc_of(rec, l, l.text_col));
+  }
+  return s;
 }
 
 VoidResult link_attrs(const Record& rec, const Line& l, const Token& t, std::string& via,
@@ -822,6 +833,8 @@ Result<Ticket> parse_ticket(const Record& rec) {
       r = assign(scalar_text(rec, l), t.symptom);
     } else if (d == "task") {
       r = assign(scalar_text(rec, l), t.task);
+    } else if (d == "scope") {
+      r = assign(scalar_block(rec, l), t.scope);
     } else if (d == "fact") {
       r = push(text_item(rec, l), t.facts);
     }
@@ -1089,6 +1102,7 @@ std::string write_ticket(const Ticket& t) {
   emit_scalar(out, "kind", t.kind, false);
   emit_scalar(out, "origin", t.origin, false);
   emit_scalar(out, "status", t.status, false);
+  emit_scalar(out, "scope", t.scope, false);
   emit_scalar(out, "symptom", t.symptom, true);
   emit_scalar(out, "task", t.task, true);
   for (const auto& f : t.facts) emit(out, f.trivia, format_line("fact", format_free_text(f.text)));

@@ -119,6 +119,7 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
     }
   }
   if (req_.change.empty()) ghost_shown_.clear();
+  update_chat_scope(*m);
   draw_editor(*m);
   draw_side_bar(m);
   if (settings_.show_inspector) draw_inspector(*m);
@@ -1697,6 +1698,13 @@ void Ui::draw_inspector(const Model& m) {
   if (ui::icon_button("in_card", Icon::Card, tr("Open card in editor"), false, tr("Card"))) w_.open_in_editor(b->dir + "/block.ksl", 1);
   ImGui::SameLine(0, 2);
   if (ui::icon_button("in_folder", Icon::Folder, tr("Open folder"), false, tr("Folder"))) w_.open_block_folder(b->id);
+  ImGui::SameLine(0, 2);
+  if (ui::icon_button("in_chat", Icon::Chat, tr("Write a request for this block in the chat: the changes stay inside it"), false, tr("Chat"))) {
+    chat_scope_ = {ChatScope::Kind::Block, b->id};
+    show_chat_ = true;
+    chat_focus_ = true;
+    chat_window_focus_ = true;
+  }
   if (b->kind == "group") {
     ImGui::SameLine(0, 2);
     if (ui::icon_button("in_enter", Icon::Layers, tr("Open this group"), false, tr("Enter"))) enter(b->id);

@@ -224,6 +224,9 @@ std::string plan_error(index::Index& idx, const SchemaCallbacks& cb, const json&
     if (!step.is_object()) return "each step of next is {block, difficulty, why}";
     std::string b = sget(step, "block");
     if (snap.block(b) == nullptr) return fmt::format("next: unknown block '{}'", b);
+    if (!cb.limit.empty() && b != cb.limit && !index::Snapshot::under(cb.limit, b)) {
+      return fmt::format("next: the human limited this ticket to {}; {} is outside it", cb.limit, b);
+    }
     if (!seen.insert(b).second) return fmt::format("next: {} is planned twice", b);
     auto d = sget(step, "difficulty");
     if (d != "S" && d != "M" && d != "L") return fmt::format("next: difficulty of {} must be S, M or L", b);
@@ -251,6 +254,11 @@ ToolOutcome SchemaToolHost::call(const ToolCall& c) {
     std::string scope = scope_ == "root" ? "" : scope_;
     if (b == scope || !index::Snapshot::under(scope, b)) {
       return err(fmt::format("dispatch must name a block inside {}", scope.empty() ? "the project" : scope));
+    }
+    if (!cb_.limit.empty() && b != cb_.limit && !index::Snapshot::under(cb_.limit, b)) {
+      return err(fmt::format("the human limited this ticket to {} (and the blocks inside it): dispatch {} or a block inside it, "
+                             "or escalate when the request needs a block outside it",
+                             cb_.limit, cb_.limit));
     }
     if (cb_.excluded) {
       if (auto why = cb_.excluded(b); !why.empty()) {

@@ -18,9 +18,10 @@ class TicketStore {
   [[nodiscard]] std::filesystem::path file(std::string_view id) const;
 
   Result<std::string> next_id() const;
-  // kind bug: `text` is the symptom; other kinds: the task.
+  // kind bug: `text` is the symptom; other kinds: the task. `scope`: a block the human limited
+  // the ticket to (docs/adr/0034), "" for the whole project.
   Result<Ticket> create(TicketKind kind, std::string_view origin, std::string_view text,
-                        const std::vector<std::string>& facts);
+                        const std::vector<std::string>& facts, std::string_view scope = {});
   Result<Ticket> load(std::string_view id) const;
   Result<std::vector<Ticket>> list() const;
 
@@ -32,6 +33,10 @@ class TicketStore {
   // a ticket with the same id; refused while an agent holds the ticket's lock. The append-only
   // rule of save() binds the agents, not the human who owns the ticket. Written canonically.
   Result<Ticket> edit_by_human(std::string_view id, std::string_view text) const;
+  // A message of the human about the ticket (the chat in ticket mode, docs/adr/0034): one more
+  // original fact "human: <text>", which every agent's path view shows. The caller holds the
+  // ticket's lock (the engine before it runs the ticket again).
+  VoidResult add_human_fact(std::string_view id, std::string_view text) const;
 
   // Appends one trail entry plus up to two new facts (10.3).
   VoidResult append(std::string_view id, const TrailEntry& entry, const std::vector<std::string>& new_facts = {}) const;

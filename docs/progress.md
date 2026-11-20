@@ -624,3 +624,13 @@
 - Tickets tile: "Edit" the whole ticket; `core::TicketStore::edit_by_human` parses it, keeps its id,
   refuses while an agent holds its lock; the append-only rule still binds the agents.
 - Tests 344; checked under Xvfb (card edited and applied, ticket fact added and saved).
+
+## Addition — chat scope: whole project, one block, one ticket (docs/adr/0034)
+
+- Ticket field `scope`; `karkas task|debug --block <id>`: the first run starts at the block (no
+  orchestrator decision), the orchestrator later dispatches and plans only inside the scope.
+- `karkas ticket run <id> --note "..."`: the human's message becomes a fact `human: ...`, the ticket
+  runs again (a closed one reopens).
+- GUI chat: "Request:" whole project / block / ticket, following the last selection, with a line
+  saying what happens; inspector "Chat" button, ticket menu "Write about this ticket in the chat".
+- Tests 349 (scope_test.cpp, chat commands per mode).

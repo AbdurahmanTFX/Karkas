@@ -22,6 +22,16 @@ namespace kk::gui {
 
 enum class ChatMode { Task, Bug };
 
+// What a message is about (docs/adr/0034): the whole project (the orchestrator decides where),
+// one block (the request stays inside it), or one ticket (the message is added to it).
+struct ChatScope {
+  enum class Kind { Project, Block, Ticket };
+  Kind kind = Kind::Project;
+  std::string id;  // block id or ticket id
+  [[nodiscard]] std::string str() const;  // "" | "block <id>" | "ticket <id>" (kept with the message)
+  bool operator==(const ChatScope&) const = default;
+};
+
 struct ChatEntry {
   enum class Kind { User, Progress, Log, Result, Error, Info };
   Kind kind = Kind::Info;
@@ -29,12 +39,14 @@ struct ChatEntry {
   std::string mode;    // user messages: "task" | "bug" | "command"
   std::string ticket;  // the ticket the command worked on (when known)
   std::int64_t ts = 0;
+  std::string scope;   // user messages: ChatScope::str() of the message
 };
 
-// The karkas arguments of a message: Task → task "<text>", Bug → debug "<text>",
-// "/<command> args..." → that agent command (quotes keep spaces). Empty with `error` set
-// for an empty message or a command the chat does not run.
-std::vector<std::string> chat_command(ChatMode mode, const std::string& text, std::string* error);
+// The karkas arguments of a message: Task → task "<text>", Bug → debug "<text>" (with
+// `--block <id>` for a block scope); a ticket scope → ticket run <id> --note "<text>";
+// "/<command> args..." → that agent command whatever the scope (quotes keep spaces). Empty
+// with `error` set for an empty message or a command the chat does not run.
+std::vector<std::string> chat_command(ChatMode mode, const std::string& text, std::string* error, const ChatScope& scope = {});
 // "T-0004" from "created T-0004" / "@ticket T-0004 ..."; "" when the line names none.
 std::string ticket_in(const std::string& line);
 // Change ids (C-NNNN) named in a text, in order, without repeats.
@@ -51,7 +63,7 @@ class Chat {
   Chat& operator=(const Chat&) = delete;
 
   // Runs the command of a message; false (with an Error entry) when busy or it cannot start.
-  bool send(ChatMode mode, const std::string& text);
+  bool send(ChatMode mode, const std::string& text, const ChatScope& scope = {});
   void stop();  // SIGINT: like Ctrl+C in a terminal
   void kill();  // SIGKILL to the whole process group of the command
   [[nodiscard]] bool busy() const;

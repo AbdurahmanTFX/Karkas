@@ -256,6 +256,12 @@ class Ui {
   bool show_chat_ = false;
   bool chat_focus_ = false;
   int chat_mode_ = 0;  // 0 task, 1 bug
+  // What a message is about (ADR 0034): follows the last block or ticket selected; "Whole
+  // project" until the next selection.
+  ChatScope chat_scope_;
+  std::string scope_seen_block_, scope_seen_ticket_;
+  void update_chat_scope(const Model& m);
+  void chat_scope_bar(const Model* m);
   char chat_input_[4096] = {};
   std::uint64_t chat_serial_ = ~0ULL;
   std::vector<ChatEntry> chat_cache_;
