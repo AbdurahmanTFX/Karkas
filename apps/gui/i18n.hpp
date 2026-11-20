@@ -21,6 +21,9 @@ const char* tr(const char* en);
 std::string title(const char* en);
 // Display names of block kinds and statuses (data values stay English).
 const char* tr_kind(const std::string& kind);
+// Notes projects (ADR 0038): a group is a topic, a leaf a note in tr_kind.
+void set_notes_kinds(bool on);
+bool notes_kinds();
 const char* tr_status(const std::string& status);
 const char* tr_ticket_status(const std::string& status);
 

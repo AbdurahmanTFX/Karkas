@@ -9,10 +9,13 @@
 namespace kk::gui {
 
 enum class PickerMode { Open, Create };
+// The workspace the picker serves (ADR 0038): its recent projects, the kind a new project gets.
+enum class PickerKind { Any, Code, Notes };
 
 class ProjectPicker {
  public:
-  ProjectPicker(const std::filesystem::path& start, std::vector<std::string> recent, PickerMode mode = PickerMode::Open);
+  ProjectPicker(const std::filesystem::path& start, std::vector<std::string> recent, PickerMode mode = PickerMode::Open,
+                PickerKind kind = PickerKind::Any);
   // Draws the window; returns the chosen project root once. `open` is cleared on Cancel.
   // `welcome`: no project is open yet (karkas-gui started outside a project).
   std::optional<std::filesystem::path> draw(bool* open, bool welcome);
@@ -41,6 +44,9 @@ class ProjectPicker {
   bool in_new_folder_ = true;  // create: a new folder vs an existing one
   bool import_code_ = true;    // create in a folder with code: propose `karkas import`
   bool target_has_code_ = false;
+  bool target_has_notes_ = false;
+  PickerKind kind_ = PickerKind::Any;
+  bool create_notes_ = false;  // the new project is a notes project
   std::filesystem::path code_checked_;  // folder target_has_code_ is about
   char name_buf_[128] = {};
   char idea_buf_[256] = {};

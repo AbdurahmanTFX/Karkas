@@ -116,7 +116,9 @@ void Ui::draw_bottom(const Model& m) {
   for (const auto& d : m.snap->drift) (d.severity == "E" ? errors : warnings)++;
   std::size_t tickets = 0;
   for (const auto& t : m.snap->tickets) tickets += cleared_.hides(t) ? 0 : 1;
-  std::string drift_label = m.snap->drift.empty() ? std::string(tr("Drift")) : fmt::format("{} {}·{}", tr("Drift"), errors, warnings);
+  // Notes (ADR 0038): broken [[links]] are their problems; no tickets, agents, builds, costs or runs.
+  const char* drift_name = notes_ ? tr("Problems") : tr("Drift");
+  std::string drift_label = m.snap->drift.empty() ? std::string(drift_name) : fmt::format("{} {}·{}", drift_name, errors, warnings);
   struct Tab {
     Tile tile;
     const char* key;
@@ -139,6 +141,7 @@ void Ui::draw_bottom(const Model& m) {
   bool keep_select = false;
   for (const auto& tab : tabs) {
     if (!tab_visible(tab.key)) continue;
+    if (notes_ && tab.tile != Tile::Drift) continue;
     // Brings its tab forward; kept until its window exists (the first frames of a new layout).
     bool select = bottom_select_ == tab.key;
     if (select) ImGui::SetNextWindowFocus();
@@ -641,7 +644,7 @@ void Ui::bottom_costs(const Model& m) {
 void Ui::bottom_drift(const Model& m) {
   // Drift is the state of the code now (recomputed on every change): it cannot be cleared,
   // only fixed.
-  if (m.snap->drift.empty()) ui::muted("%s", tr("no drift"));
+  if (m.snap->drift.empty()) ui::muted("%s", (notes_ ? tr("no problems") : tr("no drift")));
   for (std::size_t i = 0; i < m.snap->drift.size(); ++i) {
     const auto& d = m.snap->drift[i];
     bool err = d.severity == "E";

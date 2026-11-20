@@ -88,7 +88,7 @@ void Ui::start_run(bool build) {
 }
 
 void Ui::run_shortcuts() {
-  if (!run_) return;
+  if (!run_ || notes_) return;  // notes are not built or run (ADR 0038)
   if (run_restart_ && !run_->busy()) {
     run_restart_ = false;
     run_->start(run_restart_build_);
@@ -138,7 +138,7 @@ std::string Ui::run_status_text() const {
 // --- menu bar and status bar -------------------------------------------------------------------
 
 void Ui::run_menu(const Model* m) {
-  if (!ImGui::BeginMenu(tr("Run"))) return;
+  if (notes_ || !ImGui::BeginMenu(tr("Run"))) return;
   bool can = m != nullptr && run_ != nullptr;
   bool busy = can && run_->busy();
   if (ImGui::MenuItem(with_icon(Icon::Play, busy ? tr("Build and run again") : tr("Build and run")).c_str(), "F5", false, can)) start_run(true);
@@ -160,7 +160,7 @@ void Ui::run_menu(const Model* m) {
 }
 
 void Ui::draw_run_buttons(const Model* m) {
-  if (m == nullptr || !run_) return;
+  if (m == nullptr || !run_ || notes_) return;
   if (!run_info_asked_) {
     run_info_asked_ = true;
     w_.refresh_run();
@@ -207,7 +207,7 @@ void Ui::draw_run_buttons(const Model* m) {
 
 void Ui::run_status_item(const Model* m) {
   (void)m;
-  if (!run_ || !run_->busy()) return;
+  if (!run_ || notes_ || !run_->busy()) return;
   // The same flat item as the rest of the status bar.
   std::string text = with_icon(Icon::Play, run_status_text());
   ImVec2 ts = ImGui::CalcTextSize(text.c_str());

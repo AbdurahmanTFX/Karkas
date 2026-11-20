@@ -62,6 +62,11 @@ struct RunInfo {
   std::vector<std::string> candidates;  // programs in the build folder, newest first
 };
 
+// A note of a notes project (ADR 0038): its file (from the project root) and text.
+struct NoteText {
+  std::string file, text;
+};
+
 struct Request {
   std::string scope;      // "" = root
   std::string selected;   // block
@@ -99,6 +104,8 @@ struct Model {
   std::string ticket_edit_error;
   std::uint64_t ticket_edit_saved = 0;
   RunInfo run;
+  bool notes = false;                           // a notes project (project.ksl: lang notes)
+  std::shared_ptr<const std::map<std::string, NoteText>> note_texts;  // notes projects: block id → its note
   std::string message;
   std::string engine;
   double index_ms = 0;
@@ -138,6 +145,13 @@ class Worker {
   void reload_config();
   // Works out RunInfo again (karkas.toml, the schema, the build folder) for the next model.
   void refresh_run();
+  // Notes projects (ADR 0038): an edit built and applied at once (no KSL preview; undo keeps it), a
+  // note's text saved, links added or removed in a note's text, a new title (links by it follow).
+  void apply_now(MakeEdit make);
+  void save_note(const std::string& rel_file, std::string text);
+  void link_notes(const std::string& src, const std::string& dst);
+  void unlink_notes(const std::string& src, const std::string& dst);
+  void retitle_note(const std::string& id, const std::string& title);
   // Asks one agent run to stop (its stop file; ADR 0019).
   void stop_run(const fs::path& journal);
   // Saves the rows removed from the bottom panels (.karkas/cleared.json).
@@ -168,6 +182,9 @@ class Worker {
   std::string ticket_edit_error_;
   std::uint64_t ticket_edit_saved_ = 0;
   RunInfo run_info_;
+  bool notes_ = false;
+  std::shared_ptr<const std::map<std::string, NoteText>> note_texts_;
+  void load_notes();  // notes_ and note_texts_ from the project as it is on disk
   std::uint64_t serial_ = 0;
 };
 

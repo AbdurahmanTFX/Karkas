@@ -14,6 +14,8 @@
 #include "kk/agents/changes.hpp"
 #include "kk/agents/engine.hpp"
 #include "kk/agents/run.hpp"
+#include "kk/code/notes.hpp"
+#include "kk/core/notes.hpp"
 #include "kk/code/analyzer.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
@@ -143,6 +145,88 @@ void Worker::refresh_run() {
       info.candidates = agents::program_candidates(root_, *cfg);
     }
     run_info_ = std::move(info);
+  });
+}
+
+void Worker::load_notes() {
+  auto s = core::load_schema(root_);
+  notes_ = s && core::is_notes_project(s->project);
+  if (!notes_) {
+    note_texts_.reset();
+    return;
+  }
+  auto texts = std::make_shared<std::map<std::string, NoteText>>();
+  for (const auto& b : s->blocks) {
+    auto file = core::note_file(b);
+    if (file.empty()) continue;
+    (*texts)[b.id] = NoteText{file, core::read_file(root_ / file).value_or("")};
+  }
+  note_texts_ = std::move(texts);
+}
+
+void Worker::apply_now(MakeEdit make) {
+  post([this, make = std::move(make)] {
+    auto s = core::load_schema(root_);
+    if (!s) {
+      message_ = s.error().str();
+      return;
+    }
+    auto op = make(*s);
+    if (!op) {
+      message_ = op.error().message;
+      return;
+    }
+    auto r = agents::apply_edit(root_, *op);
+    if (!r) {
+      message_ = r.error().message;
+      return;
+    }
+    message_ = tr("applied: ") + r->title;
+    undo_.push_back(std::move(*r));
+    files_changed_ = true;
+  });
+}
+
+void Worker::save_note(const std::string& rel_file, std::string text) {
+  post([this, rel_file, text = std::move(text)] {
+    auto r = core::write_file(root_ / rel_file, text);
+    message_ = r ? tr("saved: ") + rel_file : r.error().message;
+    files_changed_ = true;
+  });
+}
+
+void Worker::link_notes(const std::string& src, const std::string& dst) {
+  post([this, src, dst] {
+    auto s = core::load_schema(root_);
+    auto r = s ? code::add_note_link(*s, src, dst) : kk::VoidResult(std::unexpected(s.error()));
+    message_ = r ? fmt::format(fmt::runtime(tr("link: {} -> {}")), src, dst) : r.error().message;
+    files_changed_ = true;
+  });
+}
+
+void Worker::unlink_notes(const std::string& src, const std::string& dst) {
+  post([this, src, dst] {
+    auto s = core::load_schema(root_);
+    if (!s) {
+      message_ = s.error().str();
+      return;
+    }
+    auto r = code::remove_note_link(*s, src, dst);
+    message_ = r ? fmt::format(fmt::runtime(tr("links removed: {}")), *r) : r.error().message;
+    files_changed_ = true;
+  });
+}
+
+void Worker::retitle_note(const std::string& id, const std::string& title) {
+  post([this, id, title] {
+    auto s = core::load_schema(root_);
+    if (!s) {
+      message_ = s.error().str();
+      return;
+    }
+    auto r = code::retitle_note(*s, id, title);
+    message_ = r ? fmt::format(fmt::runtime(tr("renamed: {} (links followed in {} notes)")), title, r->size()) : r.error().message;
+    files_changed_ = true;
   });
 }
 
@@ -463,9 +547,12 @@ void Worker::loop() {
         files_changed_ = false;
       }
     }
+    if (reindex || !model_) load_notes();  // notes projects: the texts as they are now
     auto m = std::make_shared<Model>();
     m->req = req;
     m->engine = engine->name();
+    m->notes = notes_;
+    m->note_texts = note_texts_;
     if (idx) {
       auto t0 = std::chrono::steady_clock::now();
       if (reindex || !model_) {
@@ -540,7 +627,12 @@ void Worker::loop() {
         }
       }
     }
-    if (!req.open_file.empty()) m->code_text = core::read_file(root_ / req.open_file).value_or("(cannot read)");
+    if (!req.open_file.empty()) {
+      // A note not written yet has no file: its text is empty (ADR 0038).
+      std::error_code ec;
+      bool missing_note = notes_ && !fs::exists(root_ / req.open_file, ec);
+      m->code_text = missing_note ? std::string() : core::read_file(root_ / req.open_file).value_or("(cannot read)");
+    }
     if (!req.ticket.empty()) m->ticket_text = core::read_file(root_ / ".karkas" / "tickets" / (req.ticket + ".ksl")).value_or("");
     agents::ChangeStore changes(root_);
     if (auto cl = changes.list()) m->changes = std::move(*cl);

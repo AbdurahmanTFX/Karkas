@@ -9,10 +9,12 @@
 
 #include "i18n.hpp"
 #include "icons.hpp"
+#include "settings.hpp"
 #include "theme.hpp"
 #include "kk/agents/changes.hpp"
 #include "kk/code/import.hpp"
 #include "kk/code/init.hpp"
+#include "kk/code/notes.hpp"
 #include "kk/core/text.hpp"
 
 namespace fs = std::filesystem;
@@ -21,8 +23,8 @@ namespace kk::gui {
 
 std::string fmt_path_error(const std::string& p);
 
-ProjectPicker::ProjectPicker(const fs::path& start, std::vector<std::string> recent, PickerMode mode)
-    : recent_(std::move(recent)), mode_(mode) {
+ProjectPicker::ProjectPicker(const fs::path& start, std::vector<std::string> recent, PickerMode mode, PickerKind kind)
+    : recent_(std::move(recent)), mode_(mode), kind_(kind), create_notes_(kind == PickerKind::Notes) {
   std::error_code ec;
   fs::path dir = start;
   if (dir.empty() || !fs::is_directory(dir, ec)) dir = fs::current_path(ec);
@@ -104,7 +106,9 @@ std::optional<fs::path> ProjectPicker::draw(bool* open, bool welcome) {
                           ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSize(ImVec2(780, 620), ImGuiCond_Appearing);
   ImGuiWindowFlags fl = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse;
-  std::string name = std::string(mode_ == PickerMode::Open ? tr("Open project") : tr("New project")) + "###project_picker";
+  const char* head = kind_ == PickerKind::Notes ? (mode_ == PickerMode::Open ? tr("Open notes") : tr("New notes"))
+                                                : (mode_ == PickerMode::Open ? tr("Open project") : tr("New project"));
+  std::string name = std::string(head) + "###project_picker";
   if (!ImGui::Begin(name.c_str(), welcome ? nullptr : open, fl)) {
     ImGui::End();
     return chosen;
@@ -133,16 +137,17 @@ std::optional<fs::path> ProjectPicker::draw(bool* open, bool welcome) {
     ImGui::End();
     return chosen;
   }
-  // Recent projects.
-  std::vector<std::string> recent;
+  // Recent projects of this workspace (ADR 0038): notes or code.
+  std::vector<std::pair<std::string, bool>> recent;
   for (const auto& r : recent_) {
-    std::error_code ec;
-    if (fs::exists(fs::path(r) / "project.ksl", ec)) recent.push_back(r);
+    if (!is_project_dir(r)) continue;
+    bool notes = is_notes_project_dir(r);
+    if (kind_ == PickerKind::Any || notes == (kind_ == PickerKind::Notes)) recent.emplace_back(r, notes);
   }
   if (!recent.empty()) {
-    ImGui::TextDisabled("%s", tr("Recent projects"));
-    for (const auto& r : recent) {
-      std::string label = with_icon(Icon::Schema, fs::path(r).filename().string()) + "   " + r;
+    ImGui::TextDisabled("%s", kind_ == PickerKind::Notes ? tr("Recent notes") : tr("Recent projects"));
+    for (const auto& [r, notes] : recent) {
+      std::string label = with_icon(notes ? Icon::Pencil : Icon::Code, fs::path(r).filename().string()) + "   " + r;
       if (ImGui::Selectable(label.c_str())) chosen = fs::path(r);
     }
     ImGui::Separator();
@@ -183,12 +188,20 @@ fs::path ProjectPicker::create_target() const {
 
 std::optional<fs::path> ProjectPicker::draw_create(bool* open, bool welcome) {
   std::optional<fs::path> chosen;
+  // What the project is (ADR 0038): code, or notes (text files linked by [[name]]).
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextDisabled("%s", tr("Project:"));
+  ImGui::SameLine();
+  if (ImGui::RadioButton(with_icon(Icon::Code, tr("Programming")).c_str(), !create_notes_)) create_notes_ = false;
+  ImGui::SameLine(0, 20);
+  if (ImGui::RadioButton(with_icon(Icon::Pencil, tr("Notes")).c_str(), create_notes_)) create_notes_ = true;
   if (ImGui::RadioButton(tr("In a new folder"), in_new_folder_)) {
     in_new_folder_ = true;
     create_error_.clear();
   }
   ImGui::SameLine(0, 20);
-  if (ImGui::RadioButton(tr("In an existing folder (with code or empty)"), !in_new_folder_)) {
+  if (ImGui::RadioButton(create_notes_ ? tr("In an existing folder (with notes or empty)") : tr("In an existing folder (with code or empty)"),
+                         !in_new_folder_)) {
     in_new_folder_ = false;
     create_error_.clear();
   }
@@ -206,10 +219,11 @@ std::optional<fs::path> ProjectPicker::draw_create(bool* open, bool welcome) {
   };
   if (in_new_folder_) {
     label(tr("Folder name"));
-    if (ImGui::InputTextWithHint("##new_name", "my_game", name_buf_, sizeof name_buf_)) create_error_.clear();
+    if (ImGui::InputTextWithHint("##new_name", create_notes_ ? "my_notes" : "my_game", name_buf_, sizeof name_buf_)) create_error_.clear();
   }
   label(tr("Idea (optional)"));
-  ImGui::InputTextWithHint("##idea", tr("one line: what the program does"), idea_buf_, sizeof idea_buf_);
+  ImGui::InputTextWithHint("##idea", create_notes_ ? tr("one line: what the notes are about") : tr("one line: what the program does"), idea_buf_,
+                           sizeof idea_buf_);
   fs::path target = create_target();
   std::error_code ec;
   std::string id = target.empty() ? "" : code::project_id_from(target.filename().string());
@@ -226,14 +240,22 @@ std::optional<fs::path> ProjectPicker::draw_create(bool* open, bool welcome) {
   if (!in_new_folder_ && problem.empty() && code_checked_ != target) {
     code_checked_ = target;
     target_has_code_ = code::has_code(target);
+    target_has_notes_ = !target_has_code_ && code::has_notes(target);
+    // A folder of notes is a notes project, a folder of code a code project (the user may still choose).
+    if (target_has_code_) create_notes_ = false;
+    if (target_has_notes_) create_notes_ = true;
   }
   if (!problem.empty()) {
     ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1), "%s", problem.c_str());
   } else {
     ImGui::Text(tr("Project %s in %s"), id.c_str(), target.string().c_str());
   }
-  bool code_here = !in_new_folder_ && problem.empty() && target_has_code_;
-  if (code_here) {
+  bool code_here = !in_new_folder_ && problem.empty() && target_has_code_ && !create_notes_;
+  if (create_notes_) {
+    ImGui::TextDisabled("%s", !in_new_folder_ && problem.empty() && target_has_notes_
+                                  ? tr("The .txt notes of this folder get topics and cards; the files stay where they are.")
+                                  : tr("Write notes; [[name]] in a text links it to another note."));
+  } else if (code_here) {
     ImGui::Checkbox(tr("Cut the existing code into blocks (karkas import): the proposal appears in Changes"), &import_code_);
   } else {
     ImGui::TextDisabled("%s", tr("Next: describe the idea to the architect (karkas design) or add blocks by hand."));
@@ -243,7 +265,7 @@ std::optional<fs::path> ProjectPicker::draw_create(bool* open, bool welcome) {
   ImGui::PushStyleColor(ImGuiCol_Button, theme::accent(0.9f));
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::accent(1.0f));
   if (ImGui::Button(with_icon(Icon::Plus, tr("Create project")).c_str())) {
-    auto r = code::init_project(target, idea_buf_);
+    auto r = code::init_project(target, idea_buf_, create_notes_ ? code::ProjectKind::Notes : code::ProjectKind::Code);
     if (!r) {
       create_error_ = r.error().message;
     } else {

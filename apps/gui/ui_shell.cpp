@@ -17,6 +17,7 @@
 #include "i18n.hpp"
 #include "kk/agents/edit.hpp"
 #include "icons.hpp"
+#include "kk/core/notes.hpp"
 #include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
 #include "theme.hpp"
@@ -125,13 +126,16 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
     select(m->snap->block(req_.scope) != nullptr ? req_.scope : "");
   }
   update_chat_scope(*m);
+  note_texts_ = m->note_texts;
+  if (notes_) autosave_notes(false);
   draw_editor(*m);
   draw_side_bar(m);
   if (settings_.show_inspector) draw_inspector(*m);
   draw_bottom(*m);
   draw_settings_window(m);
-  draw_chat_window(m);
+  if (!notes_) draw_chat_window(m);
   draw_dialogs(*m);
+  if (notes_) draw_note_dialogs(*m);
   order_windows();
   ui::update_cursor(canvas_hovered_);
   return !m->active.empty() || (chat_ && chat_->busy());
@@ -478,6 +482,10 @@ void Ui::draw_windows_menu() {
 void Ui::set_project_root(std::filesystem::path root) {
   reset_canvas_caches();
   root_ = std::move(root);
+  // What the project is (ADR 0038): the mode, its words and panels follow.
+  notes_ = is_notes_project_dir(root_);
+  set_notes_kinds(notes_);
+  if (notes_) show_chat_ = false;
   reload_models();
   cleared_ = load_cleared(root_);
   chat_ = std::make_unique<Chat>(root_, find_karkas_cli(), wake_);
@@ -506,18 +514,15 @@ void Ui::go_to(const Model& m, const std::string& id) {
 
 // --- menu ----------------------------------------------------------------------------------
 
-void Ui::show_picker(bool create) {
-  picker_ = std::make_unique<ProjectPicker>(root_.empty() ? std::filesystem::path() : root_.parent_path(), settings_.recent,
-                                            create ? PickerMode::Create : PickerMode::Open);
-  picker_open_ = true;
-}
+void Ui::show_picker(bool create) { show_picker_for(create, notes_); }
 
 void Ui::draw_menu(const Model* m) {
   run_shortcuts();
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) show_picker();
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_N)) show_picker(true);
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Comma)) show_settings_ = !show_settings_;
-  if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O)) {
+  if (notes_ && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S)) autosave_notes(true);
+  if (!notes_ && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O)) {
     show_chat_ = !show_chat_;
     chat_focus_ = show_chat_;
   }
@@ -560,10 +565,10 @@ void Ui::draw_menu(const Model* m) {
   if (ImGui::BeginMenu(tr("View"))) {
     if (ImGui::MenuItem(with_icon(Icon::Files, tr("Explorer")).c_str(), nullptr, side_ == SideView::Explorer)) side_ = SideView::Explorer;
     if (ImGui::MenuItem(with_icon(Icon::Search, tr("Search")).c_str(), "Ctrl+Shift+F", side_ == SideView::Search)) side_ = SideView::Search;
-    if (ImGui::MenuItem(with_icon(Icon::Changes, tr("Schema changes")).c_str(), nullptr, side_ == SideView::Changes)) {
+    if (!notes_ && ImGui::MenuItem(with_icon(Icon::Changes, tr("Schema changes")).c_str(), nullptr, side_ == SideView::Changes)) {
       side_ = SideView::Changes;
     }
-    if (ImGui::MenuItem(with_icon(Icon::Chat, tr("Orchestrator chat")).c_str(), "Ctrl+Shift+O", show_chat_)) {
+    if (!notes_ && ImGui::MenuItem(with_icon(Icon::Chat, tr("Orchestrator chat")).c_str(), "Ctrl+Shift+O", show_chat_)) {
       show_chat_ = !show_chat_;
       chat_focus_ = show_chat_;
     }
@@ -574,7 +579,7 @@ void Ui::draw_menu(const Model* m) {
       req_.expanded.clear();
       fit_on_apply_ = true;
     }
-    ImGui::MenuItem(with_icon(Icon::Link, tr("use links")).c_str(), nullptr, &req_.show_use);
+    if (!notes_) ImGui::MenuItem(with_icon(Icon::Link, tr("use links")).c_str(), nullptr, &req_.show_use);
     if (ImGui::MenuItem(with_icon(Icon::Fit, tr("Fit to view")).c_str())) {
       navigate_ = 1;
       select_tab_ = "#schema";
@@ -593,6 +598,7 @@ void Ui::draw_menu(const Model* m) {
     ImGui::EndMenu();
   }
   run_menu(m);
+  draw_mode_tabs();
   draw_run_buttons(m);
   ImGui::EndMainMenuBar();
 }
@@ -657,8 +663,10 @@ void Ui::draw_activity_bar(const Model* m) {
     }
     button(SideView::Explorer, Icon::Files, tr("Explorer"), 0);
     button(SideView::Search, Icon::Search, tr("Search"), 0);
-    button(SideView::Changes, Icon::Changes, tr("Schema changes"), pending);
-    button(SideView::Chat, Icon::Chat, tr("Orchestrator chat"), 0);
+    if (!notes_) {  // notes have no agents and no proposed changes (ADR 0038)
+      button(SideView::Changes, Icon::Changes, tr("Schema changes"), pending);
+      button(SideView::Chat, Icon::Chat, tr("Orchestrator chat"), 0);
+    }
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - w - 4);
     button(SideView::Settings, Icon::Gear, tr("Settings"), 0);
   }
@@ -695,7 +703,7 @@ void Ui::draw_status_bar(const Model* m) {
         bottom_select_ = "drift";
       }
       // The mode of the agents' model (ADR 0024); in mode mcp, the turns waiting for the client.
-      {
+      if (!notes_) {
         std::string mode = cfg_.mcp() ? "MCP" : "API";
         std::size_t waiting = cfg_.mcp() ? mcp_waiting().size() : 0;
         std::string label = waiting > 0 ? fmt::format("{} · {} {}", mode, waiting, tr("waiting")) : mode;
@@ -714,7 +722,7 @@ void Ui::draw_status_bar(const Model* m) {
           open_live("");  // follow the agent that works now
         }
       }
-      {
+      if (!notes_) {
         double total = 0;
         for (const auto& r : m->runs) total += r.cost_usd;
         if (total > 0 && status_item("st_cost", with_icon(Icon::Coins, fmt::format("${:.2f}", total)), text, tr("Total cost of all agent runs"))) {
@@ -836,7 +844,10 @@ void Ui::side_explorer(const Model& m) {
     ImVec2 mx = ImGui::GetItemRectMax();
     bool hovered = ImGui::IsItemHovered();
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) select(id);
-    if (hovered && ImGui::IsMouseDoubleClicked(0)) go_to(m, id);
+    if (hovered && ImGui::IsMouseDoubleClicked(0)) {
+      go_to(m, id);
+      if (notes_ && !group) open_note(m, id);  // a note opens its text
+    }
     if (hovered) {
       tree_hover_ = id;
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -856,15 +867,17 @@ void Ui::side_explorer(const Model& m) {
     float label_x = x0 + ImGui::GetTreeNodeToLabelSpacing();
     float ty = mn.y + ImGui::GetStyle().FramePadding.y;
     ImVec4 ic = group ? kFolderColor : b->kind == "entry" ? kEntryColor : b->kind == "shared" ? kSharedColor : color_of(m, id);
-    dl->AddText(ImVec2(label_x, ty), ImGui::GetColorU32(ic), icon(kind_icon(b->kind, open && group)));
+    dl->AddText(ImVec2(label_x, ty), ImGui::GetColorU32(ic), icon(notes_ && !group ? Icon::File : kind_icon(b->kind, open && group)));
     float tx = label_x + ImGui::CalcTextSize(icon(Icon::Folder)).x + 6;
     bool here = req_.scope == id;
     dl->AddText(ImVec2(tx, ty), ImGui::GetColorU32(here ? rgb(255, 255, 255) : ImGui::GetStyleColorVec4(ImGuiCol_Text)),
-                core::last_segment(id).c_str());
-    float r = ImGui::GetFontSize() * 0.22f;
-    bool active = active_blocks_.contains(id);
-    ImVec4 sc = active ? rgb(240, 200, 30, static_cast<float>(0.6 + 0.4 * std::sin(pulse_ * 5.0))) : status_color(b->status);
-    dl->AddCircleFilled(ImVec2(mx.x - r * 3, (mn.y + mx.y) * 0.5f), r, ImGui::GetColorU32(sc));
+                block_title(m, id).c_str());
+    if (!notes_) {  // notes have no status
+      float r = ImGui::GetFontSize() * 0.22f;
+      bool active = active_blocks_.contains(id);
+      ImVec4 sc = active ? rgb(240, 200, 30, static_cast<float>(0.6 + 0.4 * std::sin(pulse_ * 5.0))) : status_color(b->status);
+      dl->AddCircleFilled(ImVec2(mx.x - r * 3, (mn.y + mx.y) * 0.5f), r, ImGui::GetColorU32(sc));
+    }
     if (open && group) {
       for (const auto& c : b->children) node(c);
       ImGui::TreePop();
@@ -872,7 +885,7 @@ void Ui::side_explorer(const Model& m) {
   };
   for (const auto& id : snap.top_level) node(id);
   ImGui::PopStyleVar(2);
-  if (snap.blocks.empty()) ui::muted("%s", tr("The schema has no blocks yet."));
+  if (snap.blocks.empty()) ui::muted("%s", notes_ ? tr("No notes yet.") : tr("The schema has no blocks yet."));
 }
 
 void Ui::side_search(const Model& m) {
@@ -881,6 +894,57 @@ void Ui::side_search(const Model& m) {
   if (focus_search_) {
     ImGui::SetKeyboardFocusHere();
     focus_search_ = false;
+  }
+  if (notes_) {
+    // Notes (ADR 0038): titles and texts; each found note with the line where the words are.
+    std::string hint = with_icon(Icon::Search, tr("Search notes: titles and texts"));
+    ImGui::InputTextWithHint("##search", hint.c_str(), search_, sizeof search_);
+    std::string q = core::fold_title(core::trim(search_));
+    if (q.empty()) {
+      ImGui::Spacing();
+      ui::muted("%s", tr("Type to search; a click shows the note, a double click opens its text."));
+      return;
+    }
+    struct Found {
+      std::string id, line;
+    };
+    std::vector<Found> found;
+    for (const auto& b : snap.blocks) {
+      std::string line;
+      bool hit = core::contains(core::fold_title(b.purpose), q);
+      if (const auto* n = note_of(m, b.id)) {
+        for (const auto& l : core::split(n->text, '\n')) {
+          if (core::contains(core::fold_title(l), q)) {
+            line = std::string(core::trim(l));
+            hit = true;
+            break;
+          }
+        }
+      }
+      if (hit) found.push_back({b.id, line});
+      if (found.size() >= 300) break;
+    }
+    ImGui::Spacing();
+    ui::muted("%s", fmt::format(fmt::runtime(tr("found: {}")), found.size()).c_str());
+    for (const auto& f : found) {
+      const auto* b = snap.block(f.id);
+      ImGui::PushID(f.id.c_str());
+      if (ImGui::Selectable("##r", req_.selected == f.id, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, ImGui::GetTextLineHeight() * 2.1f))) {
+        go_to(m, f.id);
+        if (ImGui::IsMouseDoubleClicked(0) && b != nullptr && b->kind != "group") open_note(m, f.id);
+      }
+      ImVec2 mn = ImGui::GetItemRectMin();
+      float w = ImGui::GetItemRectSize().x;
+      auto* dl = ImGui::GetWindowDrawList();
+      bool topic = b != nullptr && b->kind == "group";
+      dl->AddText(ImVec2(mn.x + 2, mn.y), ImGui::GetColorU32(topic ? kFolderColor : rgb(120, 170, 240)), icon(topic ? Icon::Folder : Icon::File));
+      float tx = mn.x + ImGui::CalcTextSize(icon(Icon::Folder)).x + 8;
+      dl->AddText(ImVec2(tx, mn.y), ImGui::GetColorU32(ImGuiCol_Text), ui::ellipsize(block_title(m, f.id), w - (tx - mn.x)).c_str());
+      dl->AddText(ImVec2(tx, mn.y + ImGui::GetTextLineHeight()), ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                  ui::ellipsize(f.line.empty() ? f.id : f.line, w - (tx - mn.x)).c_str());
+      ImGui::PopID();
+    }
+    return;
   }
   std::string hint = with_icon(Icon::Search, tr("Search blocks, purposes, ports"));
   ImGui::InputTextWithHint("##search", hint.c_str(), search_, sizeof search_);
@@ -1397,12 +1461,22 @@ void Ui::draw_editor(const Model& m) {
       bool open = true;
       ImGuiTabItemFlags ff = select_tab_ == f ? ImGuiTabItemFlags_SetSelected : 0;
       std::string label = with_icon(f.ends_with(".ksl") ? Icon::Card : Icon::Code, std::filesystem::path(f).filename().string());
+      std::string note = notes_ ? note_id_of_file(m, f) : std::string();
+      if (!note.empty()) label = with_icon(Icon::Pencil, block_title(m, note)) + (note_dirty(f) ? " ●" : "");
       if (begin_tab(label + "###tab_" + f, &open, ff)) {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("%s", f.c_str());
         editor_tab_ = f;
         req_.open_file = f;
         draw_file_header(m, f);
         ImGui::EndTabItem();
+      }
+      if (!open && note_dirty(f)) {  // a closed note keeps what was typed
+        if (auto it = editors_.find(f); it != editors_.end() && it->second) {
+          auto text = it->second->GetText();
+          w_.save_note(f, text);
+          note_saved_text_[f] = text;
+        }
+        note_edited_at_.erase(f);
       }
       if (!open) {
         std::erase(open_files_, f);
@@ -1426,6 +1500,10 @@ void Ui::draw_editor(const Model& m) {
 }
 
 void Ui::draw_schema_toolbar(const Model& m) {
+  if (notes_) {
+    notes_toolbar(m);
+    return;
+  }
   draw_address(m);
   ImGui::Spacing();
   bool all = req_.all_levels;
@@ -1473,8 +1551,22 @@ void Ui::draw_schema_toolbar(const Model& m) {
 }
 
 void Ui::draw_file_header(const Model& m, const std::string& file) {
-  (void)m;
   ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + 10, ImGui::GetCursorPosY() + 4));
+  if (std::string note = notes_ ? note_id_of_file(m, file) : std::string(); !note.empty()) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(block_title(m, note).c_str());
+    ImGui::SameLine();
+    ui::muted("%s", file.c_str());
+    ImGui::SameLine();
+    bool dirty = note_dirty(file);
+    ImGui::TextColored(dirty ? rgb(230, 190, 90) : rgb(115, 201, 145), "%s", dirty ? tr("● edited") : tr("saved"));
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!dirty);
+    if (ui::icon_button("note_save", Icon::Check, tr("Save now (Ctrl+S); a note saves itself after a pause"), false, tr("Save"))) autosave_notes(true);
+    ImGui::EndDisabled();
+    ImGui::Dummy(ImVec2(1, 2));
+    return;
+  }
   std::string crumbs = core::replace_all(file, "/", "  ›  ");
   ImGui::AlignTextToFramePadding();
   ui::muted("%s", crumbs.c_str());
@@ -1489,25 +1581,48 @@ void Ui::draw_file_header(const Model& m, const std::string& file) {
 
 void Ui::draw_file_body(const Model& m, const std::string& file) {
   auto& ed = editors_[file];
+  const bool note = notes_ && !note_id_of_file(m, file).empty();  // a note's text is written here (ADR 0038)
   if (!ed) {
     ed = std::make_unique<TextEditor>();
-    if (!file.ends_with(".ksl")) ed->SetLanguageDefinition(TextEditor::LanguageDefinition::CPlusPlus());
-    ed->SetReadOnly(true);
+    if (!file.ends_with(".ksl") && !note) ed->SetLanguageDefinition(TextEditor::LanguageDefinition::CPlusPlus());
+    ed->SetReadOnly(!note);
     ed->SetShowWhitespaces(false);
     auto pal = TextEditor::GetDarkPalette();
     pal[static_cast<int>(TextEditor::PaletteIndex::Background)] = IM_COL32(31, 31, 31, 255);
     pal[static_cast<int>(TextEditor::PaletteIndex::LineNumber)] = IM_COL32(110, 118, 129, 255);
     pal[static_cast<int>(TextEditor::PaletteIndex::CurrentLineFill)] = IM_COL32(255, 255, 255, 10);
     pal[static_cast<int>(TextEditor::PaletteIndex::CurrentLineEdge)] = IM_COL32(255, 255, 255, 20);
+    if (note) pal[static_cast<int>(TextEditor::PaletteIndex::Default)] = IM_COL32(215, 215, 215, 255);  // prose, not code
     ed->SetPalette(pal);
   }
-  if (m.req.open_file == file && editor_loaded_[file] != m.code_text) {
+  // The file as it is on disk, unless the text is being edited or a save has not reached the model yet.
+  bool waiting = false;
+  if (auto it = note_saved_text_.find(file); it != note_saved_text_.end()) {
+    if (m.req.open_file == file && m.code_text == it->second) {
+      note_saved_text_.erase(it);
+    } else {
+      waiting = true;
+    }
+  }
+  if (m.req.open_file == file && editor_loaded_[file] != m.code_text && !note_dirty(file) && !waiting) {
     ed->SetText(m.code_text);
     editor_loaded_[file] = m.code_text;
   }
   ImGui::PushFont(theme::mono_font());
   ed->Render("##code");
   ImGui::PopFont();
+  if (note && note_focus_file_ == file) {
+    // A note just opened: type at once. The editor's own child window (the last one made in this
+    // window) gets the keyboard, for a moment: the tab bar settles over a frame or two, and a window
+    // not drawn in a frame loses the focus.
+    if (note_focus_until_ == 0) note_focus_until_ = ImGui::GetTime() + 0.5;
+    if (const auto& kids = ImGui::GetCurrentWindow()->DC.ChildWindows; !kids.empty()) ImGui::FocusWindow(kids.back());
+    if (ImGui::GetTime() > note_focus_until_ || ImGui::IsMouseClicked(0)) {
+      note_focus_file_.clear();
+      note_focus_until_ = 0;
+    }
+  }
+  if (note && ed->IsTextChanged()) note_edited_at_[file] = ImGui::GetTime();
 }
 
 // --- inspector ------------------------------------------------------------------------------------
@@ -1672,7 +1787,7 @@ void Ui::draw_inspector(const Model& m) {
           ImGui::TableNextRow();
           ImGui::TableNextColumn();
           ImVec4 ic = k == "group" ? kFolderColor : k == "entry" ? kEntryColor : k == "shared" ? kSharedColor : rgb(120, 170, 240);
-          ImGui::TextColored(ic, "%s", icon(kind_icon(k)));
+          ImGui::TextColored(ic, "%s", icon(notes_ && k == "leaf" ? Icon::File : kind_icon(k)));
           ImGui::SameLine();
           ImGui::TextUnformatted(tr_kind(k));
           ImGui::TableNextColumn();
@@ -1681,7 +1796,7 @@ void Ui::draw_inspector(const Model& m) {
         ImGui::EndTable();
       }
     }
-    if (!statuses.empty() && ui::section((std::string(tr("STATUSES")) + "###proj_st").c_str())) {
+    if (!notes_ && !statuses.empty() && ui::section((std::string(tr("STATUSES")) + "###proj_st").c_str())) {
       for (const auto& [st, n] : statuses) {
         ui::status_pill(tr_status(st), status_color(st));
         ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("000").x);
@@ -1690,8 +1805,14 @@ void Ui::draw_inspector(const Model& m) {
     }
     ImGui::Spacing();
     ImGui::PushTextWrapPos(0);
-    ui::muted("%s", tr("Select a block in the tree or on the schema."));
+    ui::muted("%s", notes_ ? tr("Select a note in the tree or on the schema; [[title]] in a text links it to that note.")
+                           : tr("Select a block in the tree or on the schema."));
     ImGui::PopTextWrapPos();
+    ImGui::End();
+    return;
+  }
+  if (notes_) {  // a note or a topic (ADR 0038)
+    inspector_note(m, *b);
     ImGui::End();
     return;
   }

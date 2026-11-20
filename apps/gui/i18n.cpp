@@ -462,7 +462,18 @@ const char* tr(const char* en) {
 
 std::string title(const char* en) { return std::string(tr(en)) + "###" + en; }
 
+namespace {
+std::atomic<bool> g_notes_kinds{false};
+}  // namespace
+
+void set_notes_kinds(bool on) { g_notes_kinds = on; }
+bool notes_kinds() { return g_notes_kinds; }
+
 const char* tr_kind(const std::string& k) {
+  if (g_notes_kinds && (k == "group" || k == "leaf")) {
+    if (lang() == Lang::En) return k == "group" ? "topic" : "note";
+    return k == "group" ? "тема" : "заметка";
+  }
   if (lang() == Lang::En) return k.c_str();
   if (k == "group") return "группа";
   if (k == "leaf") return "лист";

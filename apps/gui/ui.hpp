@@ -180,6 +180,31 @@ class Ui {
   void show_run_tab();
   void save_run_command(const std::string& command);
   [[nodiscard]] std::string run_status_text() const;
+  // notes projects (ui_notes.cpp, ADR 0038): "Programming | Notes" in the menu bar, two workspaces;
+  // in a notes project topics and notes, their texts edited here, [[links]] drawn as lines.
+  bool notes_ = false;
+  void draw_mode_tabs();
+  void switch_mode(bool notes);
+  void notes_toolbar(const Model& m);
+  void inspector_note(const Model& m, const index::BlockRow& b);
+  void draw_note_dialogs(const Model& m);
+  void open_note(const Model& m, const std::string& id);  // its text in an editor tab
+  void autosave_notes(bool all);  // edited note tabs: saved after a pause (all: now)
+  [[nodiscard]] const NoteText* note_of(const Model& m, const std::string& id) const;
+  [[nodiscard]] std::string note_id_of_file(const Model& m, const std::string& file) const;
+  [[nodiscard]] std::string block_title(const Model& m, const std::string& id) const;  // a note's title, else the id's last part
+  [[nodiscard]] std::string new_note_id(const Model& m, const std::string& parent, const std::string& title) const;
+  [[nodiscard]] bool note_dirty(const std::string& file) const;
+  std::map<std::string, double> note_edited_at_;  // note file → time of its last edit not saved yet
+  std::map<std::string, std::string> note_saved_text_;  // note file → text saved, until the model shows it
+  std::string note_open_next_;  // a note just made: opened in the editor when the model has it
+  std::string note_focus_file_;  // a note just opened: its editor gets the keyboard
+  double note_focus_until_ = 0;
+  std::string note_dialog_;    // "add_note" | "add_topic" | "retitle" | "remove"
+  std::string note_target_;    // the topic a new note goes into, or the note retitled / removed
+  std::string note_title_buf_;
+  bool note_dialog_focus_ = false;
+  std::shared_ptr<const std::map<std::string, NoteText>> note_texts_;  // of the last model (saving at exit)
   std::unique_ptr<RunSession> run_;
   bool run_restart_ = false;      // stopped to start again
   bool run_restart_build_ = true;
@@ -220,6 +245,7 @@ class Ui {
   void open_live(const std::string& journal);
  private:
   void show_picker(bool create = false);
+  void show_picker_for(bool create, bool notes);  // the picker of one workspace (ADR 0038)
   void go_to(const Model& m, const std::string& id);  // open the level of a block and select it
   ImVec4 color_of(const Model& m, const std::string& id) { return colors_.get(*m.snap, m.serial, id); }
   // prototype mode (ui_prototype.cpp, ADR 0035): ghost blocks and dependencies the human

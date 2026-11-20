@@ -1,5 +1,8 @@
 #include "settings.hpp"
 
+#include "kk/core/model.hpp"
+#include "kk/core/notes.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -86,6 +89,8 @@ GuiSettings load_settings() {
         if (t.is_string()) s.os_windows.push_back(t.get<std::string>());
       }
     }
+    s.last_code = j.value("last_code", std::string());
+    s.last_notes = j.value("last_notes", std::string());
     if (j.contains("recent") && j["recent"].is_array()) {
       for (const auto& r : j["recent"]) {
         if (r.is_string()) s.recent.push_back(r.get<std::string>());
@@ -100,7 +105,20 @@ void add_recent(GuiSettings& s, const std::filesystem::path& root) {
   auto r = root.string();
   std::erase(s.recent, r);
   s.recent.insert(s.recent.begin(), r);
-  if (s.recent.size() > 8) s.recent.resize(8);
+  if (s.recent.size() > 16) s.recent.resize(16);
+  (is_notes_project_dir(root) ? s.last_notes : s.last_code) = r;
+}
+
+bool is_project_dir(const std::filesystem::path& root) {
+  std::error_code ec;
+  return std::filesystem::is_regular_file(root / "project.ksl", ec);
+}
+
+bool is_notes_project_dir(const std::filesystem::path& root) {
+  auto text = core::read_file(root / "project.ksl");
+  if (!text) return false;
+  auto p = core::parse_project_text(*text, "project.ksl");
+  return p && core::is_notes_project(*p);
 }
 
 bool save_settings(const GuiSettings& s) {
@@ -110,6 +128,8 @@ bool save_settings(const GuiSettings& s) {
             {"link_colors", s.links_by_block ? "block" : "kind"},
             {"block_colors", s.blocks_by_block ? "block" : "status"},
             {"recent", s.recent},
+            {"last_code", s.last_code},
+            {"last_notes", s.last_notes},
             {"tickets_list_w", s.tickets_list_w},
             {"changes_list_h", s.changes_list_h},
             {"show_side", s.show_side},

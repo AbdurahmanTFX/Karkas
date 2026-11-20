@@ -31,6 +31,7 @@
 #include "widgets.hpp"
 #include "metrics.hpp"
 #include "kk/agents/edit.hpp"
+#include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/layout/layout.hpp"
 
@@ -130,7 +131,17 @@ Ui::Ui(Worker& w, GuiSettings& settings, bool persist, std::function<void()> wak
   req_.block_scale = settings_.block_scale;
 }
 
-Ui::~Ui() { ed::DestroyEditor(ed_); }
+Ui::~Ui() {
+  // Notes typed but not saved yet (the pause before the autosave had not passed): written now, here —
+  // the worker may stop before it would take a job (ADR 0038).
+  for (const auto& [file, at] : note_edited_at_) {
+    (void)at;
+    if (auto it = editors_.find(file); it != editors_.end() && it->second && !root_.empty()) {
+      (void)core::write_file(root_ / file, it->second->GetText());
+    }
+  }
+  ed::DestroyEditor(ed_);
+}
 
 void Ui::enter(const std::string& scope) {
   req_.scope = scope == "root" ? "" : scope;
@@ -147,6 +158,12 @@ void Ui::select(const std::string& id) { req_.selected = id; }
 
 void Ui::propose_unlink(std::vector<LinkDesc> links) {
   if (links.empty()) return;
+  if (notes_) {  // a line between notes is [[links]] in a text: they become plain text (ADR 0038)
+    for (const auto& l : links) {
+      if (l.kind == "ref") w_.unlink_notes(l.src_block, l.dst_block);
+    }
+    return;
+  }
   w_.propose([links](const core::Schema& s) -> kk::Result<agents::EditOp> {
     agents::EditOp all;
     for (const auto& l : links) {
@@ -928,6 +945,7 @@ void Ui::draw_graph(const Model& m) {
     std::string purpose = b != nullptr ? b->purpose : gb->purpose;
     std::string status = b != nullptr ? b->status : "design";
     std::string name = core::last_segment(b != nullptr ? b->id : gb->id);
+    if (notes_ && !purpose.empty()) name = purpose;  // a note or topic is called by its title (ADR 0038)
     // Size of the block and the font scale that makes its text fit (text follows size).
     float w = 0;
     float h = 0;
@@ -1133,7 +1151,7 @@ void Ui::draw_graph(const Model& m) {
       for (const auto& [side, kinds] : sides_used) draw_point(side, kinds);
     };
     // Line 1 (on a band of the block's color): kind icon, name, status dot on the right.
-    Icon kind_icon = kind == "group" ? Icon::Folder : kind == "entry" ? Icon::Play : kind == "shared" ? Icon::Library : Icon::Cube;
+    Icon kind_icon = kind == "group" ? Icon::Folder : kind == "entry" ? Icon::Play : kind == "shared" ? Icon::Library : notes_ ? Icon::File : Icon::Cube;
     float dot_w = ImGui::CalcTextSize(icon(Icon::Dot)).x;
     float icon_w = ImGui::CalcTextSize(icon(kind_icon)).x + ImGui::GetStyle().ItemSpacing.x * 0.6f;
     float title_x = o.x + sock_r * 0.8f;
@@ -1141,8 +1159,10 @@ void Ui::draw_graph(const Model& m) {
       ImGui::SetCursorScreenPos(ImVec2(title_x, y));
       ImGui::TextColored(with_alpha(ImVec4(1, 1, 1, 1), dim ? 0.3f : 0.9f), "%s", icon(kind_icon));
       text_at(title_x + icon_w, y, (is_ghost ? "+ " : "") + name, inner_w - icon_w - dot_w - sock_r * 2.5f);
-      ImGui::SetCursorScreenPos(ImVec2(o.x + inner_w - dot_w - sock_r * 0.8f, y));
-      ImGui::TextColored(with_alpha(active ? rgb(240, 200, 30) : status_color(status), dim ? 0.3f : 1.0f), "%s", icon(Icon::Dot));
+      if (!notes_) {  // notes have no status
+        ImGui::SetCursorScreenPos(ImVec2(o.x + inner_w - dot_w - sock_r * 0.8f, y));
+        ImGui::TextColored(with_alpha(active ? rgb(240, 200, 30) : status_color(status), dim ? 0.3f : 1.0f), "%s", icon(Icon::Dot));
+      }
     }
     const ImVec4 in_col = rgb(205, 205, 205);
     auto ip = in_points.find(unit);
@@ -1152,8 +1172,30 @@ void Ui::draw_graph(const Model& m) {
     if (kind != "shared" || op != out_points.end()) block_points(false, op != out_points.end() ? op->second : kNone, with_alpha(tint, 1.0f));
     float band_h = lh + kPadY * 0.5f;
     y += lh + ImGui::GetStyle().ItemSpacing.y * 0.5f;
-    // Line 2: purpose.
-    if (y + lh <= o.y + inner_h) {
+    // Notes (ADR 0038): a note shows the first lines of its text, a topic how many notes it holds.
+    if (notes_ && b != nullptr && !overview) {
+      if (kind == "group") {
+        if (y + lh <= o.y + inner_h) {
+          text_at(o.x + sock_r * 0.6f, y, fmt::format(fmt::runtime(tr("notes: {}")), b->children.size()), inner_w - sock_r * 1.2f);
+        }
+      } else {
+        const auto* n = note_of(m, unit);
+        std::vector<std::string> lines;
+        if (n != nullptr) {
+          for (const auto& l : core::split(n->text, '\n')) {
+            if (!core::trim(l).empty()) lines.emplace_back(core::trim(l));
+            if (lines.size() >= 12) break;
+          }
+        }
+        if (lines.empty()) lines.emplace_back(tr("(empty)"));
+        for (const auto& l : lines) {
+          if (y + lh > o.y + inner_h) break;
+          text_at(o.x + sock_r * 0.6f, y, l, inner_w - sock_r * 1.2f, true);
+          y += lh;
+        }
+      }
+    } else if (y + lh <= o.y + inner_h) {
+      // Line 2: purpose.
       if (!overview) {  // the line keeps its place: ports do not move with the zoom
         std::string p = purpose;
         if (kind == "group" && b != nullptr) p += fmt::format(" ({})", b->children.size());
@@ -1796,6 +1838,24 @@ void Ui::draw_graph(const Model& m) {
     bool queried = ed::QueryNewLink(&a, &b) && a && b;
     if (queried && (sketch_pin_of_.contains(a.Get()) || sketch_pin_of_.contains(b.Get()))) {
       sketch_new_link(a.Get(), b.Get(), pin_of);  // a dependency of the prototype
+    } else if (queried && notes_) {
+      // Notes (ADR 0038): from a note's point to another note or topic — a [[link]] in the first note's
+      // text. From an "in" point backwards: the other note links to this one.
+      auto pa = core::split(pin_of[a.Get()], ':', false);
+      auto pb = core::split(pin_of[b.Get()], ':', false);
+      bool ok = pa.size() == 3 && pb.size() == 3 && pa[0] != pb[0];
+      std::string src = ok ? pa[0] : "", dst = ok ? pb[0] : "";
+      if (ok && pa[2] == "in" && pb[2] == "out") std::swap(src, dst);
+      const auto* sb = snap.block(src);
+      ok = ok && sb != nullptr && sb->kind != "group";
+      if (!ok) {
+        ed::Suspend();
+        ImGui::SetTooltip("%s", tr("A link starts in a note and goes to another note or topic"));
+        ed::Resume();
+        ed::RejectNewItem(rgb(255, 80, 80), 2.0f);
+      } else if (ed::AcceptNewItem(rgb(120, 255, 120), 3.0f)) {
+        w_.link_notes(src, dst);
+      }
     } else if (queried) {
       auto pa = core::split(pin_of[a.Get()], ':', false);
       auto pb = core::split(pin_of[b.Get()], ':', false);
@@ -1862,6 +1922,9 @@ void Ui::draw_graph(const Model& m) {
     const auto* b = snap.block(node_of[dbl.Get()]);
     if (b->kind == "group") {
       go_into = b->id;
+    } else if (notes_) {
+      select(b->id);
+      open_note(m, b->id);  // a note opens its text (ADR 0038)
     } else {
       select(b->id);
       req_.open_file.clear();
@@ -1976,7 +2039,39 @@ void Ui::draw_graph(const Model& m) {
   }
   bool reset_one = false;
   bool auto_layout = false;
-  if (ImGui::BeginPopup("node_menu")) {
+  if (notes_ && ImGui::BeginPopup("node_menu")) {  // a note or a topic (ADR 0038)
+    const auto* b = snap.block(target_);
+    bool topic = b != nullptr && b->kind == "group";
+    ImGui::TextDisabled("%s", block_title(m, target_).c_str());
+    ImGui::Separator();
+    if (topic && ImGui::MenuItem(with_icon(Icon::Layers, tr("Open")).c_str())) go_into = target_;
+    if (!topic && b != nullptr && ImGui::MenuItem(with_icon(Icon::Pencil, tr("Edit the text")).c_str())) {
+      select(target_);
+      open_note(m, target_);
+    }
+    if (b != nullptr && ImGui::MenuItem(with_icon(Icon::Card, tr("Rename...")).c_str())) {
+      note_dialog_ = "retitle";
+      note_target_ = target_;
+      note_title_buf_ = b->purpose;
+      note_dialog_focus_ = true;
+    }
+    if (topic && ImGui::MenuItem(with_icon(Icon::Plus, tr("New note in this topic...")).c_str())) {
+      note_dialog_ = "add_note";
+      note_target_ = target_;
+      note_title_buf_.clear();
+      note_dialog_focus_ = true;
+    }
+    if (ImGui::MenuItem(with_icon(Icon::Fit, tr("Reset size")).c_str())) reset_one = true;
+    if (b != nullptr && ImGui::MenuItem(with_icon(Icon::Folder, tr("Open folder")).c_str())) w_.open_block_folder(b->id);
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(241, 110, 110));
+    if (ImGui::MenuItem(with_icon(Icon::Trash, tr("Remove...")).c_str())) {
+      note_dialog_ = "remove";
+      note_target_ = target_;
+    }
+    ImGui::PopStyleColor();
+    ImGui::EndPopup();
+  } else if (ImGui::BeginPopup("node_menu")) {
     const auto* b = snap.block(target_);
     ImGui::TextDisabled("%s", target_.c_str());
     ImGui::Separator();
@@ -2005,7 +2100,20 @@ void Ui::draw_graph(const Model& m) {
       sketch_target_.clear();
       sketch_dialog_ = true;
     }
-    if (ImGui::MenuItem(with_icon(Icon::Plus, tr("Add block...")).c_str())) {
+    if (notes_) {
+      if (ImGui::MenuItem(with_icon(Icon::Plus, tr("New note...")).c_str())) {
+        note_dialog_ = "add_note";
+        note_target_ = scope;
+        note_title_buf_.clear();
+        note_dialog_focus_ = true;
+      }
+      if (ImGui::MenuItem(with_icon(Icon::Folder, tr("New topic...")).c_str())) {
+        note_dialog_ = "add_topic";
+        note_target_ = scope;
+        note_title_buf_.clear();
+        note_dialog_focus_ = true;
+      }
+    } else if (ImGui::MenuItem(with_icon(Icon::Plus, tr("Add block...")).c_str())) {
       dialog_ = "add_block";
       target_ = scope;
     }
@@ -2415,7 +2523,20 @@ void Ui::draw_empty(const Model& m) {
     ImGui::Dummy(ImVec2(width, big->FontSize * 2.4f));
   }
   ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
-  if (!m.snap->blocks.empty()) {
+  if (notes_) {  // ADR 0038
+    ImGui::TextUnformatted(m.snap->blocks.empty() ? tr("No notes yet.") : tr("No notes in this topic yet."));
+    ImGui::TextDisabled("%s", tr("\"+ Note\" above (or right click) writes a note; \"+ Topic\" groups notes. In a text, [[title]] "
+                                 "links it to another note."));
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Button, theme::accent(0.9f));
+    if (ImGui::Button(with_icon(Icon::Plus, tr("New note")).c_str())) {
+      note_dialog_ = "add_note";
+      note_target_ = req_.scope;
+      note_title_buf_.clear();
+      note_dialog_focus_ = true;
+    }
+    ImGui::PopStyleColor();
+  } else if (!m.snap->blocks.empty()) {
     ImGui::TextUnformatted(tr("No blocks on this level."));
     ImGui::TextDisabled("%s", tr("Right click → Add block, or the \"Add block\" button above."));
   } else {

@@ -15,7 +15,10 @@ struct GuiSettings {
   float ui_scale = 1.0f;     // text size of the interface (io.FontGlobalScale)
   bool links_by_block = true;   // link color: of the block it starts at (else: by link kind, 14.5)
   bool blocks_by_block = true;  // block background: its own color (else: by status, 14.5)
-  std::vector<std::string> recent;  // recently opened project roots, newest first
+  std::vector<std::string> recent;  // recently opened project roots, newest first (both kinds)
+  // The two workspaces (ADR 0038): the last project opened of each kind; the mode switch of the menu
+  // bar opens it.
+  std::string last_code, last_notes;
   // Layout of the panels (ADR 0021): sizes of the split areas, windows and tabs shown.
   float tickets_list_w = 0.0f;  // width of the ticket list in the bottom panel (0 = half)
   float changes_list_h = 0.0f;  // height of the change list in the side bar (0 = a third)
@@ -39,8 +42,12 @@ std::filesystem::path layout_path();
 // made every later resize of that table abort): such a line goes, ImGui uses its default.
 std::string clean_layout_ini(std::string_view text);
 
-// Puts a project root first in the recent list (at most 8).
+// Puts a project root first in the recent list (at most 16) and makes it the last project of its kind.
 void add_recent(GuiSettings& s, const std::filesystem::path& root);
+// The folder holds a notes project (project.ksl says `lang notes`, ADR 0038).
+bool is_notes_project_dir(const std::filesystem::path& root);
+// The folder holds a project (project.ksl).
+bool is_project_dir(const std::filesystem::path& root);
 
 // Limits of block sizes (canvas units): a block never shrinks to a dot.
 inline constexpr float kMinBlockW = 120.0f;
