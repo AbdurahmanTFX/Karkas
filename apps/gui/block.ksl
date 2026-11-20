@@ -17,3 +17,4 @@ inv     idle CPU use stays near zero
 inv     clearing a panel writes only .karkas/cleared.json: tickets, journals and logs stay
 inv     the chat runs the same karkas commands a user would type
 inv     the green triangle runs the same karkas run a user would type; closing the GUI ends the program
+inv     a notes project's texts are written only by the human's edits; nothing of a notes project is built or run

@@ -684,3 +684,18 @@
   it, else the group of the level shown, at the top the project (the inspector's overview, the chat's
   "whole project"). Entering a level selects its group; a vanished selection falls back to it.
 - Fixed: a block selected on the canvas took the selection back from a click in the tree.
+
+## Addition — notes mode: text notes in topics, [[links]], two workspaces (docs/adr/0038)
+
+- project.ksl `lang notes`: topics (groups) and notes (leaves) whose text is `note.txt` in the block folder or
+  a listed file; `[[name]]` in a text (by id, title or last id segment, case-insensitive) is a `ref` link of
+  the schema; checks E10 (kinds), W08 (a link naming no note or several); no checks or drift of code; the
+  index notices a changed text.
+- `karkas init` makes a notes project of a folder of .txt files (or `--notes`) with cards for the notes
+  already there (files stay in place, folders become topics); `files` takes quoted paths.
+- karkas-gui: "Programming | Notes" in the menu bar, each with its last and recent projects; the project's
+  kind sets the mode. Notes by their titles with their first lines on the schema, edited in tabs (saved
+  after a pause, Ctrl+S, on closing), lines drawn → `[[title]]`, rename with the links, remove with undo,
+  inspector with text, links and backlinks, search in texts; run, build, agents and chat hidden.
+- Not done: agents for notes (next stage), word wrap while editing (ImGui 1.91.9 has none).
+- Tests 380; checked under Xvfb (both modes, a folder of notes, editing, links drawn, rename, remove/undo).
