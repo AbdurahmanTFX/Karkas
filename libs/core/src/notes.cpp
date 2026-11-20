@@ -140,6 +140,66 @@ std::string fold_title(std::string_view s) {
   return out;
 }
 
+std::string lower_text(std::string_view s) {
+  std::string out;
+  out.reserve(s.size());
+  for (std::size_t i = 0; i < s.size();) {
+    std::size_t start = i;
+    char32_t c = next_cp(s, i);
+    char32_t l = lower_cp(c);
+    std::string piece;
+    put_cp(piece, l);
+    // Same length (ASCII, Cyrillic): the lowercase letter; anything else stays as written.
+    if (c != 0xFFFD && piece.size() == i - start) {
+      out += piece;
+    } else {
+      out.append(s.substr(start, i - start));
+    }
+  }
+  return out;
+}
+
+namespace {
+
+bool word_cp(char32_t c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || (c >= 0x0400 && c <= 0x04FF);
+}
+
+// The code point that ends just before byte `pos` (0 at the start).
+char32_t cp_before(std::string_view s, std::size_t pos) {
+  if (pos == 0) return 0;
+  std::size_t b = pos - 1;
+  while (b > 0 && (static_cast<unsigned char>(s[b]) & 0xC0) == 0x80) --b;
+  std::size_t i = b;
+  return next_cp(s, i);
+}
+
+}  // namespace
+
+std::vector<std::size_t> find_mentions(std::string_view text, std::string_view title) {
+  std::vector<std::size_t> out;
+  auto t = lower_text(trim(title));
+  std::size_t letters = 0;
+  for (std::size_t i = 0; i < t.size();) {
+    next_cp(t, i);
+    ++letters;
+  }
+  if (letters < 3) return out;
+  auto low = lower_text(text);
+  std::vector<std::pair<std::size_t, std::size_t>> links;
+  each_ref(text, [&](std::size_t b, std::size_t e, const std::string&, const std::string&, int) { links.emplace_back(b, e); });
+  for (auto at = low.find(t); at != std::string::npos; at = low.find(t, at + 1)) {
+    std::size_t end = at + t.size();
+    std::size_t after = end;
+    char32_t next = end < low.size() ? next_cp(low, after) : 0;
+    if (word_cp(cp_before(low, at)) || word_cp(next)) continue;
+    bool linked = false;
+    for (const auto& [b, e] : links) linked = linked || (at >= b && at < e);
+    if (!linked) out.push_back(at);
+  }
+  return out;
+}
+
 std::vector<std::string> resolve_note(const Schema& s, std::string_view name) {
   auto n = std::string(trim(name));
   if (n.empty()) return {};

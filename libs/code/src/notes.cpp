@@ -190,4 +190,78 @@ kk::Result<std::vector<std::string>> retitle_note(const core::Schema& s, const s
   return changed;
 }
 
+namespace {
+
+// The line (1-based) at byte `at` of a text, and that line trimmed.
+std::pair<int, std::string> line_at(std::string_view text, std::size_t at) {
+  int line = 1 + static_cast<int>(std::count(text.begin(), text.begin() + static_cast<long>(at), '\n'));
+  auto b = text.rfind('\n', at == 0 ? 0 : at - 1);
+  b = (b == std::string_view::npos || at == 0) ? 0 : b + 1;
+  auto e = text.find('\n', at);
+  return {line, std::string(core::trim(text.substr(b, e == std::string_view::npos ? std::string_view::npos : e - b)))};
+}
+
+bool links_to(const core::Block& b, const std::string& id) {
+  return std::any_of(b.refs.begin(), b.refs.end(), [&](const core::NoteRef& r) { return r.target == id; });
+}
+
+}  // namespace
+
+std::vector<Mention> unlinked_mentions(const core::Schema& s, const std::string& src) {
+  std::vector<Mention> out;
+  const auto* a = s.find(src);
+  if (a == nullptr) return out;
+  auto file = core::note_file(*a);
+  if (file.empty()) return out;
+  auto text = core::read_file(s.root / file);
+  if (!text) return out;
+  for (const auto& b : s.blocks) {
+    if (b.id == src || links_to(*a, b.id) || core::Schema::is_under(b.id, src)) continue;
+    auto at = core::find_mentions(*text, b.purpose.value);
+    if (at.empty()) continue;
+    auto [line, words] = line_at(*text, at.front());
+    out.push_back({src, b.id, line, words});
+  }
+  return out;
+}
+
+std::vector<Mention> mentions_of(const core::Schema& s, const std::string& id) {
+  std::vector<Mention> out;
+  const auto* d = s.find(id);
+  if (d == nullptr) return out;
+  for (const auto& a : s.blocks) {
+    if (a.id == id || links_to(a, id)) continue;
+    auto file = core::note_file(a);
+    if (file.empty()) continue;
+    auto text = core::read_file(s.root / file);
+    if (!text) continue;
+    auto at = core::find_mentions(*text, d->purpose.value);
+    if (at.empty()) continue;
+    auto [line, words] = line_at(*text, at.front());
+    out.push_back({a.id, id, line, words});
+  }
+  return out;
+}
+
+kk::Result<bool> link_mention(const core::Schema& s, const std::string& src, const std::string& dst) {
+  const auto* a = s.find(src);
+  const auto* d = s.find(dst);
+  if (a == nullptr || d == nullptr) return kk::fail("notes", "no note " + (a == nullptr ? src : dst));
+  auto file = core::note_file(*a);
+  if (file.empty()) return false;
+  auto text = core::read_file(s.root / file);
+  if (!text) return false;
+  auto at = core::find_mentions(*text, d->purpose.value);
+  if (at.empty()) return false;
+  auto len = core::lower_text(core::trim(d->purpose.value)).size();
+  auto words = text->substr(at.front(), len);
+  // The words keep their case; when they would not name it alone (a second note of that title), the id
+  // goes before them.
+  auto fits = core::resolve_note(s, words);
+  std::string link = fits.size() == 1 && fits.front() == dst ? "[[" + words + "]]" : "[[" + dst + "|" + words + "]]";
+  auto out = text->substr(0, at.front()) + link + text->substr(at.front() + len);
+  if (auto r = core::write_file(s.root / file, out); !r) return std::unexpected(r.error());
+  return true;
+}
+
 }  // namespace kk::code

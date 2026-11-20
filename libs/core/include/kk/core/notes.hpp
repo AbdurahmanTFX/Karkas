@@ -45,5 +45,11 @@ std::string ident_from_title(std::string_view title);
 
 // Case-folded, space-collapsed form of a title (ASCII and Cyrillic letters).
 std::string fold_title(std::string_view s);
+// The text in lowercase (ASCII and Cyrillic letters), byte for byte as long as the text: offsets stay.
+std::string lower_text(std::string_view s);
+
+// Where a text names `title` as plain words (docs/adr/0038, agents for notes): whole-word occurrences,
+// ignoring case, outside [[links]]; byte offsets into the text. A title shorter than 3 letters finds nothing.
+std::vector<std::size_t> find_mentions(std::string_view text, std::string_view title);
 
 }  // namespace kk::core

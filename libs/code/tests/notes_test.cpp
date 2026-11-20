@@ -131,3 +131,42 @@ TEST_CASE("notes: a note made in Karkas is no leaf of code — no drift checks (
   REQUIRE(s);
   CHECK(code::check_drift(*s).empty());
 }
+
+TEST_CASE("notes: plain words that name another note are links to suggest, one click makes them links") {
+  test::TempDir d{"vault_mentions"};
+  test::write(d / "project.ksl", "@project vault\nlang notes\n");
+  test::write(d / "blocks/game/block.ksl", "@block game\npurpose Игра про кота\nkind leaf\n");
+  test::write(d / "blocks/game/note.txt", "Главное — музыка.\nЕщё в игре про кота нужен СЮЖЕТ, см. [[Сюжет]].\nИгра про котан\n");
+  test::write(d / "blocks/story/block.ksl", "@block story\npurpose Сюжет\nkind leaf\n");
+  test::write(d / "blocks/story/note.txt", "Кот идёт домой. Игра про кота — это квест.\n");
+  test::write(d / "blocks/music/block.ksl", "@block music\npurpose Музыка\nkind leaf\n");
+  test::write(d / "blocks/ab/block.ksl", "@block ab\npurpose Ки\nkind leaf\n");  // too short to look for
+  auto load = [&] {
+    auto s = core::load_schema(d.path());
+    REQUIRE(s);
+    return std::move(*s);
+  };
+  CHECK(core::find_mentions("Музыкальная музыка, [[Музыка]] (МУЗЫКА)", "Музыка") == std::vector<std::size_t>{23, 55});
+  CHECK(core::lower_text("ЁЖ Hello") == "ёж hello");
+  CHECK(core::lower_text("ЁЖ Hello").size() == std::string("ЁЖ Hello").size());
+
+  // game names music (no link yet); story it links already; "Ки" is too short.
+  auto in_game = code::unlinked_mentions(load(), "game");
+  REQUIRE(in_game.size() == 1);
+  CHECK(in_game[0].dst == "music");
+  CHECK(in_game[0].line == 1);
+  CHECK(in_game[0].text == "Главное — музыка.");
+  // story names the game without a link; game names itself ("в игре про кота" is another word form, "котан" no word).
+  auto of_game = code::mentions_of(load(), "game");
+  REQUIRE(of_game.size() == 1);
+  CHECK(of_game[0].src == "story");
+
+  REQUIRE(code::link_mention(load(), "story", "game"));
+  CHECK(test::read(d / "blocks/story/note.txt") == "Кот идёт домой. [[Игра про кота]] — это квест.\n");
+  REQUIRE(code::link_mention(load(), "game", "music"));
+  CHECK(test::read(d / "blocks/game/note.txt") == "Главное — [[музыка]].\nЕщё в игре про кота нужен СЮЖЕТ, см. [[Сюжет]].\nИгра про котан\n");
+  CHECK(code::mentions_of(load(), "game").empty());
+  auto again = code::link_mention(load(), "story", "game");
+  REQUIRE(again);
+  CHECK_FALSE(*again);  // nothing left to link
+}

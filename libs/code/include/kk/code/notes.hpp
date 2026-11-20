@@ -32,4 +32,19 @@ kk::Result<int> remove_note_link(const core::Schema& s, const std::string& src, 
 // name it by the new one (a shown text after '|' is kept). Returns the notes whose text changed.
 kk::Result<std::vector<std::string>> retitle_note(const core::Schema& s, const std::string& id, const std::string& title);
 
+// A note that names another note's or topic's title in plain words, without a [[link]]: a link to
+// suggest (no model needed).
+struct Mention {
+  std::string src, dst;  // the note whose text names it, and the block named
+  int line = 0;
+  std::string text;  // that line, trimmed
+};
+// The mentions of other blocks in the text of note `src` (blocks it links already are left out).
+std::vector<Mention> unlinked_mentions(const core::Schema& s, const std::string& src);
+// The mentions of block `id` in the texts of other notes that do not link to it yet.
+std::vector<Mention> mentions_of(const core::Schema& s, const std::string& id);
+// The first unlinked mention of `dst` in note `src` becomes a link: its words in brackets, "[[words]]".
+// False when the text names it nowhere (any more).
+kk::Result<bool> link_mention(const core::Schema& s, const std::string& src, const std::string& dst);
+
 }  // namespace kk::code
