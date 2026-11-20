@@ -186,6 +186,7 @@ VoidResult apply_config_text(Config& cfg, std::string_view text, std::string_vie
   get(t, "project", "build_command", cfg.build_command);
   get(t, "project", "verify_command", cfg.verify_command);
   get(t, "project", "compile_commands", cfg.compile_commands);
+  get(t, "project", "run_command", cfg.run_command);
   get(t, "test", "command", cfg.test_command);
   get(t, "test", "dir", cfg.test_dir);
   get(t, "test", "guide", cfg.test_guide);

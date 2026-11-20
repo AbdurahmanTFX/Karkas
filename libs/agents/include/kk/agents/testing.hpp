@@ -2,6 +2,7 @@
 // Build and test without a model (karkas test, worker/tester tools, regression 12.4):
 // regenerate CMake, configure, build, ctest by labels, record results for the index.
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -42,6 +43,11 @@ class TestService final : public ITestService {
   // A project with its own build and a compile_commands.json: each file's compile command with
   // -fsyntax-only (no object, no link); otherwise the build.
   kk::Result<TestRun> compile_check(const std::vector<std::string>& files) override;
+  // The build of "build and run" (ADR 0037): the program the human runs, so the project's own
+  // build_command (not the quicker verify_command), else Karkas's configure + build (CMakeLists.txt
+  // generated first when it is Karkas's). Its output goes to `on_output` as it comes; `on_wait` is
+  // called when another build of the project holds the build lock. Not recorded as test results.
+  kk::Result<runner::BuildResult> build_program(const runner::OutputSink& on_output, const std::function<void()>& on_wait = {});
   static std::string doctest_include();
 
  private:

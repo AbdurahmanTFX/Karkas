@@ -247,6 +247,16 @@ TEST_CASE("config: set_config_value edits one key and keeps the rest") {
   CHECK_FALSE(set_config_value(text, "levels", "top", "strong"));  // invalid result is refused
 }
 
+TEST_CASE("config: [project] run_command, written with quotes and read back (ADR 0037)") {
+  auto t = set_config_value("[project]\nbuild_dir = \"build\"\n", "project", "run_command", R"(build/game --name "Player 1")");
+  REQUIRE(t);
+  Config cfg;
+  REQUIRE(apply_config_text(cfg, *t, "k.toml"));
+  CHECK(cfg.run_command == R"(build/game --name "Player 1")");
+  CHECK(cfg.build_dir == "build");
+  CHECK(Config{}.run_command.empty());
+}
+
 TEST_CASE("text: to_ident makes KSL identifiers from C++ and file names") {
   CHECK(to_ident("ResolveCollision") == "resolve_collision");
   CHECK(to_ident("Update") == "update");

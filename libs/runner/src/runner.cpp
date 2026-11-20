@@ -100,6 +100,7 @@ kk::Result<RunResult> run(const RunOptions& opts) {
   RunResult r;
   auto sink = [&](reproc::stream, const uint8_t* buf, size_t n) -> std::error_code {
     if (r.output.size() < opts.max_output) r.output.append(reinterpret_cast<const char*>(buf), n);
+    if (opts.on_output) opts.on_output(std::string_view(reinterpret_cast<const char*>(buf), n));
     return {};
   };
   ec = reproc::drain(proc, sink, reproc::sink::null);
@@ -178,9 +179,12 @@ std::string compress_build_warnings(std::string_view log, const fs::path& root, 
   return core::join(out, "\n");
 }
 
-kk::Result<BuildResult> build_command(const std::string& command, const fs::path& cwd, std::chrono::seconds timeout) {
+kk::Result<BuildResult> build_command(const std::string& command, const fs::path& cwd, std::chrono::seconds timeout,
+                                      const OutputSink& on_output) {
   BuildResult br;
-  auto r = run({{"sh", "-c", command}, cwd, timeout});
+  RunOptions ro{{"sh", "-c", command}, cwd, timeout};
+  ro.on_output = on_output;
+  auto r = run(ro);
   if (!r) return std::unexpected(r.error());
   br.log = r->output;
   br.ok = r->ok();
@@ -205,7 +209,9 @@ kk::Result<BuildResult> build(const BuildOptions& opts) {
                                    "-DCMAKE_BUILD_TYPE=Debug"};
   if (!opts.doctest_include.empty()) conf.push_back("-DKARKAS_DOCTEST_DIR=" + opts.doctest_include);
   conf.insert(conf.end(), opts.cmake_args.begin(), opts.cmake_args.end());
-  auto c = run({conf, opts.source, opts.timeout});
+  RunOptions co{conf, opts.source, opts.timeout};
+  co.on_output = opts.on_output;
+  auto c = run(co);
   if (!c) return std::unexpected(c.error());
   br.log = c->output;
   if (!c->ok()) {
@@ -222,7 +228,9 @@ kk::Result<BuildResult> build(const BuildOptions& opts) {
   }
   auto remaining = opts.timeout - std::chrono::duration_cast<std::chrono::seconds>(c->duration);
   if (remaining.count() < 10) remaining = std::chrono::seconds(10);
-  auto r = run({b, opts.source, remaining});
+  RunOptions ro{b, opts.source, remaining};
+  ro.on_output = opts.on_output;
+  auto r = run(ro);
   if (!r) return std::unexpected(r.error());
   br.log += r->output;
   br.ok = r->ok();

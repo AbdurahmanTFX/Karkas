@@ -68,11 +68,16 @@ std::mutex g_build_mu;
 
 struct FileLock {
   int fd = -1;
-  explicit FileLock(const fs::path& p) {
+  // `on_wait`: called once when another process holds the lock (then it waits for it).
+  explicit FileLock(const fs::path& p, const std::function<void()>& on_wait = {}) {
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
-    fd = ::open(p.c_str(), O_RDWR | O_CREAT, 0644);
-    if (fd >= 0) ::flock(fd, LOCK_EX);
+    // Close-on-exec: neither the build's processes nor a program started after the build keep it.
+    fd = ::open(p.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (fd < 0) return;
+    if (::flock(fd, LOCK_EX | LOCK_NB) == 0) return;
+    if (on_wait) on_wait();
+    ::flock(fd, LOCK_EX);
   }
   ~FileLock() {
     if (fd >= 0) {
@@ -261,6 +266,33 @@ kk::Result<TestRun> TestService::compile_check(const std::vector<std::string>& f
   }
   if (!missing.empty()) out.text += fmt::format("(not compiled by the project's build, not checked: {})\n", core::join(missing, " "));
   return out;
+}
+
+kk::Result<runner::BuildResult> TestService::build_program(const runner::OutputSink& on_output, const std::function<void()>& on_wait) {
+  std::unique_lock mu(g_build_mu, std::try_to_lock);
+  if (!mu.owns_lock()) {
+    if (on_wait) on_wait();
+    mu.lock();
+  }
+  FileLock lock(root_ / ".karkas" / "build.lock", on_wait);
+  // A human waits for this build and can stop it: the agents' build timeout is no limit for it.
+  auto timeout = std::chrono::seconds(std::max(cfg_.build_timeout_s, 3600));
+  if (!cfg_.build_command.empty()) return runner::build_command(cfg_.build_command, root_, timeout, on_output);
+  if (!code::has_own_cmake(root_)) {
+    auto schema = core::load_schema(root_);
+    if (!schema) return std::unexpected(schema.error());
+    if (auto g = code::write_cmake(*schema); !g) return std::unexpected(g.error());
+  }
+  runner::BuildOptions bo;
+  bo.source = root_;
+  bo.build_dir = root_ / cfg_.build_dir;
+  bo.doctest_include = doctest_include();
+  bo.timeout = timeout;
+  for (const auto& a : core::split(cfg_.cmake_args, ' ')) {
+    if (!core::trim(a).empty()) bo.cmake_args.emplace_back(core::trim(a));
+  }
+  bo.on_output = on_output;
+  return runner::build(bo);
 }
 
 kk::Result<TestRun> TestService::build_and_test(const std::vector<std::string>& blocks, bool build_only) {

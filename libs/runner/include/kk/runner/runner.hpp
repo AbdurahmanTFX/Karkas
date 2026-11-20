@@ -3,7 +3,9 @@
 // cleaned environment (API keys and other secrets are never passed on).
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <map>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -12,6 +14,10 @@
 namespace kk::runner {
 
 namespace fs = std::filesystem;
+
+// Called with each piece of a child's output as it comes (stdout + stderr merged), from the
+// calling thread.
+using OutputSink = std::function<void(std::string_view)>;
 
 struct RunOptions {
   std::vector<std::string> argv;
@@ -23,6 +29,9 @@ struct RunOptions {
   // that would take precedence over a subscription login).
   std::vector<std::string> unset_env;
   std::size_t max_output = 8u << 20;  // bytes kept (stdout + stderr merged)
+  // The output as it comes; it is kept in RunResult as well. "Build and run" streams its build
+  // (ADR 0037).
+  OutputSink on_output;
 };
 
 struct RunResult {
@@ -53,6 +62,7 @@ struct BuildOptions {
   std::string target;              // "" = all
   std::chrono::seconds timeout{300};
   std::vector<std::string> cmake_args;
+  OutputSink on_output;            // the output of configure and build as it comes
 };
 
 struct BuildResult {
@@ -67,7 +77,8 @@ struct BuildResult {
 kk::Result<BuildResult> build(const BuildOptions& opts);
 // A project's own build command (`[project] build_command`, ADR 0027), run by `sh -c` from `cwd`:
 // nothing is configured by Karkas.
-kk::Result<BuildResult> build_command(const std::string& command, const fs::path& cwd, std::chrono::seconds timeout);
+kk::Result<BuildResult> build_command(const std::string& command, const fs::path& cwd, std::chrono::seconds timeout,
+                                      const OutputSink& on_output = {});
 
 struct Counts {
   int pass = 0;

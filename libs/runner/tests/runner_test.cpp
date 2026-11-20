@@ -152,3 +152,25 @@ TEST_CASE("runner: an inherited environment can drop named variables") {
   ::unsetenv("KK_TEST_DROP");
   ::unsetenv("KK_TEST_KEEP");
 }
+
+TEST_CASE("runner: the output reaches on_output as it comes and is kept as well (ADR 0037)") {
+  std::string streamed;
+  int pieces = 0;
+  runner::RunOptions ro{{"sh", "-c", "echo one; sleep 0.2; echo two 1>&2"}, {}, 10s};
+  ro.on_output = [&](std::string_view s) {
+    streamed += s;
+    ++pieces;
+  };
+  auto r = runner::run(ro);
+  REQUIRE(r);
+  CHECK(r->ok());
+  CHECK(streamed == r->output);
+  CHECK(core::contains(streamed, "one"));
+  CHECK(core::contains(streamed, "two"));
+  CHECK(pieces >= 2);  // "one" came before "two" was written
+  std::string built;
+  auto b = runner::build_command("echo building", {}, 10s, [&](std::string_view s) { built += s; });
+  REQUIRE(b);
+  CHECK(b->ok);
+  CHECK(core::contains(built, "building"));
+}
