@@ -2,6 +2,7 @@
 // User settings of karkas-gui: ~/.config/karkas/gui.json (language, sizes).
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "i18n.hpp"
@@ -34,6 +35,9 @@ struct GuiSettings {
 
 // The dock layout of the tiles (ImGui's ini text), next to gui.json.
 std::filesystem::path layout_path();
+// The layout text without values that are not numbers (a column "Weight=-nan" saved by ImGui once
+// made every later resize of that table abort): such a line goes, ImGui uses its default.
+std::string clean_layout_ini(std::string_view text);
 
 // Puts a project root first in the recent list (at most 8).
 void add_recent(GuiSettings& s, const std::filesystem::path& root);

@@ -654,3 +654,10 @@
 - `plan_prototype_send` is shared by karkas-gui and MCP; a design marks the sketch sent only when it ends;
   karkas-gui re-reads the sketch when the engine writes it.
 - Tests 359; `karkas mcp` checked end to end on copies (no API key: the runs start and fail on the key).
+
+## Fix — a crash after a restart: NaN column weights in gui_layout.ini (docs/adr/0032, amendment)
+
+- karkas-gui aborted on Endless Sky when a column of the agents table was resized: ImGui had saved
+  `Weight=-nan` for a proportional table laid out without room. Columns of the resizable tables get
+  initial weights; NaN/inf values are dropped from the layout file on load and save. Reproduced with the
+  user's file (old build aborts, fixed passes); test of the cleaning. Tests 360.

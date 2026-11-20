@@ -176,7 +176,10 @@ int main(int argc, char** argv) {
   // --layout FILE: this file instead (also in headless checks, which otherwise use neither).
   fs::path layout = !layout_file.empty() ? fs::path(layout_file) : persist ? kk::gui::layout_path() : fs::path();
   if (!layout.empty()) {
-    if (auto ini = kk::core::read_file(layout)) ImGui::LoadIniSettingsFromMemory(ini->data(), ini->size());
+    if (auto ini = kk::core::read_file(layout)) {
+      auto clean = kk::gui::clean_layout_ini(*ini);
+      ImGui::LoadIniSettingsFromMemory(clean.data(), clean.size());
+    }
   }
   auto save_layout = [&](bool now) {
     if (!io.WantSaveIniSettings && !now) return;
@@ -184,7 +187,7 @@ int main(int argc, char** argv) {
     if (layout.empty()) return;
     std::size_t n = 0;
     const char* text = ImGui::SaveIniSettingsToMemory(&n);
-    (void)kk::core::write_file(layout, std::string(text, n));
+    (void)kk::core::write_file(layout, kk::gui::clean_layout_ini(std::string_view(text, n)));
   };
   // Mouse cursors of the desktop's theme (cursors.hpp): the GLFW ones are the old X11 set when
   // the cursor library cannot resolve the theme (its hand points to the upper right).

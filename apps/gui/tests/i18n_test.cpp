@@ -75,3 +75,19 @@ TEST_CASE("settings are saved and loaded, sizes clamped") {
   CHECK(l.block_scale == doctest::Approx(kMinBlockScale));  // never shrinks to a dot
   unsetenv("XDG_CONFIG_HOME");
 }
+
+TEST_CASE("the layout file loses values that are not numbers (a saved Weight=-nan aborted the next column resize)") {
+  std::string ini =
+      "[Window][###tile_agents]\nPos=60,60\nSize=400,300\n\n"
+      "[Table][0xF5B0B96A,11]\nRefScale=15\nColumn 0  Weight=-nan\nColumn 1  Weight=NaN\nColumn 2  Weight=inf\n"
+      "Column 3  Weight=1.2000\nColumn 10 Width=27\n\n[Docking][Data]\nDockSpace ID=0x6B61726B Pos=45,27 Size=1321,716\n";
+  auto clean = clean_layout_ini(ini);
+  CHECK(clean.find("nan") == std::string::npos);
+  CHECK(clean.find("NaN") == std::string::npos);
+  CHECK(clean.find("inf") == std::string::npos);
+  CHECK(clean.find("Column 3  Weight=1.2000\n") != std::string::npos);
+  CHECK(clean.find("Column 10 Width=27\n") != std::string::npos);
+  CHECK(clean.find("[Docking][Data]\nDockSpace ID=0x6B61726B Pos=45,27 Size=1321,716\n") != std::string::npos);
+  CHECK(clean.find("Pos=60,60\n") != std::string::npos);  // "Pos=" is no "inf": only values are looked at
+  CHECK(clean_layout_ini("Window=0xF98418C4 Info=1\n") == "Window=0xF98418C4 Info=1\n");
+}

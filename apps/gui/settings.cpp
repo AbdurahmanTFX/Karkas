@@ -1,6 +1,7 @@
 #include "settings.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <nlohmann/json.hpp>
 
@@ -21,6 +22,31 @@ std::filesystem::path settings_path() {
 }
 
 std::filesystem::path layout_path() { return settings_path().parent_path() / "gui_layout.ini"; }
+
+std::string clean_layout_ini(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  std::size_t pos = 0;
+  while (pos < text.size()) {
+    auto end = text.find('\n', pos);
+    auto line = text.substr(pos, end == std::string_view::npos ? std::string_view::npos : end - pos + 1);
+    pos = end == std::string_view::npos ? text.size() : end + 1;
+    // A value after '=' that is nan or inf (any case, any sign) is not a size.
+    bool bad = false;
+    for (std::size_t eq = line.find('='); eq != std::string_view::npos && !bad; eq = line.find('=', eq + 1)) {
+      std::string v;
+      for (std::size_t i = eq + 1; i < line.size() && v.size() < 5; ++i) {
+        char c = line[i];
+        if (c == '-' || c == '+') continue;
+        if (!std::isalpha(static_cast<unsigned char>(c))) break;
+        v += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
+      bad = v.starts_with("nan") || v.starts_with("inf");
+    }
+    if (!bad) out.append(line);
+  }
+  return out;
+}
 
 GuiSettings load_settings() {
   GuiSettings s;

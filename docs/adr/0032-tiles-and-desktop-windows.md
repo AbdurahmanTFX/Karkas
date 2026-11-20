@@ -75,3 +75,11 @@ Windows of the desktop on Wayland (viewports.cpp, "virtual positions"):
   Accidentally also on Hyprland itself (the first check ran on the user's Wayland session): the chat
   window was created decorated at its virtual position. Interactive use on Hyprland (tiling of the
   windows sent out, focus, closing them with the compositor) is manual.
+
+Amendment (2026-11-20, a crash on Endless Sky): the ini text also keeps the tables' column sizes. A
+proportional table (SizingStretchProp) first laid out while its tile had no room measured no content,
+its column weights became 0/0 = NaN, `Weight=-nan` was saved, and after a restart the next drag of a
+column border aborted in ImGui (`TableUpdateColumnsWeightFromWidth`: StretchWeight > 0). The resizable
+tables (agents, build & tests) now give every column an initial weight, and `clean_layout_ini` drops
+values that are not numbers when the layout is read and written. Reproduced under Xvfb with the user's
+layout file (old build: abort; fixed build: the same drags pass).

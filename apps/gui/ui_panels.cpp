@@ -31,6 +31,12 @@ ImGuiTableFlags table_flags() {
   return ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Resizable;
 }
 
+// A proportional column with its own initial weight. Without one ImGui derives the weights from the
+// measured content (SizingStretchProp): a table first laid out while its tile had no room measured
+// nothing, the weights became 0/0 = NaN, were saved in gui_layout.ini, and the next resize of a
+// column aborted (TableUpdateColumnsWeightFromWidth).
+void stretch_column(const char* label, float weight) { ImGui::TableSetupColumn(label, ImGuiTableColumnFlags_WidthStretch, weight); }
+
 // Narrow last column of a table with the "remove from this list" button.
 void remove_column() { ImGui::TableSetupColumn("##rm", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFrameHeight() * 1.2f); }
 
@@ -471,8 +477,9 @@ void Ui::bottom_agents(const Model& m) {
   if (rows.empty()) return;
   if (ImGui::BeginTable("runs", 11, table_flags())) {
     ImGui::TableSetupScrollFreeze(0, 1);
-    for (const char* h : {"time", "duration", "ticket", "role", "block", "tier", "outcome", "tokens in/out", "cache read", "usd"}) {
-      ImGui::TableSetupColumn(tr(h));
+    for (const auto& [h, w] : {std::pair{"time", 1.2f}, {"duration", 0.9f}, {"ticket", 0.9f}, {"role", 1.0f}, {"block", 1.6f}, {"tier", 0.8f},
+                               {"outcome", 1.0f}, {"tokens in/out", 1.3f}, {"cache read", 0.9f}, {"usd", 0.8f}}) {
+      stretch_column(tr(h), w);
     }
     remove_column();
     ImGui::TableHeadersRow();
@@ -532,7 +539,9 @@ void Ui::bottom_tests(const Model& m) {
   }
   if (ImGui::BeginTable("tests", 7, table_flags())) {
     ImGui::TableSetupScrollFreeze(0, 1);
-    for (const char* h : {"block", "time", "contract", "unit", "integration", "failures"}) ImGui::TableSetupColumn(tr(h));
+    for (const auto& [h, w] : {std::pair{"block", 1.6f}, {"time", 1.0f}, {"contract", 0.8f}, {"unit", 0.8f}, {"integration", 0.9f}, {"failures", 2.4f}}) {
+      stretch_column(tr(h), w);
+    }
     remove_column();
     ImGui::TableHeadersRow();
     for (const auto* t : rows) {
