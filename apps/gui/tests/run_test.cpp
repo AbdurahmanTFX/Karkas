@@ -64,6 +64,9 @@ TEST_CASE("run: terminal text becomes lines (escapes, carriage returns, backspac
   CHECK(t.partial() == "prompt> ");
   CHECK(t.take_partial() == "prompt> ");
   CHECK(t.partial().empty());
+  t.feed("a\tb\n", lines);
+  CHECK(lines == std::vector<std::string>{"a       b"});
+  lines.clear();
   t.feed(std::string(gui::TerminalText::kMaxLine + 10, 'x'), lines);
   REQUIRE(lines.size() == 1);
   CHECK(lines[0].size() == gui::TerminalText::kMaxLine);

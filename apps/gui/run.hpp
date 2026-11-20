@@ -43,9 +43,10 @@ struct RunEnd {
 // The karkas arguments of a run.
 std::vector<std::string> run_args(bool build);
 
-// The output of a terminal as lines: "\n" ends a line ("\r\n" too), a lone '\r' starts the line again
-// (progress bars), backspace takes a character back, escape sequences (colours, cursor moves) and
-// other control characters are dropped. A sequence or a line may be cut between two pieces.
+// The output of a terminal as lines: "\n" ends a line ("\r\n" too), a lone '\r' starts the line
+// again (progress bars), backspace takes a character back, tabs become spaces, escape sequences
+// (colours, cursor moves) and other control characters are dropped. A sequence or a line may be
+// cut between two pieces.
 class TerminalText {
  public:
   static constexpr std::size_t kMaxLine = 4000;  // a longer line is cut into lines of this size

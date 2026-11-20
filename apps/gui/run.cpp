@@ -72,8 +72,13 @@ void TerminalText::feed(std::string_view chunk, std::vector<std::string>& lines)
       if (!line_.empty()) line_.pop_back();
       continue;
     }
-    if (u < 0x20 && c != '\t') continue;  // bell and the other control characters
-    if (u == 0x7f) continue;
+    if (c == '\t') {
+      // The Run tab draws no tab stops: spaces up to the next column of eight.
+      do line_ += ' ';
+      while (line_.size() % 8 != 0);
+      continue;
+    }
+    if (u < 0x20 || u == 0x7f) continue;  // bell and the other control characters
     line_ += c;
     if (line_.size() >= kMaxLine && (u & 0xC0) != 0x80) lines.push_back(std::exchange(line_, {}));
   }

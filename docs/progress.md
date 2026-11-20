@@ -661,3 +661,19 @@
   `Weight=-nan` for a proportional table laid out without room. Columns of the resizable tables get
   initial weights; NaN/inf values are dropped from the layout file on load and save. Reproduced with the
   user's file (old build aborts, fixed passes); test of the cleaning. Tests 360.
+
+## Addition — build and run: a green triangle for the project's program (docs/adr/0037)
+
+- `karkas run [--no-build] [--show] [-- args...]`: builds the project (its own `build_command`, else
+  Karkas's configure + build; output streamed, the build lock waited for) and replaces itself with the
+  program — `[project] run_command` (by sh from the project root) or the entry block's program
+  `<build_dir>/<project name>`; secret-looking variables removed. Without a known program it builds,
+  then names the programs of the build folder and the karkas.toml line.
+- karkas-gui: a green triangle and a stop square at the right of the menu bar, a Run menu (F5, Ctrl+F5,
+  Shift+F5), a Run tab (bottom tile): the state and exit code, the program and an editor of run_command
+  with the build folder's programs, the build's and the program's output (colored), an input line for
+  the program. The run is `karkas run` in a pseudo-terminal of its own (line by line output, stdin);
+  Stop ends the process group, SIGKILL after 3 s; closing the GUI ends the program.
+- The generated CMake writes kk_doctest_main.cpp with file(CONFIGURE): an unchanged wavkit no longer
+  relinks every test program at each build (8 s → 0.7 s); wavkit fixture regenerated.
+- Checked under Xvfb (wavkit, a project with its own build, input to a program, an older layout); tests 375.
