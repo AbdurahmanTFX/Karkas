@@ -28,6 +28,7 @@ TEST_CASE("notes: init finds the notes of a folder, makes topics and notes for t
   CHECK(test::read(d / "project.ksl").find("lang    notes") != std::string::npos);
   CHECK_FALSE(std::filesystem::exists(d / "CMakeLists.txt"));
   CHECK_FALSE(std::filesystem::exists(d / "CLAUDE.md"));
+  CHECK(test::read(d / "karkas.toml").find("notes = \"medium\"") != std::string::npos);  // the assistant's models
   CHECK(test::read(d / "Покупки.txt") == "молоко\n");  // untouched
   auto s = core::load_schema(d.path());
   REQUIRE(s);

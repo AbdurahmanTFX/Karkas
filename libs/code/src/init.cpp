@@ -167,6 +167,13 @@ kk::Result<InitResult> init_project(const fs::path& root_in, std::string_view id
     project += "lang    notes\n";
     if (auto r = core::write_file(root / "project.ksl", project); !r) return std::unexpected(r.error());
     out.written.push_back("project.ksl");
+    // The models of the notes assistant (docs/adr/0039).
+    if (!fs::exists(root / "karkas.toml", ec)) {
+      if (auto r = core::write_file(root / "karkas.toml", std::string(target_template("karkas_notes.toml").value_or(""))); !r) {
+        return std::unexpected(r.error());
+      }
+      out.written.push_back("karkas.toml");
+    }
     fs::create_directories(root / "blocks", ec);
     if (auto r = index::ensure_karkas_dir(root); !r) return std::unexpected(r.error());
     auto imported = import_notes(root);

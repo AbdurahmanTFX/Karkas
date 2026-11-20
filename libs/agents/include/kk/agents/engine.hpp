@@ -74,6 +74,9 @@ class Engine {
   // note: a message of the human about the ticket, added as a fact "human: ..." before the run;
   // the run is then forced (the human gave something new) and a closed ticket reopens.
   kk::Result<std::string> run_ticket(const std::string& id, bool force = false, const std::string& note = "");
+  // Notes projects (docs/adr/0039): the assistant reads the notes, answers the request and proposes
+  // edits as N-NNNN (applied at once with auto_approve). `scope`: the note or topic it is about.
+  kk::Result<std::string> notes(const std::string& request, const std::string& scope = "");
   // ask(block, question): short cheap agent; the answer is appended to the trail (10.5).
   kk::Result<std::string> ask(const std::string& block, const std::string& question, const std::string& ticket);
 

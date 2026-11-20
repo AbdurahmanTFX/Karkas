@@ -17,11 +17,13 @@
 
 #include "kk/agents/changes.hpp"
 #include "kk/agents/launcher.hpp"
+#include "kk/agents/notes_agent.hpp"
 #include "kk/agents/sandbox.hpp"
 #include "kk/agents/tools.hpp"
 #include "kk/code/analyzer.hpp"
 #include "kk/code/gen.hpp"
 #include "kk/core/cancel.hpp"
+#include "kk/core/notes.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/validate.hpp"
@@ -1430,6 +1432,61 @@ struct Engine::Impl {
     return answer;
   }
 
+  // The assistant of a notes project (docs/adr/0039): one run, read-only tools and proposed edits.
+  kk::Result<std::string> notes(const std::string& request, const std::string& scope) {
+    auto s = schema();
+    if (!s) return std::unexpected(s.error());
+    if (!core::is_notes_project(s->project)) return kk::fail("notes", "not a notes project (project.ksl: lang notes)");
+    if (core::trim(request).empty()) return kk::fail("notes", "an empty request");
+    if (!scope.empty() && s->find(scope) == nullptr) return kk::fail("notes", "no note or topic " + scope);
+    AgentSpec spec;
+    spec.role = Role::Worker;
+    spec.role_name = "notes";
+    spec.block = scope;
+    spec.tier = tier_for("notes", "medium", scope);
+    spec.system_text = prompt("notes", {});
+    spec.context_text = notes_overview(*s, "");
+    std::string task = "Request of the human: " + std::string(core::trim(request)) + "\n";
+    if (const auto* b = scope.empty() ? nullptr : s->find(scope)) {
+      task += fmt::format("The request is about the {} {} \"{}\"{}.\n", b->kind == core::BlockKind::Group ? "topic" : "note", b->id,
+                          b->purpose.value, b->kind == core::BlockKind::Group ? "" : " (read_note shows its text)");
+    }
+    spec.task_text = task;
+    spec.max_steps = std::max(cfg.max_steps_worker, 12);
+    spec.max_tokens = cfg.max_tokens_per_run;
+    spec.timeout = std::chrono::seconds(cfg.run_timeout_s);
+    say(fmt::format("notes assistant ({}): {}", spec.tier, shorten(std::string(core::trim(request)), 80)));
+    NotesToolHost host(*s, scope);
+    auto res = runner().run(spec, host);
+    if (res.outcome == "cancelled") return kk::fail("cancelled", "stopped: the proposal was not made");
+    if (res.outcome == "error" && host.edits().empty()) return kk::fail("notes", "the assistant failed: " + res.error);
+    std::string out;
+    std::string answer = host.answer().empty() ? res.final_text : host.answer();
+    if (!answer.empty()) out += std::string(core::trim(answer)) + "\n";
+    if (!res.terminal()) out += fmt::format("(the assistant stopped: {}{})\n", res.outcome, res.error.empty() ? "" : ", " + res.error);
+    if (!host.edits().empty()) {
+      NotesProposal p;
+      p.request = std::string(core::trim(request));
+      p.scope = scope;
+      p.summary = host.summary().empty() ? fmt::format("{} edits", host.edits().size()) : host.summary();
+      p.edits = host.edits();
+      auto made = NotesProposalStore(root).create(std::move(p));
+      if (!made) return std::unexpected(made.error());
+      std::vector<std::string> what;
+      for (const auto& e : made->edits) what.push_back((e.kind == "write" ? "~ " : "+ ") + e.id);
+      out += fmt::format("proposal {}: {} ({})\n", made->id, made->summary, core::join(what, ", "));
+      if (cfg.auto_approve) {
+        auto r = approve_notes_proposal(root, made->id);
+        out += r ? "auto: " + *r : "auto: not applied: " + r.error().message + "\n";
+        reindex();
+      } else {
+        out += fmt::format("next: karkas proposal show {0}   karkas proposal approve {0}   karkas proposal reject {0}\n", made->id);
+      }
+    }
+    out += fmt::format("cost ${:.4f} · {} steps · {}\n", res.cost, res.steps, res.model);
+    return out;
+  }
+
   SchemaCallbacks callbacks(const std::string& tid, const std::map<std::string, std::string>* answered = nullptr) {
     SchemaCallbacks cb;
     cb.ask = [this, tid](const std::string& b, const std::string& q) { return ask(b, q, tid); };
@@ -2056,7 +2113,11 @@ kk::Result<std::string> checked_scope(index::Index& idx, const std::string& scop
 }
 }  // namespace
 
+kk::Result<std::string> Engine::notes(const std::string& request, const std::string& scope) { return impl_->notes(request, scope); }
+
 kk::Result<std::string> Engine::task(const std::string& description, const std::string& scope) {
+  // A notes project has no tickets of code: its requests go to the notes assistant (docs/adr/0039).
+  if (auto s = impl_->schema(); s && core::is_notes_project(s->project)) return impl_->notes(description, scope);
   auto sc = checked_scope(*impl_->idx, scope);
   if (!sc) return std::unexpected(sc.error());
   auto t = impl_->tickets.create(core::TicketKind::Feature, "human", description, {}, *sc);
@@ -2067,6 +2128,9 @@ kk::Result<std::string> Engine::task(const std::string& description, const std::
 
 kk::Result<std::string> Engine::debug(const std::string& symptom, const std::vector<std::string>& facts,
                                       const std::string& origin, const std::string& scope) {
+  if (auto s = impl_->schema(); s && core::is_notes_project(s->project)) {
+    return kk::fail("notes", "notes have no code to debug: write a request to the notes assistant (karkas notes \"...\")");
+  }
   auto sc = checked_scope(*impl_->idx, scope);
   if (!sc) return std::unexpected(sc.error());
   auto t = impl_->tickets.create(core::TicketKind::Bug, origin, symptom, facts, *sc);
