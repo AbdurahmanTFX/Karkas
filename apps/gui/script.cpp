@@ -90,8 +90,14 @@ std::optional<InputScript> InputScript::parse(std::string_view text, std::string
         io.AddKeyEvent(ImGuiKey_LeftCtrl, false);
         io.AddKeyEvent(ImGuiMod_Ctrl, false);
       });
-    } else if (cmd == "key" && w.size() == 2 && (w[1] == "esc" || w[1] == "enter")) {
-      ImGuiKey k = w[1] == "esc" ? ImGuiKey_Escape : ImGuiKey_Enter;
+    } else if (cmd == "key" && w.size() == 2 &&
+               (w[1] == "esc" || w[1] == "enter" || w[1] == "end" || w[1] == "home" || w[1] == "backspace" || w[1] == "down")) {
+      ImGuiKey k = w[1] == "esc"       ? ImGuiKey_Escape
+                   : w[1] == "enter"   ? ImGuiKey_Enter
+                   : w[1] == "end"     ? ImGuiKey_End
+                   : w[1] == "home"    ? ImGuiKey_Home
+                   : w[1] == "down"    ? ImGuiKey_DownArrow
+                                       : ImGuiKey_Backspace;
       f.emplace_back([k](ImGuiIO& io) { io.AddKeyEvent(k, true); });
       f.emplace_back([k](ImGuiIO& io) { io.AddKeyEvent(k, false); });
     } else if (cmd == "type" && w.size() >= 2) {

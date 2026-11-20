@@ -310,6 +310,83 @@ kk::Result<EditOp> op_set_purpose(const core::Schema& s, const std::string& id, 
   return op;
 }
 
+namespace {
+
+// Card lines without comments and blank lines (comments are trivia of the lines they precede).
+std::vector<std::string> directive_lines(const core::Block& b) {
+  std::vector<std::string> out;
+  for (auto& l : card_lines(b)) {
+    auto t = core::trim(l);
+    if (!t.empty() && t[0] != '#') out.push_back(std::move(l));
+  }
+  return out;
+}
+
+// '-' for the lines of `before` that `after` does not keep, '+' for the new ones (multisets).
+std::vector<core::DiffLine> line_changes(const std::vector<std::string>& before, const std::vector<std::string>& after) {
+  std::multiset<std::string> keep(after.begin(), after.end());
+  std::multiset<std::string> had(before.begin(), before.end());
+  std::vector<core::DiffLine> out;
+  for (const auto& l : before) {
+    if (auto it = keep.find(l); it != keep.end()) {
+      keep.erase(it);
+    } else {
+      out.push_back({'-', l, 0});
+    }
+  }
+  for (const auto& l : after) {
+    if (auto it = had.find(l); it != had.end()) {
+      had.erase(it);
+    } else {
+      out.push_back({'+', l, 0});
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+kk::Result<EditOp> op_replace_card(const core::Schema& s, const std::string& id, std::string_view text) {
+  auto b = need(s, id);
+  if (!b) return std::unexpected(b.error());
+  auto card = core::parse_block_text(text, (*b)->dir + "/block.ksl");
+  if (!card) return std::unexpected(card.error());
+  if (card->id != id) return kk::fail("edit", fmt::format("the card is @block {}: rename the block with Rename, not in its card", id));
+  auto changes = line_changes(directive_lines(**b), directive_lines(*card));
+  if (changes.empty()) return kk::fail("edit", "the card is unchanged");
+  EditOp op;
+  op.title = "card of " + id;
+  op.diff.push_back({'~', "@block " + id, 0});
+  op.diff.insert(op.diff.end(), changes.begin(), changes.end());
+  return op;
+}
+
+kk::Result<EditOp> op_set_invariants(const core::Schema& s, const std::string& id, const std::vector<std::string>& invariants) {
+  auto b = need(s, id);
+  if (!b) return std::unexpected(b.error());
+  if ((*b)->kind != core::BlockKind::Leaf && (*b)->kind != core::BlockKind::Shared) {
+    return kk::fail("edit", fmt::format("{} is a {}: guarantees belong to leaves and shared blocks (3.8)", id, (*b)->kind_name()));
+  }
+  std::vector<std::string> before;
+  for (const auto& l : directive_lines(**b)) {
+    if (l.starts_with("inv ") || l.starts_with("inv\t")) before.push_back(l);
+  }
+  std::vector<std::string> after;
+  for (const auto& i : invariants) {
+    auto t = std::string(core::trim(i));
+    if (t.empty()) continue;
+    if (t.find('\n') != std::string::npos) return kk::fail("edit", "a guarantee is one line");
+    after.push_back(core::format_line("inv", core::format_free_text(t)));
+  }
+  auto changes = line_changes(before, after);
+  if (changes.empty()) return kk::fail("edit", "the guarantees are unchanged");
+  EditOp op;
+  op.title = "guarantees of " + id;
+  op.diff.push_back({'~', "@block " + id, 0});
+  op.diff.insert(op.diff.end(), changes.begin(), changes.end());
+  return op;
+}
+
 kk::Result<EditOp> op_merge(const core::Schema& s, const std::string& keep, const std::string& absorb) {
   auto k = need(s, keep);
   if (!k) return std::unexpected(k.error());

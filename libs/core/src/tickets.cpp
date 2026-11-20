@@ -127,6 +127,19 @@ VoidResult TicketStore::save(const Ticket& t) const {
   return write_file(path, write_ticket(t));
 }
 
+Result<Ticket> TicketStore::edit_by_human(std::string_view id, std::string_view text) const {
+  if (!fs::exists(file(id))) return fail("tickets", fmt::format("{} does not exist", id));
+  auto t = parse_ticket_text(text, file(id).string());
+  if (!t) return std::unexpected(t.error());
+  if (t->id != id) return fail("tickets", fmt::format("the ticket is @ticket {}: its id cannot change", id));
+  if (!t->kind_enum()) return fail("tickets", fmt::format("{}: unknown kind '{}'", id, t->kind.value));
+  if (!t->status.value.empty() && !t->status_enum()) return fail("tickets", fmt::format("{}: unknown status '{}'", id, t->status.value));
+  auto l = lock(id, "karkas-gui edit");
+  if (!l) return fail("tickets", fmt::format("{} is being worked on ({}): stop its agents first", id, l.error().message));
+  if (auto w = write_file(file(id), write_ticket(*t)); !w) return std::unexpected(w.error());
+  return load(id);
+}
+
 VoidResult TicketStore::append(std::string_view id, const TrailEntry& entry, const std::vector<std::string>& new_facts) const {
   if (new_facts.size() > 2) return fail("tickets", "at most two new facts per level (10.3)");
   auto t = load(id);

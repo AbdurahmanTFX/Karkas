@@ -171,3 +171,69 @@ TEST_CASE("edit: a script of edits in one go, stops at the first failing line") 
   CHECK(agents::apply_edit_script(p.path(), "teleport x y\n").error.starts_with("line 1: unknown command"));
   CHECK(agents::apply_edit_script(p.path(), "move x\n").error.starts_with("line 1: wrong number of arguments"));
 }
+
+TEST_CASE("edit: a card typed in the GUI becomes the lines it changes, checked and undone (ADR 0033)") {
+  test::FixtureCopy p("wavkit");
+  auto card = p / "blocks/stream/ring/block.ksl";
+  auto before = test::read(card);
+  // Purpose reworded, a guarantee added, est changed; the ports keep their order.
+  auto typed = core::replace_all(before, "purpose lock-free single-producer single-consumer ring of audio frames",
+                                 "purpose lock-free SPSC ring of audio frames");
+  typed = core::replace_all(typed, "est     M", "est     L");
+  typed += "inv     capacity() is a power of two\n";
+  auto op = agents::op_replace_card(load(p), "stream.ring", typed);
+  REQUIRE(op);
+  auto preview = agents::preview_edit(p.path(), *op);
+  CHECK(core::contains(preview, "+purpose lock-free SPSC ring of audio frames"));
+  CHECK(core::contains(preview, "-est     M"));
+  CHECK(core::contains(preview, "+inv     capacity() is a power of two"));
+  CHECK_FALSE(core::contains(preview, "-in      push"));  // unchanged lines are not touched
+  auto a = apply(p, op);
+  auto after = test::read(card);
+  CHECK(core::contains(after, "est     L"));
+  CHECK(after.find("in      push") < after.find("out     pop"));
+  no_errors(p);
+  REQUIRE(agents::undo_edit(p.path(), a));
+  CHECK(test::read(card) == before);
+
+  // Unchanged, broken, another id, or a card that breaks the schema: refused, nothing written.
+  CHECK_FALSE(agents::op_replace_card(load(p), "stream.ring", before));
+  CHECK_FALSE(agents::op_replace_card(load(p), "stream.ring", "@block stream.ring\npurpose x\nkind wrong_kind\n"));
+  auto other = agents::op_replace_card(load(p), "stream.ring", core::replace_all(before, "@block stream.ring", "@block stream.rung"));
+  REQUIRE_FALSE(other);
+  CHECK(core::contains(other.error().message, "Rename"));
+  auto broken = agents::op_replace_card(load(p), "stream.ring", core::replace_all(before, "from=stream.pump:frames", "from=stream.nowhere:frames"));
+  REQUIRE(broken);
+  CHECK_FALSE(agents::apply_edit(p.path(), *broken));
+  CHECK(test::read(card) == before);
+}
+
+TEST_CASE("edit: the guarantees of a leaf edited one by one (ADR 0033)") {
+  test::FixtureCopy p("wavkit");
+  auto card = p / "blocks/stream/ring/block.ksl";
+  auto before = test::read(card);
+  auto op = agents::op_set_invariants(load(p), "stream.ring",
+                                      {"never loses or duplicates frames, including at wraparound", "push and pop never block within 1 us",
+                                       "  ", "fill() is always within [0, capacity()]"});
+  REQUIRE(op);
+  auto preview = agents::preview_edit(p.path(), *op);
+  CHECK(core::contains(preview, "-inv     push and pop never block"));
+  CHECK(core::contains(preview, "+inv     push and pop never block within 1 us"));
+  auto a = apply(p, op);
+  auto s = load(p);
+  const auto* b = s.find("stream.ring");
+  REQUIRE(b != nullptr);
+  REQUIRE(b->invs.size() == 3);
+  no_errors(p);
+  REQUIRE(agents::undo_edit(p.path(), a));
+  CHECK(test::read(card) == before);
+  CHECK_FALSE(agents::op_set_invariants(load(p), "stream.ring",
+                                        {"never loses or duplicates frames, including at wraparound", "push and pop never block",
+                                         "fill() is always within [0, capacity()]"}));  // unchanged
+  CHECK_FALSE(agents::op_set_invariants(load(p), "stream", {"a group has no guarantees of its own"}));
+  // All removed is a change too.
+  auto none = agents::op_set_invariants(load(p), "stream.ring", {});
+  REQUIRE(none);
+  apply(p, none);
+  CHECK(load(p).find("stream.ring")->invs.empty());
+}

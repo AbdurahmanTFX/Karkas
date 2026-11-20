@@ -43,6 +43,12 @@ kk::Result<EditOp> op_rename(const core::Schema& s, const std::string& id, const
 kk::Result<EditOp> op_move(const core::Schema& s, const std::string& id, const std::string& new_parent);
 // Replaces the purpose line of a card.
 kk::Result<EditOp> op_set_purpose(const core::Schema& s, const std::string& id, const std::string& purpose);
+// The card of `id` as a human typed it in karkas-gui (docs/adr/0033): parsed, then turned into
+// the lines removed and added (comments stay as they are; ports keep their order unless a line
+// changes). Refused when it does not parse, names another block or changes nothing.
+kk::Result<EditOp> op_replace_card(const core::Schema& s, const std::string& id, std::string_view text);
+// Replaces the guarantees (inv lines, 3.8) of a leaf or shared block; empty texts are dropped.
+kk::Result<EditOp> op_set_invariants(const core::Schema& s, const std::string& id, const std::vector<std::string>& invariants);
 // Moves the ports, links and invariants of `absorb` into `keep` and removes `absorb`.
 kk::Result<EditOp> op_merge(const core::Schema& s, const std::string& keep, const std::string& absorb);
 // Moves `ports` of `id` into a new sibling block `new_name`.

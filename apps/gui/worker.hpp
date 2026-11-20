@@ -85,6 +85,9 @@ struct Model {
   std::string pending_title, pending_preview, pending_error;
   bool has_pending = false;
   bool can_undo = false;
+  // The last edit of a ticket by hand (ADR 0033): its error, and a counter of the saved ones.
+  std::string ticket_edit_error;
+  std::uint64_t ticket_edit_saved = 0;
   std::string message;
   std::string engine;
   double index_ms = 0;
@@ -112,6 +115,8 @@ class Worker {
   void reject_change(const std::string& id);
   // Replaces the diff of a pending change (checked like an agent's proposal first).
   void edit_change(const std::string& id, const std::string& diff_text);
+  // Writes a ticket edited by hand (parsed, refused while an agent holds it; ADR 0033).
+  void save_ticket(const std::string& id, const std::string& text);
   void save_positions(const std::string& view, std::map<std::string, layout::Pos> pos);
   void open_in_editor(const std::string& rel_file, int line);
   // Opens a folder of the project in the system file manager (xdg-open): "" = the root.
@@ -147,6 +152,8 @@ class Worker {
   std::string pending_error_;
   std::vector<agents::AppliedEdit> undo_;
   std::string message_;
+  std::string ticket_edit_error_;
+  std::uint64_t ticket_edit_saved_ = 0;
   std::uint64_t serial_ = 0;
 };
 

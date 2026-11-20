@@ -15,6 +15,7 @@
 #include <tuple>
 
 #include "i18n.hpp"
+#include "kk/agents/edit.hpp"
 #include "icons.hpp"
 #include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
@@ -1484,6 +1485,127 @@ void Ui::draw_file_body(const Model& m, const std::string& file) {
 
 // --- inspector ------------------------------------------------------------------------------------
 
+// --- editing in place (ADR 0033) -------------------------------------------------------------
+
+void Ui::inspector_card(const Model& m, const index::BlockRow& b) {
+  bool current = m.req.selected == b.id;  // the model's card is this block's
+  if (card_edit_block_ == b.id && current) {
+    if (m.card_text != card_edit_base_) {
+      if (card_saved_) {
+        card_edit_block_.clear();  // applied: the card on disk is the edited one now
+      } else {
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(rgb(230, 160, 60), "%s", tr("The card changed on disk while you edit it."));
+        ImGui::PopTextWrapPos();
+        if (ui::icon_button("card_reload", Icon::Undo, tr("Drop your edits and edit the card as it is on disk now"), false, tr("Reload"))) {
+          card_edit_buf_ = card_edit_base_ = m.card_text;
+        }
+      }
+    }
+  }
+  if (card_edit_block_ != b.id) {
+    if (ui::icon_button("card_edit", Icon::Pencil, tr("Edit the card here: checked before it is written, shown as a KSL diff first, can be undone"),
+                        false, tr("Edit")) &&
+        current) {
+      card_edit_block_ = b.id;
+      card_edit_buf_ = card_edit_base_ = m.card_text;
+      card_saved_ = false;
+    }
+    ImGui::SameLine(0, 4);
+    if (ui::icon_button("in_card2", Icon::Card, tr("Open card in editor"))) w_.open_in_editor(b.dir + "/block.ksl", 1);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::col(theme::kEditorBg));
+    ImGui::BeginChild("cardtext", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+    ui::ksl_text(m.card_text);
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    return;
+  }
+  ImGui::PushTextWrapPos(0);
+  ui::muted("%s", tr("One directive per line (purpose, kind, in, out, fn, call, use, inv, note...). The id stays: rename the block on the schema."));
+  ImGui::PopTextWrapPos();
+  int lines = 1;
+  for (char c : card_edit_buf_) lines += c == '\n' ? 1 : 0;
+  float h = std::clamp(static_cast<float>(lines + 2), 6.0f, 30.0f) * ImGui::GetTextLineHeight() + ImGui::GetStyle().FramePadding.y * 2;
+  ImGui::PushFont(theme::mono_font());
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, theme::col(theme::kEditorBg));
+  // Typing again after a cancelled preview: the next change on disk is not this edit.
+  if (ImGui::InputTextMultiline("##card_text", &card_edit_buf_, ImVec2(-1, h), ImGuiInputTextFlags_AllowTabInput)) card_saved_ = false;
+  ImGui::PopStyleColor();
+  ImGui::PopFont();
+  bool changed = card_edit_buf_ != card_edit_base_;
+  ImGui::BeginDisabled(!changed);
+  ImGui::PushStyleColor(ImGuiCol_Button, theme::accent(0.9f));
+  if (ImGui::Button(with_icon(Icon::Check, tr("Check and save")).c_str())) {
+    std::string id = b.id;
+    std::string text = card_edit_buf_;
+    w_.propose([id, text](const core::Schema& s) { return agents::op_replace_card(s, id, text); });
+    preview_open_ = true;
+    card_saved_ = true;
+  }
+  ImGui::PopStyleColor();
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button(tr("Cancel"))) card_edit_block_.clear();
+}
+
+void Ui::inspector_guarantees(const Model& m, const index::BlockRow& b) {
+  std::vector<std::string> now;
+  if (auto it = m.snap->invariants.find(b.id); it != m.snap->invariants.end()) now = it->second;
+  bool can_edit = b.kind == "leaf" || b.kind == "shared";
+  if (inv_edit_block_ == b.id && now != inv_edit_base_) {
+    if (inv_saved_) {
+      inv_edit_block_.clear();  // applied
+    } else {
+      inv_edit_base_ = now;  // changed on disk: the list as it is now is the base
+    }
+  }
+  if (inv_edit_block_ != b.id) {
+    if (now.empty()) ui::muted("%s", tr("No guarantees yet: what the block always keeps true (checked by its contract tests)."));
+    for (const auto& i : now) {
+      ImGui::Bullet();
+      ImGui::SameLine();
+      ImGui::PushTextWrapPos(0);
+      ImGui::TextUnformatted(i.c_str());
+      ImGui::PopTextWrapPos();
+    }
+    if (can_edit && ui::icon_button("inv_edit", Icon::Pencil, tr("Edit the guarantees of this block (shown as a KSL diff first, can be undone)"),
+                                    false, tr("Edit guarantees"))) {
+      inv_edit_block_ = b.id;
+      inv_edit_ = inv_edit_base_ = now;
+      if (inv_edit_.empty()) inv_edit_.emplace_back();
+      inv_saved_ = false;
+    }
+    return;
+  }
+  int remove = -1;
+  for (std::size_t i = 0; i < inv_edit_.size(); ++i) {
+    ImGui::PushID(static_cast<int>(i));
+    ImGui::SetNextItemWidth(-ImGui::GetFrameHeight() * 1.3f);
+    if (ImGui::InputTextWithHint("##inv", tr("never loses frames, push never blocks..."), &inv_edit_[i])) inv_saved_ = false;
+    ImGui::SameLine(0, 4);
+    if (ui::icon_button("inv_rm", Icon::Close, tr("Remove this guarantee"))) remove = static_cast<int>(i);
+    ImGui::PopID();
+  }
+  if (remove >= 0) inv_edit_.erase(inv_edit_.begin() + remove);
+  if (ui::icon_button("inv_add", Icon::Plus, tr("Add a guarantee"), false, tr("Add"))) inv_edit_.emplace_back();
+  std::vector<std::string> cleaned;
+  for (const auto& i : inv_edit_) {
+    if (!core::trim(i).empty()) cleaned.emplace_back(core::trim(i));
+  }
+  ImGui::BeginDisabled(cleaned == inv_edit_base_);
+  ImGui::PushStyleColor(ImGuiCol_Button, theme::accent(0.9f));
+  if (ImGui::Button(with_icon(Icon::Check, tr("Check and save")).c_str())) {
+    std::string id = b.id;
+    w_.propose([id, cleaned](const core::Schema& s) { return agents::op_set_invariants(s, id, cleaned); });
+    preview_open_ = true;
+    inv_saved_ = true;
+  }
+  ImGui::PopStyleColor();
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button((tr("Cancel") + std::string("##inv")).c_str())) inv_edit_block_.clear();
+}
+
 void Ui::draw_inspector(const Model& m) {
   bool open = true;
   bool visible = begin_tile(Tile::Inspector, tr("Inspector"), &open, theme::kSideBg, ImVec2(10, 8));
@@ -1582,13 +1704,7 @@ void Ui::draw_inspector(const Model& m) {
   ImGui::Spacing();
   ImGui::BeginChild("insp", ImVec2(0, 0), ImGuiChildFlags_None);
   inspector_model(m, b->id);
-  if (ui::section((std::string(tr("CARD (KSL)")) + "###card").c_str())) {
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::col(theme::kEditorBg));
-    ImGui::BeginChild("cardtext", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
-    ui::ksl_text(m.card_text);
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
-  }
+  if (ui::section((std::string(tr("CARD (KSL)")) + "###card").c_str())) inspector_card(m, *b);
   auto ports = m.snap->ports_of(b->id);
   if (!ports.empty() && ui::section(fmt::format("{} ({})###ports", tr("PORTS"), ports.size()).c_str())) {
     if (ImGui::BeginTable("ports", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
@@ -1607,9 +1723,12 @@ void Ui::draw_inspector(const Model& m) {
       ImGui::EndTable();
     }
   }
-  if (auto it = m.snap->invariants.find(b->id);
-      it != m.snap->invariants.end() && ui::section(fmt::format("{} ({})###inv", tr("INVARIANTS"), it->second.size()).c_str())) {
-    for (const auto& i : it->second) ImGui::BulletText("%s", i.c_str());
+  {
+    auto it = m.snap->invariants.find(b->id);
+    std::size_t n = it != m.snap->invariants.end() ? it->second.size() : 0;
+    // Guarantees belong to leaves and shared blocks (3.8): shown (and editable) for them even when none is written yet.
+    bool can_have = b->kind == "leaf" || b->kind == "shared";
+    if ((n > 0 || can_have) && ui::section(fmt::format("{} ({})###inv", tr("INVARIANTS"), n).c_str())) inspector_guarantees(m, *b);
   }
   if (auto it = m.snap->history.find(b->id);
       it != m.snap->history.end() && ui::section(fmt::format("{} ({})###hist", tr("HISTORY"), it->second.size()).c_str(), false)) {

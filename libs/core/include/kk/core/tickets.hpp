@@ -28,6 +28,11 @@ class TicketStore {
   // symptom, task and original facts unchanged; old trail and result lines kept as a prefix.
   VoidResult save(const Ticket& t) const;
 
+  // A human's edit of the whole ticket file (karkas-gui; docs/adr/0033): the text must parse as
+  // a ticket with the same id; refused while an agent holds the ticket's lock. The append-only
+  // rule of save() binds the agents, not the human who owns the ticket. Written canonically.
+  Result<Ticket> edit_by_human(std::string_view id, std::string_view text) const;
+
   // Appends one trail entry plus up to two new facts (10.3).
   VoidResult append(std::string_view id, const TrailEntry& entry, const std::vector<std::string>& new_facts = {}) const;
   // Parses `line` as a trail line ("L1 navigator at=... ", "fact ...", "answer ...").

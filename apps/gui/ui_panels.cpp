@@ -5,6 +5,7 @@
 #include <fmt/format.h>
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <misc/cpp/imgui_stdlib.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -126,9 +127,13 @@ void Ui::draw_bottom(const Model& m) {
       {Tile::Drift, "drift", Icon::Wave, drift_label, &Ui::bottom_drift},
   }};
   if (!bottom_select_.empty() && !tab_visible(bottom_select_.c_str())) set_tab_visible(bottom_select_.c_str(), true);
+  bool keep_select = false;
   for (const auto& tab : tabs) {
     if (!tab_visible(tab.key)) continue;
-    if (bottom_select_ == tab.key) ImGui::SetNextWindowFocus();  // brings its tab forward
+    // Brings its tab forward; kept until its window exists (the first frames of a new layout).
+    bool select = bottom_select_ == tab.key;
+    if (select) ImGui::SetNextWindowFocus();
+    if (select && ImGui::FindWindowByName((std::string("###tile_") + tab.key).c_str()) == nullptr) keep_select = true;
     bool open = true;
     bool visible = begin_tile(tab.tile, with_icon(tab.ic, tab.label), &open, theme::kSideBg, ImVec2(10, 6));
     if (visible) {
@@ -139,7 +144,7 @@ void Ui::draw_bottom(const Model& m) {
     ImGui::End();
     if (!open) set_tab_visible(tab.key, false);  // closed by its tab: the Windows menu shows it again
   }
-  bottom_select_.clear();
+  if (!keep_select) bottom_select_.clear();
 }
 
 // --- tickets ---------------------------------------------------------------------------------
@@ -306,7 +311,17 @@ void Ui::bottom_tickets(const Model& m) {
     ui::muted("%s", tr("(select a ticket)"));
   } else {
     // Actions first (always in reach), then id, kind, status, the title and the ticket.
+    bool editing = ticket_edit_id_ == cur->id;
     ui::copy_button("tcopy", m.ticket_text);
+    ImGui::SameLine(0, 4);
+    if (!editing && ui::icon_button("tedit", Icon::Pencil, tr("Edit the ticket by hand: the task or symptom, facts, status, trail (checked before it is written)"),
+                                    false, tr("Edit"))) {
+      ticket_edit_id_ = cur->id;
+      ticket_edit_buf_ = m.ticket_text;
+      ticket_edit_seen_ = m.ticket_edit_saved;
+      ticket_edit_wait_ = false;
+      editing = true;
+    }
     if (cur->status != "closed" && chat_) {
       ImGui::SameLine(0, 4);
       if (ui::icon_button("trun", Icon::Play, tr("Run the ticket again (karkas ticket run)"), false, tr("Run again"))) {
@@ -329,11 +344,53 @@ void Ui::bottom_tickets(const Model& m) {
     ImGui::TextUnformatted(cur->title.c_str());
     ImGui::PopTextWrapPos();
     ImGui::Separator();
-    ImGui::BeginChild("ttext", ImVec2(0, 0));
-    ui::ksl_wrapped(m.ticket_text);
-    ImGui::EndChild();
+    if (editing) {
+      ticket_editor(m, cur->id);
+    } else {
+      ImGui::BeginChild("ttext", ImVec2(0, 0));
+      ui::ksl_wrapped(m.ticket_text);
+      ImGui::EndChild();
+    }
   }
   ImGui::EndChild();
+}
+
+void Ui::ticket_editor(const Model& m, const std::string& id) {
+  if (ticket_edit_wait_ && m.ticket_edit_saved != ticket_edit_seen_) {
+    ticket_edit_id_.clear();  // written: the ticket shows as it is on disk now
+    ticket_edit_wait_ = false;
+    return;
+  }
+  // The buttons first: always in reach in a small panel.
+  ImGui::BeginDisabled(ticket_edit_buf_ == m.ticket_text);
+  ImGui::PushStyleColor(ImGuiCol_Button, theme::accent(0.9f));
+  if (ImGui::Button(with_icon(Icon::Check, tr("Check and save")).c_str())) {
+    w_.save_ticket(id, ticket_edit_buf_);
+    ticket_edit_seen_ = m.ticket_edit_saved;
+    ticket_edit_wait_ = true;
+  }
+  ImGui::PopStyleColor();
+  ImGui::EndDisabled();
+  ImGui::SetItemTooltip("%s", tr("The agents read the ticket as it is written here at their next run. Its id stays; a ticket an agent works on "
+                                 "cannot be saved (stop it first)."));
+  ImGui::SameLine();
+  if (ImGui::Button(tr("Cancel"))) {
+    ticket_edit_id_.clear();
+    return;
+  }
+  if (ticket_edit_wait_ && !m.ticket_edit_error.empty()) {
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextColored(rgb(241, 96, 96), "%s", m.ticket_edit_error.c_str());
+    ImGui::PopTextWrapPos();
+  }
+  ImGui::PushFont(theme::mono_font());
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, theme::col(theme::kEditorBg));
+  if (ImGui::InputTextMultiline("##ticket_text", &ticket_edit_buf_, ImVec2(-1, std::max(60.0f, ImGui::GetContentRegionAvail().y)),
+                                ImGuiInputTextFlags_AllowTabInput)) {
+    ticket_edit_wait_ = false;  // a new attempt: the old error no longer applies
+  }
+  ImGui::PopStyleColor();
+  ImGui::PopFont();
 }
 
 // --- agents ----------------------------------------------------------------------------------

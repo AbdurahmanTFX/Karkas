@@ -140,6 +140,19 @@ class Ui {
   void draw_file_body(const Model& m, const std::string& file);    // the code
   void open_file_tab(const std::string& file);
   void draw_inspector(const Model& m);
+  // Editing in place (ADR 0033): the card as KSL text, the guarantees one by one, a ticket.
+  // Cards go through the KSL diff preview (checked, undoable); tickets are checked and written.
+  void inspector_card(const Model& m, const index::BlockRow& b);
+  void inspector_guarantees(const Model& m, const index::BlockRow& b);
+  void ticket_editor(const Model& m, const std::string& id);
+  std::string card_edit_block_, card_edit_buf_, card_edit_base_;
+  bool card_saved_ = false;  // sent to the preview; the editor closes when the card on disk changes
+  std::string inv_edit_block_;
+  std::vector<std::string> inv_edit_, inv_edit_base_;
+  bool inv_saved_ = false;
+  std::string ticket_edit_id_, ticket_edit_buf_;
+  std::uint64_t ticket_edit_seen_ = 0;
+  bool ticket_edit_wait_ = false;
   // bottom panel and stopping agents (ui_panels.cpp, ADR 0019)
   void draw_bottom(const Model& m);
   void bottom_tickets(const Model& m);

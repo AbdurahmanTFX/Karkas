@@ -221,3 +221,38 @@ TEST_CASE("tickets: one agent per ticket (lock file)") {
   auto l3 = store.lock(t.id, "again");
   CHECK(l3);
 }
+
+TEST_CASE("tickets: a human edits the whole ticket, the id stays, a locked ticket is refused (ADR 0033)") {
+  kk::test::TempDir d{"tk"};
+  TicketStore store(d.path());
+  auto t = spec_ticket(store);
+  auto text = kk::test::read(store.file(t.id));
+  // The symptom and an original fact are changed, a fact added: refused for agents, allowed here.
+  auto edited = replace_all(text, "worse with echo enabled", "only with echo enabled");
+  edited = replace_all(edited, "fact    probe stream.pump->stream.ring fill_min=0 at t=9.8s\n",
+                       "fact    probe stream.pump->stream.ring fill_min=0 at t=9.8s\nfact    happens on 44.1 kHz files too\n");
+  Ticket changed = t;
+  changed.symptom.value = "only with echo";
+  CHECK_FALSE(store.save(changed));  // the agents' path stays append-only
+  auto r = store.edit_by_human(t.id, edited);
+  REQUIRE(r);
+  CHECK(r->symptom.value.find("only with echo enabled") != std::string::npos);
+  CHECK(r->facts.size() == 3);
+  CHECK(r->trail.size() == 2);
+  CHECK_FALSE(std::filesystem::exists(d.path() / ".karkas" / "tickets" / (t.id + ".lock")));
+  // Broken text, another id, an unknown status: nothing written.
+  auto before = kk::test::read(store.file(t.id));
+  CHECK_FALSE(store.edit_by_human(t.id, "@ticket T-0001\nkind bug\nstatus  open\n  bad indent\n"));
+  auto other = store.edit_by_human(t.id, replace_all(before, "@ticket T-0001", "@ticket T-0099"));
+  REQUIRE_FALSE(other);
+  CHECK(other.error().message.find("cannot change") != std::string::npos);
+  CHECK_FALSE(store.edit_by_human(t.id, replace_all(before, "status  open", "status  sleeping")));
+  CHECK(kk::test::read(store.file(t.id)) == before);
+  // An agent holds the ticket: refused.
+  auto lock = store.lock(t.id, "karkas run_ticket");
+  REQUIRE(lock);
+  auto busy = store.edit_by_human(t.id, before);
+  REQUIRE_FALSE(busy);
+  CHECK(busy.error().message.find("being worked on") != std::string::npos);
+  CHECK_FALSE(store.edit_by_human("T-0042", before));
+}

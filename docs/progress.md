@@ -615,3 +615,12 @@
   checks; `KARKAS_GUI_LIST_WINDOWS=1`, `KARKAS_GUI_VIRTUAL_WINDOWS=1`, `KARKAS_GUI_WINDOWS=0`.
 - Checked under Xvfb (`env -u WAYLAND_DISPLAY`): default layout, chat docked, chat as a window of the
   desktop (its screen captured), drag clamp, layout restored after a restart. Tests 341.
+
+## GUI addition — editing cards, guarantees and tickets in place (docs/adr/0033)
+
+- Inspector: "Edit" turns the card into KSL text; "Check and save" → `agents::op_replace_card` (parse,
+  same id, the lines it removes and adds) → the KSL diff preview → checks → undo. "Edit guarantees":
+  the inv lines one by one (`agents::op_set_invariants`), for leaves and shared blocks.
+- Tickets tile: "Edit" the whole ticket; `core::TicketStore::edit_by_human` parses it, keeps its id,
+  refuses while an agent holds its lock; the append-only rule still binds the agents.
+- Tests 344; checked under Xvfb (card edited and applied, ticket fact added and saved).

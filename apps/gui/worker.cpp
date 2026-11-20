@@ -1,5 +1,7 @@
 #include "worker.hpp"
 
+#include "kk/core/tickets.hpp"
+
 #include <fmt/format.h>
 #include <spawn.h>
 #include <spdlog/spdlog.h>
@@ -154,6 +156,20 @@ void Worker::reject_change(const std::string& id) {
     agents::ChangeStore store(root_);
     auto r = store.set_status(id, "rejected");
     message_ = r ? id + " " + tr("rejected") : r.error().message;
+    files_changed_ = true;
+  });
+}
+
+void Worker::save_ticket(const std::string& id, const std::string& text) {
+  post([this, id, text] {
+    auto r = core::TicketStore(root_).edit_by_human(id, text);
+    if (r) {
+      ticket_edit_error_.clear();
+      ++ticket_edit_saved_;
+      message_ = id + " " + tr("saved");
+    } else {
+      ticket_edit_error_ = r.error().message;
+    }
     files_changed_ = true;
   });
 }
@@ -524,6 +540,8 @@ void Worker::loop() {
     m->pending_error = pending_error_;
     m->can_undo = !undo_.empty();
     m->message = message_;
+    m->ticket_edit_error = ticket_edit_error_;
+    m->ticket_edit_saved = ticket_edit_saved_;
     m->serial = ++serial_;
     {
       std::lock_guard lk(mu_);
