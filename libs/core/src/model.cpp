@@ -36,12 +36,13 @@ constexpr std::array<std::pair<BlockKind, std::string_view>, 4> kBlockKinds = {{
     {BlockKind::Entry, "entry"},
     {BlockKind::Shared, "shared"},
 }};
-constexpr std::array<std::pair<LinkKind, std::string_view>, 5> kLinkKinds = {{
+constexpr std::array<std::pair<LinkKind, std::string_view>, 6> kLinkKinds = {{
     {LinkKind::Data, "data"},
     {LinkKind::Event, "event"},
     {LinkKind::Call, "call"},
     {LinkKind::State, "state"},
     {LinkKind::Use, "use"},
+    {LinkKind::Ref, "ref"},
 }};
 constexpr std::array<std::pair<PortDir, std::string_view>, 3> kPortDirs = {{
     {PortDir::In, "in"},
@@ -559,7 +560,8 @@ Result<FilesDecl> parse_files(const Record& rec, const Line& l) {
   f.line = l.line;
   f.col = l.col;
   for (const auto& w : *t) {
-    if (w.kind != Token::Kind::Word || !is_project_path(w.text)) {
+    // A path with spaces is quoted (notes named in words, docs/adr/0038).
+    if ((w.kind != Token::Kind::Word && w.kind != Token::Kind::Quoted) || !is_project_path(w.text)) {
       return fail("S04", fmt::format("files expects project-relative paths, got '{}'", w.text), loc_of(rec, l, w.col));
     }
     f.paths.push_back(w.text);
@@ -1018,7 +1020,14 @@ std::string write_block(const Block& b) {
   emit_scalar(out, "kind", b.kind_text, false);
   emit_scalar(out, "thread", b.thread, false);
   emit_scalar(out, "est", b.est, false);
-  for (const auto& f : b.files) emit(out, f.trivia, format_line("files", join(f.paths, " ")));
+  for (const auto& f : b.files) {
+    std::vector<std::string> words;
+    for (const auto& path : f.paths) {
+      bool plain = !path.empty() && path.find_first_of(" \t\"#=") == std::string::npos;
+      words.push_back(plain ? path : quote(path));
+    }
+    emit(out, f.trivia, format_line("files", join(words, " ")));
+  }
   for (auto dir : {PortDir::In, PortDir::Out, PortDir::Fn}) {
     for (const auto& p : b.ports) {
       if (p.dir == dir) emit(out, p.trivia, format_port(p));

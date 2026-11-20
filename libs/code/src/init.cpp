@@ -1,5 +1,7 @@
 #include "kk/code/init.hpp"
 
+#include "kk/code/notes.hpp"
+
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -146,7 +148,7 @@ kk::Result<std::string> claude_agents_json(const core::Config& cfg) {
   return out.dump(2);
 }
 
-kk::Result<InitResult> init_project(const fs::path& root_in, std::string_view idea) {
+kk::Result<InitResult> init_project(const fs::path& root_in, std::string_view idea, ProjectKind kind) {
   fs::path root = core::normalize(root_in);
   InitResult out;
   out.name = project_id_from(root.filename().string());
@@ -157,6 +159,22 @@ kk::Result<InitResult> init_project(const fs::path& root_in, std::string_view id
   if (ec) return kk::fail("init", fmt::format("cannot create {}: {}", root.string(), ec.message()));
   // An existing project: keep its C++ standard and do not invent rules for its code.
   out.existing_code = has_code(root);
+  if (kind == ProjectKind::Notes || (kind == ProjectKind::Auto && !out.existing_code && has_notes(root))) {
+    // Notes (docs/adr/0038): the texts and their topics; nothing is built.
+    out.notes = true;
+    std::string project = fmt::format("@project {}\n", out.name);
+    if (!idea.empty()) project += core::format_line("idea", core::format_free_text(idea)) + "\n";
+    project += "lang    notes\n";
+    if (auto r = core::write_file(root / "project.ksl", project); !r) return std::unexpected(r.error());
+    out.written.push_back("project.ksl");
+    fs::create_directories(root / "blocks", ec);
+    if (auto r = index::ensure_karkas_dir(root); !r) return std::unexpected(r.error());
+    auto imported = import_notes(root);
+    if (!imported) return std::unexpected(imported.error());
+    out.imported = imported->topics;
+    out.imported.insert(out.imported.end(), imported->notes.begin(), imported->notes.end());
+    return out;
+  }
   std::string cxx = "20";
   if (auto cm = core::read_file(root / "CMakeLists.txt")) {
     std::smatch m;

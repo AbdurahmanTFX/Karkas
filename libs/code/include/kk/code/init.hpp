@@ -14,9 +14,15 @@
 
 namespace kk::code {
 
+// What a new project is (docs/adr/0038): Auto = notes when the folder holds text notes (.txt) and no
+// code, else code.
+enum class ProjectKind { Auto, Code, Notes };
+
 struct InitResult {
   std::string name;                  // project id
   bool existing_code = false;        // the folder already had C/C++ code: next is import
+  bool notes = false;                // a notes project (project.ksl: lang notes)
+  std::vector<std::string> imported; // notes projects: cards made for the .txt files already there
   std::vector<std::string> written;  // project-relative files created (existing ones are kept)
 };
 
@@ -44,6 +50,8 @@ kk::Result<std::string> claude_agents_json(const core::Config& cfg);
 
 // Creates the frame in `root` (the folder is created when missing). Fails when the folder
 // already holds a project.ksl or its name gives no project id.
-kk::Result<InitResult> init_project(const std::filesystem::path& root, std::string_view idea = "");
+// A notes project gets project.ksl (lang notes), blocks/ and .karkas/, and cards for the notes already in
+// the folder (code::import_notes); nothing of a build, no guide or subagents.
+kk::Result<InitResult> init_project(const std::filesystem::path& root, std::string_view idea = "", ProjectKind kind = ProjectKind::Auto);
 
 }  // namespace kk::code

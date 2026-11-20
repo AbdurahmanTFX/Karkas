@@ -13,7 +13,7 @@ namespace kk::core {
 
 // --- enums -----------------------------------------------------------------------
 enum class BlockKind { Group, Leaf, Entry, Shared };
-enum class LinkKind { Data, Event, Call, State, Use };
+enum class LinkKind { Data, Event, Call, State, Use, Ref };  // Ref: a [[link]] of a note (ADR 0038)
 enum class PortDir { In, Out, Fn };
 // Stored only in the index (3.2).
 enum class BlockStatus {
@@ -115,6 +115,15 @@ struct FilesDecl {
   int col = 0;
 };
 
+// A [[link]] in the text of a note (notes projects, docs/adr/0038): read from the note's file by the
+// schema loader, never written into the card.
+struct NoteRef {
+  std::string name;    // as written between [[ and ]]
+  int line = 0;        // in the note's file
+  std::string target;  // the note or topic it names ("" when it names none or several)
+  int matches = 0;     // how many blocks the name fits
+};
+
 struct HistEntry {
   std::string ticket;  // "T-0042" or "summary" for the folded line (3.10)
   std::string text;
@@ -136,6 +145,7 @@ struct Block {
   std::vector<TextItem> notes;
   std::vector<HistEntry> hist;
   std::vector<FilesDecl> files;
+  std::vector<NoteRef> refs;  // notes projects: the [[links]] of the note's text (filled by the loader)
   Trivia header;
   std::vector<std::string> tail;
   std::string file;

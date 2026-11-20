@@ -8,6 +8,7 @@
 #include <map>
 #include <set>
 
+#include "kk/core/notes.hpp"
 #include "kk/core/text.hpp"
 
 namespace kk::core {
@@ -38,7 +39,36 @@ struct Checker {
     add("E08", 'E', &b, fmt::format("'{}' is not allowed in a {} block", directive, b.kind_name()), line, col);
   }
 
+  // A notes project (docs/adr/0038): topics and notes, their titles, the [[links]] of the texts; none
+  // of the checks of code (entry, ports, threads, guarantees, sizes of groups).
+  void run_notes() {
+    for (const auto& b : s.blocks) {
+      if (!b.purpose.set) add("E02", 'E', &b, "missing title (purpose)", b.line, 1);
+      if (!b.kind) add("E02", 'E', &b, "missing kind", b.line, 1);
+      if (b.kind && *b.kind != BlockKind::Group && *b.kind != BlockKind::Leaf) {
+        add("E10", 'E', &b, fmt::format("a notes project holds topics (group) and notes (leaf), not {}", b.kind_name()),
+            b.kind_text.line, b.kind_text.col);
+      }
+      if (b.kind == BlockKind::Leaf && !b.children.empty()) {
+        add("E06", 'E', &b, fmt::format("a note must not hold other blocks (found {})", b.children.front()), b.kind_text.line,
+            b.kind_text.col);
+      }
+      // W08: a [[link]] that names no block, or several.
+      for (const auto& r : b.refs) {
+        if (r.matches == 1) continue;
+        std::string msg = r.matches == 0 ? fmt::format("[[{}]] names no note", r.name)
+                                         : fmt::format("[[{}]] names {} notes: write the id (topic.note)", r.name, r.matches);
+        out.push_back(Issue{"W08", 'W', b.id, std::move(msg), SourceLoc{note_file(b), r.line, 1}});
+      }
+    }
+    files();
+  }
+
   void run() {
+    if (is_notes_project(s.project)) {
+      run_notes();
+      return;
+    }
     std::size_t entries = 0;
     for (const auto& b : s.blocks) {
       // E02

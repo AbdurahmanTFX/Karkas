@@ -63,14 +63,22 @@ AutoRegister reg_init([](CLI::App& cli, App& app) {
   static std::string idea;
   cmd->add_option("dir", dir, "project directory (its name becomes the project id)")->required();
   cmd->add_option("--idea", idea, "one-line idea (can be set later by karkas design)");
+  static bool notes = false;
+  static bool code_project = false;
+  cmd->add_flag("--notes", notes, "a notes project: text notes linked by [[name]] (default: when the folder holds .txt notes and no code)");
+  cmd->add_flag("--code", code_project, "a code project even when the folder holds only .txt notes");
   cmd->callback([&app] {
     fs::path root = core::normalize(dir);
-    auto r = code::init_project(root, idea);
+    auto kind = notes ? code::ProjectKind::Notes : code_project ? code::ProjectKind::Code : code::ProjectKind::Auto;
+    auto r = code::init_project(root, idea, kind);
     if (!r) die(r.error().message);
     for (const auto& f : r->written) std::cout << "wrote " << f << "\n";
     setup_logging(app, root, false);
-    std::cout << "initialized " << r->name << " in " << root.string() << "\n";
-    if (r->existing_code) {
+    std::cout << "initialized " << r->name << (r->notes ? " (notes)" : "") << " in " << root.string() << "\n";
+    if (r->notes) {
+      if (!r->imported.empty()) std::cout << "cards for the notes already there: " << r->imported.size() << " (the files stay in place)\n";
+      std::cout << "next: karkas gui   (write notes; [[name]] links one note to another)\n";
+    } else if (r->existing_code) {
       std::cout << "next: karkas import   (existing code becomes blocks; files stay where they are)\n";
     } else {
       std::cout << "next: karkas design \"<idea>\"\n";

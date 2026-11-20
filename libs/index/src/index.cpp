@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 #include <set>
 
+#include "kk/core/notes.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/validate.hpp"
@@ -493,6 +494,12 @@ kk::Result<UpdateStats> Index::update(const UpdateOptions& opts) {
   for (const auto& b : schema->blocks) fp.emplace_back("card:" + b.id, file_fingerprint(root_ / b.dir / "block.ksl"));
   for (const auto& i : schema->issues) fp.emplace_back("issue:" + i.str(), "");
   for (const auto& f : files) fp.emplace_back("file:" + f.path, f.hash + f.role + f.block);
+  // Notes (docs/adr/0038): the links come from the texts, so a text that changed is a schema that changed.
+  if (core::is_notes_project(schema->project)) {
+    for (const auto& b : schema->blocks) {
+      if (auto nf = core::note_file(b); !nf.empty()) fp.emplace_back("note:" + nf, file_fingerprint(root_ / nf));
+    }
+  }
   auto kdir = karkas_dir(root_);
   fp.emplace_back("approvals", file_fingerprint(store.approvals_file()));
   fp.emplace_back("tests", file_fingerprint(store.tests_file()));

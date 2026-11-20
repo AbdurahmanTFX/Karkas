@@ -7,6 +7,7 @@
 #include <queue>
 #include <set>
 
+#include "kk/core/notes.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 
@@ -189,6 +190,18 @@ std::vector<LinkInfo> Schema::links() const {
       l.sync = s.sync;
       l.declared_in = b.id;
       l.line = s.line;
+      out.push_back(std::move(l));
+    }
+    // Notes: a [[link]] of the text names one note or topic (docs/adr/0038); one line per pair.
+    std::set<std::string> referred;
+    for (const auto& r : b.refs) {
+      if (r.target.empty() || r.target == b.id || !referred.insert(r.target).second) continue;
+      LinkInfo l;
+      l.src_block = b.id;
+      l.dst_block = r.target;
+      l.kind = LinkKind::Ref;
+      l.declared_in = b.id;
+      l.line = r.line;
       out.push_back(std::move(l));
     }
   }
@@ -385,6 +398,23 @@ Result<Schema> load_schema(const std::filesystem::path& root_in) {
   for (auto& b : s.blocks) {
     if (b.parent.empty()) continue;
     if (Block* p = s.find_mut(b.parent)) p->children.push_back(b.id);
+  }
+  // Notes: the [[links]] of each note's text, resolved once every block is known (docs/adr/0038).
+  if (is_notes_project(s.project)) {
+    for (auto& b : s.blocks) {
+      auto file = note_file(b);
+      if (file.empty()) continue;
+      auto note = read_file(s.root / file);
+      if (!note) continue;  // not written yet
+      b.refs = parse_note_refs(*note);
+    }
+    for (auto& b : s.blocks) {
+      for (auto& r : b.refs) {
+        auto fits = resolve_note(s, r.name);
+        r.matches = static_cast<int>(fits.size());
+        if (fits.size() == 1) r.target = fits.front();
+      }
+    }
   }
   return s;
 }
