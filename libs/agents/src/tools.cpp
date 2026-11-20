@@ -100,8 +100,16 @@ const std::map<std::string, std::pair<std::string, json>>& defs() {
                                 {"status", "cause"})}},
       {"report_architect", {"Finish the design step.",
                             obj({{"status", {{"type", "string"}, {"enum", {"done", "failed"}}}},
-                                 {"summary", {{"type", "string"}, {"maxLength", 300}}}},
+                                 {"summary", {{"type", "string"}, {"maxLength", 300}}},
+                                 {"map", str("with a prototype: blocks of the prototype you renamed, one 'prototype_id -> block_id' per line")},
+                                 {"deviations", str("with a prototype: why a block or dependency of it is not kept, naming it")}},
                                 {"status"})}},
+      {"propose_alternative",
+       {"With a prototype: a better variant of a critical place of the human's prototype (a cycle, a block with two jobs, "
+        "a missing piece), as a KSL diff over the cards you wrote. Stored as a change the human approves or rejects; your "
+        "cards stay as drawn. Not a new design: change only the critical places.",
+        obj({{"title", str("a few words")}, {"reason", str("why it is better, one or two sentences")}, {"diff", str("KSL diff over the cards")}},
+            {"title", "reason", "diff"})}},
       {"answer", {"Answer the question (at most 80 tokens of observed facts).",
                   obj({{"text", {{"type", "string"}, {"maxLength", 400}}}}, {"text"})}},
       {"read_file", {"Read a file of your block (impl/x.cpp) or a neighbor api (<block>:api/x.hpp).",
@@ -630,6 +638,7 @@ ArchitectToolHost::ArchitectToolHost(fs::path root, index::Index& idx, std::stri
 std::vector<Tool> ArchitectToolHost::tools() const {
   std::vector<Tool> out;
   for (const char* n : {"view", "search", "write_card", "write_api", "propose_change", "report_architect"}) out.push_back(tool_def(n));
+  if (sketch_) out.insert(out.end() - 1, tool_def("propose_alternative"));
   return out;
 }
 
@@ -681,7 +690,32 @@ ToolOutcome ArchitectToolHost::call(const ToolCall& c) {
     if (!d) return err(d.error().message);
     return done("change proposed; it waits for human approval");
   }
-  if (c.name == "report") return done("reported " + sget(in, "status"));
+  if (c.name == "propose_alternative" && sketch_) {
+    auto diff = sget(in, "diff");
+    if (auto ok_diff = check_proposal(root_, diff); !ok_diff) return err("the alternative cannot be stored: " + ok_diff.error().message);
+    auto ch = propose_change(root_, "architect prototype", core::truncate_utf8(sget(in, "title") + ": " + sget(in, "reason"), 400), diff);
+    if (!ch) return err("the alternative cannot be stored: " + ch.error().message);
+    alternatives_.push_back(ch->id + " " + sget(in, "title"));
+    return ok(fmt::format("stored as {}: the human sees it on the schema and approves or rejects it", ch->id));
+  }
+  if (c.name == "report") {
+    if (sketch_ && sget(in, "status") == "done") {
+      // The prototype is kept, or each place it is not is explained (docs/adr/0035): checked here,
+      // so the model keeps it or explains it in this run.
+      auto s = *sketch_;
+      for (auto& [k, v] : parse_sketch_map(sget(in, "map"))) s.map[k] = v;
+      auto check = check_sketch(s, shape_of(*schema));
+      auto open = unexplained_gaps(s, check, sget(in, "deviations"));
+      if (!open.empty()) {
+        return err("the human's prototype is not kept: " + core::join(open, "; ") +
+                   ". Keep it (the same ids; a renamed block goes into map as 'prototype_id -> block_id'; a dependency is a link "
+                   "between the two blocks or blocks inside them), or say in deviations why, naming each.");
+      }
+      map_ = s.map;
+      deviations_ = sget(in, "deviations");
+    }
+    return done("reported " + sget(in, "status"));
+  }
   return err("unknown tool " + c.name);
 }
 

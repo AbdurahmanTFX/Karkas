@@ -11,6 +11,7 @@
 #include "kk/agents/loop.hpp"
 #include "kk/agents/router.hpp"
 #include "kk/agents/testing.hpp"
+#include "kk/agents/prototype.hpp"
 #include "kk/agents/types.hpp"
 #include "kk/core/config.hpp"
 #include "kk/core/tickets.hpp"
@@ -53,8 +54,10 @@ class Engine {
   [[nodiscard]] const core::Config& config() const { return cfg_; }
 
   // --- 13.1 new project -------------------------------------------------------------------
-  kk::Result<std::string> design(const std::string& idea);
-  kk::Result<std::string> expand(const std::string& block, bool all);
+  // sketch: the human's prototype of the level (docs/adr/0035): the architect keeps its blocks and
+  // dependencies (checked by the program) and offers better variants of critical places as changes.
+  kk::Result<std::string> design(const std::string& idea, const Sketch* sketch = nullptr);
+  kk::Result<std::string> expand(const std::string& block, bool all, const Sketch* sketch = nullptr);
   // what: "L0", "api" (optionally one block), or a change id C-NNNN.
   kk::Result<std::string> approve(const std::string& what, const std::string& block = "");
   kk::Result<std::string> reject(const std::string& change_id);

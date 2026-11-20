@@ -64,15 +64,30 @@ AutoRegister reg([](CLI::App& cli, App& app) {
   static std::vector<std::string> facts;
 
   auto* design = cli.add_subcommand("design", "architect: design the top level from an idea (stops for approval)");
-  design->add_option("idea", idea, "one-line idea (default: idea of project.ksl)");
-  design->callback([&app] { out(engine(app)->design(idea)); });
+  design->add_option("idea", idea, "one-line idea (default: the prototype's idea, else the idea of project.ksl)");
+  static bool sketch = false;
+  design->add_flag("--sketch", sketch, "from the human's prototype in .karkas/prototype.json (drawn in karkas-gui)");
+  design->callback([&app] {
+    auto e = engine(app);
+    if (!sketch) return out(e->design(idea));
+    auto sk = agents::load_sketch(app.root());
+    if (!sk) die(sk.error().str());
+    if (sk->empty()) die("no prototype: draw one in karkas-gui (Prototype mode) first");
+    out(e->design(idea, &*sk));
+  });
 
   auto* expand = cli.add_subcommand("expand", "architect: expand a group into children, or write the api/ of a leaf");
   expand->add_option("block", block, "block id");
   expand->add_flag("--all", all, "expand every group without children and every leaf without api/");
+  expand->add_flag("--sketch", sketch, "from the human's prototype of this group in .karkas/prototype.json");
   expand->callback([&app] {
     if (!all && block.empty()) die("expand <block> or expand --all");
-    out(engine(app)->expand(all ? (block.empty() ? "all" : block) : block, all));
+    auto e = engine(app);
+    if (!sketch) return out(e->expand(all ? (block.empty() ? "all" : block) : block, all));
+    auto sk = agents::load_sketch(app.root());
+    if (!sk) die(sk.error().str());
+    if (sk->empty()) die("no prototype: draw one in karkas-gui (Prototype mode) first");
+    out(e->expand(block, all, &*sk));
   });
 
   auto* approve = cli.add_subcommand("approve", "approve L0, the api/ (freeze), or a change C-NNNN");

@@ -1,10 +1,13 @@
 #pragma once
 // Tool sets of the roles (9.3) and their execution.
 #include <functional>
+#include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
+#include "kk/agents/prototype.hpp"
 #include "kk/agents/sandbox.hpp"
 #include "kk/agents/testing.hpp"
 #include "kk/agents/types.hpp"
@@ -82,6 +85,12 @@ class ArchitectToolHost final : public IToolHost {
   [[nodiscard]] std::vector<Tool> tools() const override;
   ToolOutcome call(const ToolCall& c) override;
   [[nodiscard]] const std::vector<std::string>& written() const { return written_; }
+  // With the human's prototype (docs/adr/0035): propose_alternative is offered and report(done)
+  // is refused until the prototype is kept or each gap is explained.
+  void set_sketch(Sketch s) { sketch_ = std::move(s); }
+  [[nodiscard]] const std::vector<std::string>& alternatives() const { return alternatives_; }  // "C-NNNN title"
+  [[nodiscard]] const std::map<std::string, std::string>& sketch_map() const { return map_; }
+  [[nodiscard]] const std::string& deviations() const { return deviations_; }
 
  private:
   std::filesystem::path root_;
@@ -89,6 +98,10 @@ class ArchitectToolHost final : public IToolHost {
   std::string scope_;
   std::set<std::string> frozen_;
   std::vector<std::string> written_;
+  std::optional<Sketch> sketch_;
+  std::vector<std::string> alternatives_;
+  std::map<std::string, std::string> map_;
+  std::string deviations_;
 };
 
 // Short question to a block (10.5): read-only tools + answer.

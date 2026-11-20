@@ -1546,10 +1546,72 @@ std::string issues_text(const std::vector<core::Issue>& issues) {
 }
 }  // namespace
 
-kk::Result<std::string> Engine::design(const std::string& idea) {
+namespace {
+
+// What the architect is told about the human's prototype (docs/adr/0035).
+std::string prototype_rules(const Sketch& s) {
+  return "\n\nThe human drew a PROTOTYPE of this level (below). Build the schema from the idea AND the prototype. Keep its "
+         "blocks (the same ids; a block may become a group, get a better purpose, kind or ports) and its dependencies (each "
+         "'dep a -> b' stays a link between a and b, or between blocks inside them; a dependency of a group expanded later is "
+         "kept by its expansion). Develop the rest freely: shared types, the entry, ports, blocks the idea needs. A renamed "
+         "block goes into report.map ('prototype_id -> block_id'); a block or dependency of the prototype that is wrong for the "
+         "idea is left out only with its reason in report.deviations, naming it. If the prototype is really bad in a critical "
+         "place (a cycle of dependencies, a block with two jobs, a piece the idea cannot work without), write the cards as "
+         "drawn and, after all cards are written, offer your variant of only those places with propose_alternative (title, "
+         "reason, a KSL diff over your cards): the human chooses. Not a new design.\n" +
+         sketch_text(s);
+}
+
+// The links the prototype asks of a group about to be expanded: kept by its children.
+std::string prototype_hints(const fs::path& root, const core::Schema& schema, const std::string& group) {
+  auto sk = load_sketch(root);
+  if (!sk || sk->empty() || sk->sent.empty()) return {};
+  auto check = check_sketch(*sk, shape_of(schema));
+  std::vector<std::string> deps;
+  for (std::size_t i = 0; i < sk->links.size() && i < check.links.size(); ++i) {
+    if (check.links[i] == 1) continue;
+    auto end = [&](const std::string& e) {
+      auto it = check.found.find(e);
+      return it != check.found.end() ? it->second : e;
+    };
+    auto a = end(sk->links[i].from);
+    auto b = end(sk->links[i].to);
+    if (a == group || b == group) deps.push_back(fmt::format("{} -> {}", a, b) + (sk->links[i].note.empty() ? "" : " (" + sk->links[i].note + ")"));
+  }
+  if (deps.empty()) return {};
+  return "\nThe human's prototype also asks for these dependencies of " + group +
+         "; keep each as a link between a child of it and the other block (or a block inside that): " + core::join(deps, "; ") + ".";
+}
+
+// The prototype after the architect: what is kept, renamed, left out, and the variants offered.
+std::string prototype_summary(const fs::path& root, Sketch s, const core::Schema& schema, const ArchitectToolHost& host,
+                              const std::string& sent) {
+  for (const auto& [k, v] : host.sketch_map()) s.map[k] = v;
+  s.sent = sent;
+  s.sent_at = core::unix_now();
+  (void)save_sketch(root, s);
+  auto c = check_sketch(s, shape_of(schema));
+  auto pending = std::count(c.links.begin(), c.links.end(), -1);
+  std::string out = fmt::format("prototype: {}/{} blocks kept, {}/{} dependencies kept{}\n", c.kept_blocks(), s.blocks.size(), c.kept_links(),
+                                s.links.size(), pending > 0 ? fmt::format(", {} come with the expansion of their groups", pending) : "");
+  for (const auto& [k, v] : s.map) out += fmt::format("renamed: {} -> {}\n", k, v);
+  if (!host.deviations().empty()) out += "deviations: " + host.deviations() + "\n";
+  for (const auto& g : c.gaps) out += "not kept: " + g + "\n";
+  for (const auto& a : host.alternatives()) {
+    auto id = a.substr(0, a.find(' '));
+    out += fmt::format("alternative {} — approve it (karkas approve {}) or reject it (karkas change reject {})\n", a, id, id);
+  }
+  return out;
+}
+
+}  // namespace
+
+kk::Result<std::string> Engine::design(const std::string& idea_in, const Sketch* sketch) {
   auto& m = *impl_;
   auto s = m.schema();
   if (!s) return std::unexpected(s.error());
+  std::string idea = idea_in.empty() && sketch != nullptr ? sketch->idea : idea_in;
+  if (sketch != nullptr && !sketch->scope.empty()) return kk::fail("design", "the prototype is drawn inside " + sketch->scope + ": karkas expand " + sketch->scope + " --sketch");
   if (!idea.empty() && s->project.idea.value != idea) {
     s->project.idea = {idea, {}, 0, 0, true};
     if (auto w = core::write_file(root_ / "project.ksl", core::write_project(s->project)); !w) return std::unexpected(w.error());
@@ -1569,10 +1631,12 @@ kk::Result<std::string> Engine::design(const std::string& idea) {
       "'shared' group for common types), with purposes, kinds, threads, ports and links between leaves. Exactly one "
       "entry block. Groups get only purpose and kind now; they are expanded after approval.",
       the_idea);
+  if (sketch != nullptr) spec.task_text += prototype_rules(*sketch);
   spec.max_steps = cfg_.max_steps_architect;
   spec.max_tokens = cfg_.max_tokens_per_run * 2;
   spec.timeout = std::chrono::seconds(cfg_.run_timeout_s);
   ArchitectToolHost host(root_, *m.idx, "", frozen_set(root_));
+  if (sketch != nullptr) host.set_sketch(*sketch);
   auto res = m.runner().run(spec, host);
   m.reindex();
   if (res.outcome == "cancelled") return kk::fail("cancelled", "design stopped by the user");
@@ -1586,12 +1650,14 @@ kk::Result<std::string> Engine::design(const std::string& idea) {
   std::string out = m.idx->overview();
   if (s2) out += issues_text(core::check_schema(*s2));
   out += fmt::format("architect: {} files written, {} steps, ${:.4f}\n", host.written().size(), res.steps, res.cost);
+  if (sketch != nullptr && s2) out += prototype_summary(root_, *sketch, *s2, host, "design");
   out += "STOP: review the top level (karkas view, karkas gui), edit the cards if needed, then: karkas approve L0\n";
   return out;
 }
 
-kk::Result<std::string> Engine::expand(const std::string& block, bool all) {
+kk::Result<std::string> Engine::expand(const std::string& block, bool all, const Sketch* sketch) {
   auto& m = *impl_;
+  if (sketch != nullptr && (all || sketch->scope != block)) return kk::fail("expand", "the prototype is drawn on " + (sketch->scope.empty() ? std::string("the top level") : sketch->scope) + ": expand that group alone");
   auto expand_one = [&](const std::string& id) -> std::string {
     auto s = m.schema();
     if (!s) return s.error().message;
@@ -1616,14 +1682,20 @@ kk::Result<std::string> Engine::expand(const std::string& block, bool all) {
     spec.system_text = m.prompt("architect", {{"job", job}, {"target", id}});
     spec.context_text = m.context_for(Role::Architect, id);
     spec.task_text = "Do it now: " + job + ". Keep links consistent with the neighbors shown above.";
+    if (group) spec.task_text += sketch != nullptr ? prototype_rules(*sketch) : prototype_hints(root_, *s, id);
     spec.max_steps = cfg_.max_steps_architect;
     spec.max_tokens = cfg_.max_tokens_per_run * 2;
     spec.timeout = std::chrono::seconds(cfg_.run_timeout_s);
     ArchitectToolHost host(root_, *m.idx, id, frozen_set(root_));
+    if (sketch != nullptr && group) host.set_sketch(*sketch);
     auto res = m.runner().run(spec, host);
     m.reindex();
     m.say(fmt::format("expand {}: {} files, outcome {}", id, host.written().size(), res.outcome));
-    return fmt::format("expand {}: {} files written ({}), ${:.4f}\n", id, host.written().size(), res.outcome, res.cost);
+    std::string text = fmt::format("expand {}: {} files written ({}), ${:.4f}\n", id, host.written().size(), res.outcome, res.cost);
+    if (sketch != nullptr && group) {
+      if (auto after = m.schema()) text += prototype_summary(root_, *sketch, *after, host, "expand");
+    }
+    return text;
   };
   // L0 must be approved first (13.1 step 3).
   auto st = index::StateStore(root_).load();
