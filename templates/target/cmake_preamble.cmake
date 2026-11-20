@@ -28,7 +28,8 @@ else()
   endif()
   target_link_libraries(kk_doctest INTERFACE doctest::doctest)
 endif()
-file(WRITE "${CMAKE_BINARY_DIR}/kk_doctest_main.cpp"
+# Written only when its text changes: a newer file would rebuild every test program at each configure.
+file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/kk_doctest_main.cpp" CONTENT
      "#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN\n#include <doctest/doctest.h>\n")
 add_library(kk_doctest_main STATIC "${CMAKE_BINARY_DIR}/kk_doctest_main.cpp")
 target_link_libraries(kk_doctest_main PUBLIC kk_doctest)
