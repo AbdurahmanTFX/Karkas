@@ -25,17 +25,22 @@ namespace {
 const ImVec4 kSketchCol = rgb(186, 126, 255);
 constexpr std::array<const char*, 5> kKinds = {"", "group", "leaf", "entry", "shared"};
 
-std::set<std::string> block_ids(const index::Snapshot& snap) {
-  std::set<std::string> out;
-  for (const auto& b : snap.blocks) out.insert(b.id);
-  return out;
-}
-
-bool level_empty(const index::Snapshot& snap, const std::string& scope) {
-  return std::none_of(snap.blocks.begin(), snap.blocks.end(), [&](const index::BlockRow& b) { return b.parent == scope; });
-}
-
 }  // namespace
+
+agents::SchemaShape snapshot_shape(const index::Snapshot& snap) {
+  agents::SchemaShape s;
+  std::set<std::string> parents;
+  for (const auto& b : snap.blocks) {
+    s.blocks.insert(b.id);
+    if (!b.parent.empty()) parents.insert(b.parent);
+    if (b.kind == "group") s.groups.insert(b.id);
+  }
+  for (const auto& g : s.groups) {
+    if (!parents.contains(g)) s.childless_groups.insert(g);
+  }
+  for (const auto& l : snap.links) s.links.emplace_back(l.src_block, l.dst_block);
+  return s;
+}
 
 void Ui::load_prototype() {
   auto s = agents::load_sketch(root_);
@@ -43,10 +48,14 @@ void Ui::load_prototype() {
   if (!s) sketch_msg_ = s.error().message;
   sketch_placed_.clear();
   sketch_positioned_.clear();
+  std::error_code ec;
+  sketch_mtime_ = std::filesystem::last_write_time(agents::sketch_path(root_), ec);
 }
 
 void Ui::save_prototype() {
   if (auto r = agents::save_sketch(root_, sketch_); !r) sketch_msg_ = r.error().message;
+  std::error_code ec;
+  sketch_mtime_ = std::filesystem::last_write_time(agents::sketch_path(root_), ec);
 }
 
 void Ui::set_prototype(bool on) {
@@ -74,6 +83,13 @@ void Ui::draw_prototype_bar(const Model& m) {
     ImGui::SameLine();
     if (ui::icon_button("pr_go", Icon::ArrowUp, tr("Open the level of the prototype"), false, tr("Open"))) enter(sketch_.scope);
     return;
+  }
+  // The architect's run writes the sketch too (its renames, "sent"): read it again when it changed.
+  if (ImGui::GetTime() - sketch_polled_ > 1.0) {
+    sketch_polled_ = ImGui::GetTime();
+    std::error_code ec;
+    auto t = std::filesystem::last_write_time(agents::sketch_path(root_), ec);
+    if (!ec && t != sketch_mtime_) load_prototype();
   }
   place_realized(m);
   ImGui::AlignTextToFramePadding();
@@ -109,10 +125,7 @@ void Ui::draw_prototype_bar(const Model& m) {
   // Counts and, once given to the agents, what the schema keeps.
   std::string info = fmt::format(fmt::runtime(tr("{} blocks, {} dependencies")), sketch_.blocks.size(), sketch_.links.size());
   if (!sketch_.sent.empty()) {
-    agents::SchemaShape shape;
-    for (const auto& b : m.snap->blocks) shape.blocks.insert(b.id);
-    for (const auto& l : m.snap->links) shape.links.emplace_back(l.src_block, l.dst_block);
-    auto c = agents::check_sketch(sketch_, shape);
+    auto c = agents::check_sketch(sketch_, snapshot_shape(*m.snap));
     info += " · " + fmt::format(fmt::runtime(tr("kept: {}/{} blocks, {}/{} dependencies")), c.kept_blocks(), sketch_.blocks.size(),
                                 c.kept_links(), sketch_.links.size());
   }
@@ -237,77 +250,37 @@ void Ui::sketch_popups(const Model& m) {
 }
 
 void Ui::send_prototype(const Model& m) {
-  const auto& snap = *m.snap;
-  auto existing = block_ids(snap);
-  if (!sketch_.sent.empty()) {
-    // Sent before: what the schema does not have yet goes to the orchestrator as a task.
-    agents::SchemaShape shape;
-    shape.blocks = existing;
-    for (const auto& l : snap.links) shape.links.emplace_back(l.src_block, l.dst_block);
-    auto c = agents::check_sketch(sketch_, shape);
-    agents::Sketch rest = sketch_;
-    rest.blocks.clear();
-    rest.links.clear();
-    for (const auto& b : sketch_.blocks) {
-      if (c.found[sketch_.id_of(b)].empty()) rest.blocks.push_back(b);
-    }
-    for (std::size_t i = 0; i < sketch_.links.size() && i < c.links.size(); ++i) {
-      if (c.links[i] == 0) rest.links.push_back(sketch_.links[i]);
-    }
-    if (rest.empty()) {
-      sketch_msg_ = tr("Everything of the prototype is in the schema (dependencies through groups come when they are expanded).");
-      return;
-    }
-    if (!chat_ || chat_->busy()) {
-      sketch_msg_ = tr("The chat runs a command now: wait for it, then approve again.");
-      return;
-    }
-    ChatScope where = sketch_.scope.empty() ? ChatScope{} : ChatScope{ChatScope::Kind::Block, sketch_.scope};
-    if (chat_->send(ChatMode::Task, agents::sketch_task(rest), where)) {
-      sketch_.sent_at = core::unix_now();
-      save_prototype();
-      sketch_msg_ = tr("What the schema lacks of the prototype went to the orchestrator: follow it in the chat.");
-    }
-    show_chat_ = true;
-    chat_window_focus_ = true;
-    return;
-  }
-  if (auto why = agents::sketch_problems(sketch_, existing); !why.empty()) {
-    sketch_msg_ = why;
+  // The same choice as kk_prototype over MCP (agents::plan_prototype_send).
+  auto plan = agents::plan_prototype_send(sketch_, snapshot_shape(*m.snap), !m.snap->idea.empty());
+  if (!plan.error.empty()) {
+    sketch_msg_ = plan.error;
     return;
   }
   if (!chat_ || chat_->busy()) {
     sketch_msg_ = tr("The chat runs a command now: wait for it, then approve again.");
     return;
   }
-  const std::string& scope = sketch_.scope;
-  bool empty = level_empty(snap, scope);
-  const auto* group = scope.empty() ? nullptr : snap.block(scope);
-  if (scope.empty() && empty && core::trim(sketch_.idea).empty() && snap.idea.empty()) {
-    sketch_msg_ = tr("Write the idea first: the architect builds from the idea and the sketch.");
-    return;
-  }
+  bool again = !sketch_.sent.empty();
   save_prototype();
   bool sent = false;
-  if (scope.empty() && empty) {
-    sent = chat_->send(ChatMode::Task, "/design --sketch");  // the architect designs the top level from the sketch
-    sketch_.sent = "design";
-  } else if (group != nullptr && group->kind == "group" && empty) {
-    sent = chat_->send(ChatMode::Task, "/expand " + scope + " --sketch");
-    sketch_.sent = "expand";
+  if (plan.sent == "task") {
+    // A level that has blocks (or what the schema lacks of a sketch sent before): the
+    // orchestrator adds it as a change, limited to the group (ADR 0034).
+    ChatScope where = sketch_.scope.empty() ? ChatScope{} : ChatScope{ChatScope::Kind::Block, sketch_.scope};
+    sent = chat_->send(ChatMode::Task, plan.text, where);
   } else {
-    // A level that has blocks: the orchestrator adds what the sketch shows (a change to approve).
-    ChatScope where = scope.empty() ? ChatScope{} : ChatScope{ChatScope::Kind::Block, scope};
-    sent = chat_->send(ChatMode::Task, agents::sketch_task(sketch_), where);
-    sketch_.sent = "task";
+    sent = chat_->send(ChatMode::Task, "/" + core::join(plan.args, " "));  // design --sketch | expand <group> --sketch
   }
   if (!sent) {
-    sketch_.sent.clear();
     sketch_msg_ = tr("The chat could not start the command (see the chat).");
   } else {
+    // A design or expansion marks the sketch itself when it ends (with the architect's renames);
+    // a task is marked here (the orchestrator never reads the sketch).
+    if (!again && plan.sent == "task") sketch_.sent = plan.sent;
     sketch_.sent_at = core::unix_now();
     save_prototype();
-    sketch_msg_ = tr("Given to the agents: follow it in the chat. Blocks the schema gets take the places you drew them at.");
+    sketch_msg_ = again ? tr("What the schema lacks of the prototype went to the orchestrator: follow it in the chat.")
+                        : tr("Given to the agents: follow it in the chat. Blocks the schema gets take the places you drew them at.");
   }
   show_chat_ = true;
   chat_window_focus_ = true;

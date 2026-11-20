@@ -65,6 +65,7 @@ std::string sketch_task(const Sketch& s);
 // What the check needs of a schema (core::Schema or the index snapshot of karkas-gui).
 struct SchemaShape {
   std::set<std::string> blocks;
+  std::set<std::string> groups;            // every group
   std::set<std::string> childless_groups;  // groups not expanded yet: links through them come later
   std::vector<std::pair<std::string, std::string>> links;  // block → block, any kind
 };
@@ -87,5 +88,30 @@ std::vector<std::string> unexplained_gaps(const Sketch& s, const SketchCheck& c,
 
 // "a -> b" lines (also "a: b", "a = b"), one per line or separated by ';' or ','.
 std::map<std::string, std::string> parse_sketch_map(std::string_view text);
+
+// How a sketch goes to the agents — the same choice in karkas-gui and over MCP: the top level of
+// an empty project → `design --sketch`; an empty group → `expand <group> --sketch`; a level that
+// has blocks → a task for the orchestrator (limited to the group); a sketch sent before → a task
+// with only what the schema lacks of it.
+struct PrototypeSend {
+  std::vector<std::string> args;  // karkas arguments ("design", "--sketch" / "expand", g, "--sketch" / "task", ["--block", g,] text)
+  std::string sent;               // "design" | "expand" | "task"
+  std::string text;               // the task text (sent as a task)
+  std::string error;              // why it cannot go now ("" when it can)
+};
+// idea_known: the project has an idea already (project.ksl).
+PrototypeSend plan_prototype_send(const Sketch& s, const SchemaShape& shape, bool idea_known);
+
+// What the schema keeps of the sketch, as text for an agent or the user.
+std::string sketch_report(const Sketch& s, const SchemaShape& shape);
+
+// A sketch an agent writes (kk_prototype action=set): {level, idea, blocks: [{name, purpose, kind}],
+// dependencies: [{from, to, note}]}; a bare name of a block of the sketch in a dependency is its
+// id on the level. Places are not set (lay_out_sketch).
+kk::Result<Sketch> sketch_from_json(std::string_view text);
+
+// Places on the canvas for blocks that have none (a sketch written by an agent): columns by the
+// longest chain of dependencies leading to a block, rows in the order of the blocks.
+void lay_out_sketch(Sketch& s);
 
 }  // namespace kk::agents

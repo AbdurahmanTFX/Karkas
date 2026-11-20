@@ -165,23 +165,56 @@ std::vector<Tool> make_tools(const ServerOptions& o) {
                  "Give a feature or change to Karkas's agents, exactly like `karkas task`: a ticket is created and the "
                  "orchestrator, the navigators, a worker and a tester take it down the schema to the block. In mode mcp you are "
                  "their model: serve their turns with kk_agent_next / kk_agent_act until the ticket ends.",
-                 {{"type", "object"}, {"properties", {{"text", str_prop("what to do, in the user's words")}}}, {"required", {"text"}}}});
+                 {{"type", "object"},
+                  {"properties",
+                   {{"text", str_prop("what to do, in the user's words")},
+                    {"block", str_prop("only inside this block and its subtree (the user chose it): the descent starts there; "
+                                       "empty = the whole project, the orchestrator decides")}}},
+                  {"required", {"text"}}}});
     t.push_back({"kk_debug",
                  "Give a bug to Karkas's agents, exactly like `karkas debug`: a bug ticket goes down the schema to the block "
                  "with the cause; its worker adds a test that reproduces it and fixes it. In mode mcp serve the turns.",
                  {{"type", "object"},
                   {"properties",
                    {{"text", str_prop("the symptom")},
-                    {"facts", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "facts you already have"}}}}},
+                    {"facts", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "facts you already have"}}},
+                    {"block", str_prop("only inside this block and its subtree (the user chose it); empty = the whole project")}}},
                   {"required", {"text"}}}});
   }
   if (o.run_ticket) {
-    t.push_back({"kk_ticket_run", "Run a ticket again or continue it (like `karkas ticket run`), with the same agents.",
+    t.push_back({"kk_ticket_run",
+                 "Run a ticket again or continue it (like `karkas ticket run`), with the same agents. With note: the user's "
+                 "message about this ticket becomes its fact \"human: ...\" and the ticket runs (also a closed one).",
                  {{"type", "object"},
                   {"properties",
                    {{"id", str_prop("ticket id, e.g. T-0012")},
+                    {"note", str_prop("the user's message about the ticket (what to add or correct)")},
                     {"force", {{"type", "boolean"}, {"description", "run even if nothing changed since its last result"}}}}},
                   {"required", {"id"}}}});
+  }
+  if (o.prototype) {
+    json block = {{"type", "object"},
+                  {"properties",
+                   {{"name", str_prop("identifier: a-z, 0-9, _")},
+                    {"purpose", str_prop("optional, the user's words")},
+                    {"kind", str_prop("optional: group | leaf | entry | shared (else the architect decides)")}}},
+                  {"required", {"name"}}};
+    json dep = {{"type", "object"},
+                {"properties", {{"from", str_prop("block id")}, {"to", str_prop("block id")}, {"note", str_prop("optional")}}},
+                {"required", {"from", "to"}}};
+    t.push_back({"kk_prototype",
+                 "The user's prototype: rough blocks and dependencies of a level that the architect builds the schema from, "
+                 "keeping its main logic (karkas-gui draws it as ghosts). view: the sketch and what the schema keeps of it. "
+                 "set: write a sketch from the user's description (replaces the one there; the user sees and edits it in "
+                 "karkas-gui). send: give it to the architect now — only when the user asked for it; in mode mcp serve the turns.",
+                 {{"type", "object"},
+                  {"properties",
+                   {{"action", {{"type", "string"}, {"enum", {"view", "set", "send"}}}},
+                    {"level", str_prop("set: the group it is drawn in; empty = the top level")},
+                    {"idea", str_prop("set: what the project (or the group) does, in the user's words")},
+                    {"blocks", {{"type", "array"}, {"items", block}}},
+                    {"dependencies", {{"type", "array"}, {"items", dep}, {"description", "from uses / sends to / calls to"}}}}},
+                  {"required", {"action"}}}});
   }
   if (o.implement) {
     t.push_back({"kk_implement",
@@ -336,9 +369,14 @@ std::optional<std::string> Server::handle(std::string_view line) {
               if (f.is_string()) facts.push_back(f.get<std::string>());
             }
           }
-          return result(opts_.start_ticket(name == "kk_task" ? "feature" : "bug", sarg(args, "text"), facts));
+          return result(opts_.start_ticket(name == "kk_task" ? "feature" : "bug", sarg(args, "text"), facts, sarg(args, "block")));
         }
-        if (name == "kk_ticket_run") return result(opts_.run_ticket(sarg(args, "id"), args.value("force", false)));
+        if (name == "kk_ticket_run") return result(opts_.run_ticket(sarg(args, "id"), args.value("force", false), sarg(args, "note")));
+        if (name == "kk_prototype") {
+          json sketch = args.is_object() ? args : json::object();
+          sketch.erase("action");
+          return result(opts_.prototype(sarg(args, "action"), sketch.dump()));
+        }
         if (name == "kk_implement") {
           auto target = sarg(args, "target");
           return result(opts_.implement(target.empty() ? std::string("all") : target));

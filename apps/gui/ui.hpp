@@ -42,6 +42,11 @@ void reset_canvas_caches();
 class TextEditor;
 
 namespace kk::gui {
+// What the prototype check needs of the index snapshot (ui_prototype.cpp, ADR 0035).
+agents::SchemaShape snapshot_shape(const index::Snapshot& snap);
+}  // namespace kk::gui
+
+namespace kk::gui {
 
 // One link of the schema, by value (the snapshot may change while a menu is open).
 struct LinkDesc {
@@ -195,6 +200,8 @@ class Ui {
   bool proto_on_ = false;
   agents::Sketch sketch_;
   std::string sketch_msg_;                  // the last problem or what was done
+  std::filesystem::file_time_type sketch_mtime_{};  // of prototype.json as we last read or wrote it
+  double sketch_polled_ = 0;                // the engine writes it too (after a design): re-read when it changes
   std::map<std::uintptr_t, std::string> sketch_nodes_;  // node id → sketch block id (this frame)
   std::map<std::string, std::pair<ImVec2, ImVec2>> sketch_socks_;  // sketch block id → in / out socket (canvas)
   std::set<std::string> sketch_placed_;     // sketch nodes positioned in the node editor

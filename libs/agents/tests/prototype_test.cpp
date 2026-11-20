@@ -210,3 +210,82 @@ TEST_CASE("prototype: a group drawn at the top level gets the prototype's depend
   CHECK(core::contains(task, "The human's prototype also asks for these dependencies of core"));
   CHECK(core::contains(task, "app -> core (expressions)"));
 }
+
+TEST_CASE("prototype: where a sketch goes — design, expand, a task, or only what the schema lacks") {
+  agents::Sketch s = player();
+  agents::SchemaShape none;
+  auto p = agents::plan_prototype_send(s, none, false);
+  CHECK(p.error.empty());
+  CHECK(p.args == std::vector<std::string>{"design", "--sketch"});
+  CHECK(p.sent == "design");
+  auto no_idea = s;
+  no_idea.idea.clear();
+  CHECK(core::contains(agents::plan_prototype_send(no_idea, none, false).error, "write the idea"));
+  CHECK(agents::plan_prototype_send(no_idea, none, true).error.empty());  // project.ksl has one
+  // Inside an empty group: expand it.
+  agents::Sketch g;
+  g.scope = "dsp";
+  g.blocks = {{"echo", "", "", 0, 0}};
+  agents::SchemaShape shape;
+  shape.blocks = {"dsp", "app"};
+  shape.groups = {"dsp"};
+  shape.childless_groups = {"dsp"};
+  p = agents::plan_prototype_send(g, shape, true);
+  CHECK(p.args == std::vector<std::string>{"expand", "dsp", "--sketch"});
+  // A group with blocks: a task for the orchestrator, limited to it.
+  shape.blocks.insert("dsp.gain");
+  shape.childless_groups.clear();
+  p = agents::plan_prototype_send(g, shape, true);
+  REQUIRE(p.args.size() == 4);
+  CHECK(p.args[0] == "task");
+  CHECK(p.args[1] == "--block");
+  CHECK(p.args[2] == "dsp");
+  CHECK(core::contains(p.args[3], "dsp.echo"));
+  CHECK(p.sent == "task");
+  // Not a group / gone.
+  g.scope = "app";
+  CHECK(core::contains(agents::plan_prototype_send(g, shape, true).error, "not a group"));
+  g.scope = "gone";
+  CHECK(core::contains(agents::plan_prototype_send(g, shape, true).error, "not a block any more"));
+  // Sent before: only what is missing goes; nothing missing is said.
+  auto sent = player();
+  sent.sent = "design";
+  agents::SchemaShape after;
+  after.blocks = {"app", "io", "stream", "dsp"};
+  after.groups = {"io", "dsp"};
+  after.links = {{"app", "io"}, {"io", "stream"}, {"stream", "dsp"}};
+  CHECK(core::contains(agents::plan_prototype_send(sent, after, true).error, "everything of the prototype is in the schema"));
+  after.blocks.erase("dsp");
+  after.links.pop_back();
+  p = agents::plan_prototype_send(sent, after, true);
+  CHECK(p.sent == "task");
+  CHECK(core::contains(p.text, "new blocks dsp (effects)"));
+  CHECK_FALSE(core::contains(p.text, "app ->"));
+  // The report names each block and dependency with its state.
+  auto rep = agents::sketch_report(sent, after);
+  CHECK(core::contains(rep, "kept    app"));
+  CHECK(core::contains(rep, "missing dsp"));
+  CHECK(core::contains(rep, "kept    io -> stream"));
+}
+
+TEST_CASE("prototype: a sketch written by an agent gets ids and places") {
+  auto s = agents::sketch_from_json(R"({"level": "dsp", "idea": "more effects",
+      "blocks": [{"name": "echo"}, {"name": "reverb", "purpose": "room"}, {"name": "mixer", "kind": "leaf"}],
+      "dependencies": [{"from": "echo", "to": "reverb"}, {"from": "reverb", "to": "mixer", "note": "wet"}, {"from": "mixer", "to": "app"}]})");
+  REQUIRE(s);
+  CHECK(s->scope == "dsp");
+  REQUIRE(s->links.size() == 3);
+  CHECK(s->links[0].from == "dsp.echo");
+  CHECK(s->links[1].to == "dsp.mixer");
+  CHECK(s->links[2].to == "app");  // not a block of the sketch: an existing block
+  agents::lay_out_sketch(*s);
+  CHECK(s->blocks[0].x == doctest::Approx(0));
+  CHECK(s->blocks[1].x == doctest::Approx(320));
+  CHECK(s->blocks[2].x == doctest::Approx(640));
+  CHECK_FALSE(agents::sketch_from_json("[1, 2]"));
+  auto top = agents::sketch_from_json(R"({"level": "root", "blocks": [{"name": "a"}, {"name": "b"}]})");
+  REQUIRE(top);
+  CHECK(top->scope.empty());
+  agents::lay_out_sketch(*top);
+  CHECK(top->blocks[1].y == doctest::Approx(170));  // the same column, the next row
+}

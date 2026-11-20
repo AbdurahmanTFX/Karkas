@@ -191,3 +191,48 @@ TEST_CASE("mcp: kk_note_bug records a bug found on the way as an open ticket") {
   CHECK(t->facts[0].text == "found at blocks/dsp/echo/impl/echo.cpp:24");
   CHECK(call({{"summary", "  "}})["isError"] == true);
 }
+
+TEST_CASE("mcp: a request limited to a block, a message about a ticket, the prototype (ADR 0034, 0035)") {
+  McpFixture f;
+  mcp::ServerOptions o;
+  std::string got;
+  o.start_ticket = [&](const std::string& kind, const std::string& text, const std::vector<std::string>& facts,
+                       const std::string& block) -> kk::Result<std::string> {
+    got = kind + "|" + text + "|" + std::to_string(facts.size()) + "|" + block;
+    return std::string("created T-0002");
+  };
+  o.run_ticket = [&](const std::string& id, bool force, const std::string& note) -> kk::Result<std::string> {
+    got = id + "|" + (force ? "force" : "") + "|" + note;
+    return std::string("runs again");
+  };
+  o.prototype = [&](const std::string& action, const std::string& sketch) -> kk::Result<std::string> {
+    got = action + "|" + sketch;
+    if (action == "send") return kk::fail("prototype", "no prototype");
+    return std::string("ok");
+  };
+  mcp::Server server(*f.idx, o);
+  auto list = json::parse(*server.handle(R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})"));
+  json schema;
+  for (const auto& t : list["result"]["tools"]) {
+    if (t["name"] == "kk_task") schema = t["inputSchema"];
+  }
+  CHECK(schema["properties"].contains("block"));
+  auto call = [&](const std::string& name, const json& args) {
+    json req = {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "tools/call"}, {"params", {{"name", name}, {"arguments", args}}}};
+    return json::parse(*server.handle(req.dump()))["result"];
+  };
+  CHECK(call("kk_task", {{"text", "add reset"}, {"block", "stream.ring"}})["isError"] == false);
+  CHECK(got == "feature|add reset|0|stream.ring");
+  CHECK(call("kk_debug", {{"text", "drops"}, {"facts", {"fill=0"}}})["isError"] == false);
+  CHECK(got == "bug|drops|1|");
+  CHECK(call("kk_ticket_run", {{"id", "T-0001"}, {"note", "also on seek"}})["isError"] == false);
+  CHECK(got == "T-0001||also on seek");
+  auto set = call("kk_prototype", {{"action", "set"}, {"idea", "player"}, {"blocks", {{{"name", "io"}}}}});
+  CHECK(set["isError"] == false);
+  auto sent = json::parse(got.substr(got.find('|') + 1));
+  CHECK(got.starts_with("set|"));
+  CHECK(sent["idea"] == "player");
+  CHECK(sent["blocks"][0]["name"] == "io");
+  CHECK_FALSE(sent.contains("action"));
+  CHECK(call("kk_prototype", {{"action", "send"}})["isError"] == true);
+}

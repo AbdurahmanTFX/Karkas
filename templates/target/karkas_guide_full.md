@@ -40,6 +40,14 @@ done by Karkas's own agents — orchestrator, navigators, workers, testers — e
 and you are their model. The MCP server's instructions say so when it starts.
 - A feature goes to kk_task, a bug to kk_debug (a ticket, as `karkas task` / `karkas debug`).
   Do not change the project with your own tools: the agents do it in their sandboxes.
+- A request the user limits to one block (or group) passes it as `block`: the descent starts there
+  and the changes stay inside it. The user's message about an existing ticket goes to
+  kk_ticket_run(id, note): it becomes a fact of the ticket and the ticket runs again.
+- A rough structure the user describes ("blocks A, B, C; A uses B") is a prototype:
+  kk_prototype(action=set, idea, blocks, dependencies). The user sees and edits it in karkas-gui
+  and approves it there; send it yourself (action=send) only when asked. The architect keeps its
+  blocks and dependencies and offers variants of critical places as changes C-NNNN;
+  kk_prototype(action=view) shows what the schema keeps of it.
 - kk_agent_next(list=true) shows the turns that wait: ticket, role, block, the tier of its
   model ([mcp.levels], [mcp.roles], [mcp.blocks]) and the Claude Code subagent of that tier.
 - Serve a run yourself when you run that model; otherwise hand the run to the subagent

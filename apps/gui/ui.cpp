@@ -2146,20 +2146,6 @@ namespace {
 const ImVec4 kSketch = rgb(186, 126, 255);   // a block or dependency of the prototype
 const ImVec4 kSketchKept = rgb(110, 220, 140);  // ... that the schema keeps
 
-agents::SchemaShape shape_of_snapshot(const index::Snapshot& snap) {
-  agents::SchemaShape s;
-  std::set<std::string> parents;
-  for (const auto& b : snap.blocks) {
-    s.blocks.insert(b.id);
-    if (!b.parent.empty()) parents.insert(b.parent);
-  }
-  for (const auto& b : snap.blocks) {
-    if (b.kind == "group" && !parents.contains(b.id)) s.childless_groups.insert(b.id);
-  }
-  for (const auto& l : snap.links) s.links.emplace_back(l.src_block, l.dst_block);
-  return s;
-}
-
 // A dashed curve from `a` (leaving to the right) to `b` (entering from the left), with an arrow.
 void dashed_curve(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float thick, bool dotted) {
   float dx = std::max(40.0f, std::fabs(b.x - a.x) * 0.5f);
@@ -2203,7 +2189,7 @@ void Ui::draw_sketch(const Model& m, int underlay_channel) {
   // What the schema keeps of the prototype, once it was given to the agents.
   agents::SketchCheck check;
   bool checked = !sketch_.sent.empty();
-  if (checked) check = agents::check_sketch(sketch_, shape_of_snapshot(snap));
+  if (checked) check = agents::check_sketch(sketch_, snapshot_shape(snap));
   float scale = std::max(0.6f, settings_.block_scale);
   float w = 230.0f * scale;
   for (const auto& sb : sketch_.blocks) {

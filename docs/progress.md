@@ -645,3 +645,12 @@
 - After the design the schema is checked against the sketch (kept / pending / missing), realized blocks
   take the places they were drawn at, the rest stay ghosts; "Send again" sends only what is missing.
 - Tests 356; checked under Xvfb (drawing, dialog, dragged dependency, approval command, the comparison).
+
+## Addition — MCP: block scope, ticket messages, the prototype (docs/adr/0036)
+
+- kk_task / kk_debug `block`, kk_ticket_run `note`, kk_prototype(view | set | send): a client limits a
+  request to a block, passes the user's message about a ticket, writes a prototype from the user's words
+  (the user approves it in karkas-gui) and sends it when asked.
+- `plan_prototype_send` is shared by karkas-gui and MCP; a design marks the sketch sent only when it ends;
+  karkas-gui re-reads the sketch when the engine writes it.
+- Tests 359; `karkas mcp` checked end to end on copies (no API key: the runs start and fail on the key).

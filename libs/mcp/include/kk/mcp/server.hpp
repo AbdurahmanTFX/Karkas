@@ -42,10 +42,15 @@ struct ServerOptions {
   std::function<std::string(const std::string& block)> model_hint;
   // Agents of the program, started and served from the client (docs/adr/0024).
   // kk_task / kk_debug: a ticket for the same agents as `karkas task` / `karkas debug`; kind
-  // "feature" or "bug". kk_ticket_run: run (or continue) a ticket.
-  std::function<kk::Result<std::string>(const std::string& kind, const std::string& text, const std::vector<std::string>& facts)>
+  // "feature" or "bug"; block: limited to that block and its subtree ("" = the whole project,
+  // docs/adr/0034). kk_ticket_run: run (or continue) a ticket; note: the user's message about it.
+  std::function<kk::Result<std::string>(const std::string& kind, const std::string& text, const std::vector<std::string>& facts,
+                                        const std::string& block)>
       start_ticket;
-  std::function<kk::Result<std::string>(const std::string& id, bool force)> run_ticket;
+  std::function<kk::Result<std::string>(const std::string& id, bool force, const std::string& note)> run_ticket;
+  // kk_prototype (docs/adr/0035): action "view" | "set" | "send"; for "set" the sketch as JSON
+  // {level, idea, blocks: [{name, purpose, kind}], dependencies: [{from, to, note}]}.
+  std::function<kk::Result<std::string>(const std::string& action, const std::string& sketch_json)> prototype;
   // kk_implement: `karkas implement <target>` in the background — its testers and workers wait for
   // the client in mode "mcp", so the client must not run it in its own foreground (it would wait
   // on itself).

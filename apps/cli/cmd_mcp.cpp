@@ -14,6 +14,7 @@
 #include "kk/agents/brief.hpp"
 #include "kk/agents/changes.hpp"
 #include "kk/agents/mcp_turns.hpp"
+#include "kk/agents/prototype.hpp"
 #include "kk/agents/router.hpp"
 #include "kk/core/config.hpp"
 #include "kk/core/paths.hpp"
@@ -168,26 +169,84 @@ AutoRegister reg([](CLI::App& cli, App& app) {
       }
       return fmt::format("Its agents work through the API (mode api). Follow it with kk_ticket_view(id=\"{}\") or kk_agent_next(list=true).", id);
     };
-    o.start_ticket = [root, launch, next_steps](const std::string& kind, const std::string& text,
-                                                const std::vector<std::string>& facts) -> kk::Result<std::string> {
+    o.start_ticket = [root, launch, next_steps](const std::string& kind, const std::string& text, const std::vector<std::string>& facts,
+                                                const std::string& block) -> kk::Result<std::string> {
       if (core::trim(text).empty()) return kk::fail("mcp", "text is required");
+      // A request limited to a block (docs/adr/0034): the block must exist now, not fail in the background.
+      std::string scope = block == "root" ? std::string() : block;
+      if (!scope.empty()) {
+        auto schema = core::load_schema(root);
+        if (!schema) return std::unexpected(schema.error());
+        if (schema->find(scope) == nullptr) return kk::fail("mcp", "unknown block " + scope);
+      }
       core::TicketStore store(root);
-      auto t = store.create(kind == "bug" ? core::TicketKind::Bug : core::TicketKind::Feature, "human", text, facts);
+      auto t = store.create(kind == "bug" ? core::TicketKind::Bug : core::TicketKind::Feature, "human", text, facts, scope);
       if (!t) return std::unexpected(t.error());
       if (auto r = launch(t->id, {"ticket", "run", t->id}); !r) return std::unexpected(r.error());
-      return fmt::format("created {} ({}). {}", t->id, kind, next_steps(t->id));
+      return fmt::format("created {} ({}{}). {}", t->id, kind, scope.empty() ? "" : ", limited to " + scope, next_steps(t->id));
     };
-    o.run_ticket = [root, launch, next_steps](const std::string& id, bool force) -> kk::Result<std::string> {
+    o.run_ticket = [root, launch, next_steps](const std::string& id, bool force, const std::string& note) -> kk::Result<std::string> {
+      bool message = !core::trim(note).empty();
       // Said now, not after a start that ends at once with nobody told why.
       if (auto t = core::TicketStore(root).load(id); !t) {
         return std::unexpected(t.error());
-      } else if (t->status.value == "closed" && !force) {
-        return kk::fail("mcp", id + " is closed; force=true reopens it");
+      } else if (t->status.value == "closed" && !force && !message) {
+        return kk::fail("mcp", id + " is closed; force=true reopens it (or give the user's message in note)");
       }
       std::vector<std::string> args = {"ticket", "run", id};
       if (force) args.emplace_back("--force");
+      if (message) args.insert(args.end(), {"--note", note});  // the user's message: a fact of the ticket, the run forced
       if (auto r = launch(id, args); !r) return std::unexpected(r.error());
-      return fmt::format("{} runs again. {}", id, next_steps(id));
+      return fmt::format("{} runs again{}. {}", id, message ? " with the user's message as its fact" : "", next_steps(id));
+    };
+    // The user's prototype (docs/adr/0035): view, set from the user's words, send to the architect.
+    o.prototype = [root, launch, mode_of](const std::string& action, const std::string& sketch_json) -> kk::Result<std::string> {
+      auto schema = core::load_schema(root);
+      if (!schema) return std::unexpected(schema.error());
+      auto shape = agents::shape_of(*schema);
+      if (action == "view") {
+        auto s = agents::load_sketch(root);
+        if (!s) return std::unexpected(s.error());
+        if (s->empty()) return std::string("no prototype yet: the user draws one in karkas-gui (schema toolbar: Prototype), or write one with action=set\n");
+        return agents::sketch_report(*s, shape);
+      }
+      if (action == "set") {
+        auto parsed = agents::sketch_from_json(sketch_json);
+        if (!parsed) return std::unexpected(parsed.error());
+        auto s = std::move(*parsed);
+        if (!s.scope.empty() && !shape.groups.contains(s.scope)) return kk::fail("mcp", "level " + s.scope + " is not a group of the schema");
+        if (auto why = agents::sketch_problems(s, shape.blocks); !why.empty()) return kk::fail("mcp", why);
+        agents::lay_out_sketch(s);
+        bool replaced = false;
+        if (auto old = agents::load_sketch(root); old && !old->empty()) replaced = true;
+        if (auto w = agents::save_sketch(root, s); !w) return std::unexpected(w.error());
+        return fmt::format("prototype saved ({} blocks, {} dependencies{}). The user sees it in karkas-gui (schema toolbar: "
+                           "Prototype), can move and edit it, and approves it there; call action=send only when the user asked "
+                           "to build it now.\n{}",
+                           s.blocks.size(), s.links.size(), replaced ? "; it replaced the previous prototype" : "", agents::sketch_text(s));
+      }
+      if (action == "send") {
+        auto s = agents::load_sketch(root);
+        if (!s) return std::unexpected(s.error());
+        if (s->empty()) return kk::fail("mcp", "no prototype: write one with action=set or let the user draw it in karkas-gui");
+        auto plan = agents::plan_prototype_send(*s, shape, !schema->project.idea.value.empty());
+        if (!plan.error.empty()) return kk::fail("mcp", plan.error);
+        bool again = !s->sent.empty();
+        if (auto r = launch("prototype", plan.args); !r) return std::unexpected(r.error());
+        if (!again && plan.sent == "task") s->sent = plan.sent;  // design / expand mark it themselves when they end
+        s->sent_at = core::unix_now();
+        (void)agents::save_sketch(root, *s);
+        std::string what = plan.sent == "design"   ? "the architect designs the top level from the idea and the prototype (karkas design --sketch)"
+                           : plan.sent == "expand" ? "the architect expands " + s->scope + " from the prototype (karkas expand --sketch)"
+                                                   : "the orchestrator adds what the prototype shows as a change (a ticket" +
+                                                         (s->scope.empty() ? std::string(")") : ", limited to " + s->scope + ")");
+        std::string serve = mode_of() == "mcp" ? " Its agents wait for their model (mode mcp: you): kk_agent_next(list=true) shows who waits." : "";
+        return fmt::format("started in the background: {}.{} The result names what is kept, renamed or left out and the "
+                           "architect's variants (C-NNNN) for the user to approve or reject; kk_prototype(action=view) shows the "
+                           "check afterwards.",
+                           what, serve);
+      }
+      return kk::fail("mcp", "action is view, set or send");
     };
     o.implement = [launch, mode_of](const std::string& target) -> kk::Result<std::string> {
       auto id = "implement-" + target;

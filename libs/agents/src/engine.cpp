@@ -1586,6 +1586,8 @@ std::string prototype_hints(const fs::path& root, const core::Schema& schema, co
 // The prototype after the architect: what is kept, renamed, left out, and the variants offered.
 std::string prototype_summary(const fs::path& root, Sketch s, const core::Schema& schema, const ArchitectToolHost& host,
                               const std::string& sent) {
+  // The file as it is now (the user may have moved the ghosts in karkas-gui while the architect worked).
+  if (auto now = load_sketch(root); now && !now->empty() && now->scope == s.scope) s = *now;
   for (const auto& [k, v] : host.sketch_map()) s.map[k] = v;
   s.sent = sent;
   s.sent_at = core::unix_now();

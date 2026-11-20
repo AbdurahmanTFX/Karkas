@@ -133,6 +133,7 @@ SchemaShape shape_of(const core::Schema& s) {
   SchemaShape out;
   for (const auto& b : s.blocks) {
     out.blocks.insert(b.id);
+    if (b.kind == core::BlockKind::Group) out.groups.insert(b.id);
     if (b.kind == core::BlockKind::Group && b.children.empty()) out.childless_groups.insert(b.id);
   }
   for (const auto& l : s.links()) out.links.emplace_back(l.src_block, l.dst_block);
@@ -204,6 +205,129 @@ std::vector<std::string> unexplained_gaps(const Sketch& s, const SketchCheck& c,
     if (c.links[i] == 0 && ends_found && !(names(l.from) && names(l.to))) out.push_back(fmt::format("dependency {} -> {} is not kept", l.from, l.to));
   }
   return out;
+}
+
+PrototypeSend plan_prototype_send(const Sketch& s, const SchemaShape& shape, bool idea_known) {
+  PrototypeSend p;
+  auto as_task = [&](const Sketch& what) {
+    p.text = sketch_task(what);
+    p.args = {"task"};
+    if (!s.scope.empty()) p.args.insert(p.args.end(), {"--block", s.scope});
+    p.args.push_back(p.text);
+    p.sent = "task";
+  };
+  if (!s.scope.empty() && !shape.groups.contains(s.scope)) {
+    p.error = shape.blocks.contains(s.scope) ? fmt::format("{} is not a group: a prototype is drawn on the top level or inside a group", s.scope)
+                                             : fmt::format("the level {} of the prototype is not a block any more", s.scope);
+    return p;
+  }
+  if (!s.sent.empty()) {
+    // Sent before: only what the schema does not have yet.
+    auto c = check_sketch(s, shape);
+    Sketch rest = s;
+    rest.blocks.clear();
+    rest.links.clear();
+    for (const auto& b : s.blocks) {
+      if (c.found[s.id_of(b)].empty()) rest.blocks.push_back(b);
+    }
+    for (std::size_t i = 0; i < s.links.size() && i < c.links.size(); ++i) {
+      if (c.links[i] == 0) rest.links.push_back(s.links[i]);
+    }
+    if (rest.empty()) {
+      p.error = "everything of the prototype is in the schema (dependencies through groups come when they are expanded)";
+      return p;
+    }
+    as_task(rest);
+    return p;
+  }
+  if (auto why = sketch_problems(s, shape.blocks); !why.empty()) {
+    p.error = why;
+    return p;
+  }
+  bool empty = std::none_of(shape.blocks.begin(), shape.blocks.end(), [&](const std::string& id) { return core::parent_id(id) == s.scope; });
+  if (s.scope.empty() && empty) {
+    if (!idea_known && core::trim(s.idea).empty()) {
+      p.error = "write the idea first: the architect builds from the idea and the sketch";
+      return p;
+    }
+    p.args = {"design", "--sketch"};
+    p.sent = "design";
+  } else if (empty) {
+    p.args = {"expand", s.scope, "--sketch"};
+    p.sent = "expand";
+  } else {
+    as_task(s);
+  }
+  return p;
+}
+
+std::string sketch_report(const Sketch& s, const SchemaShape& shape) {
+  std::string out = sketch_text(s);
+  if (s.sent.empty()) return out + "state  a draft: not given to the agents yet\n";
+  auto c = check_sketch(s, shape);
+  out += fmt::format("state  given to the agents ({}); kept {}/{} blocks, {}/{} dependencies\n", s.sent, c.kept_blocks(), s.blocks.size(),
+                     c.kept_links(), s.links.size());
+  for (const auto& b : s.blocks) {
+    auto id = s.id_of(b);
+    const auto& f = c.found[id];
+    out += f.empty() ? fmt::format("missing {}\n", id) : f == id ? fmt::format("kept    {}\n", id) : fmt::format("kept    {} as {}\n", id, f);
+  }
+  for (std::size_t i = 0; i < s.links.size() && i < c.links.size(); ++i) {
+    const char* st = c.links[i] == 1 ? "kept   " : c.links[i] == -1 ? "pending" : "missing";
+    out += fmt::format("{} {} -> {}{}\n", st, s.links[i].from, s.links[i].to, c.links[i] == -1 ? " (comes with the expansion of its group)" : "");
+  }
+  return out;
+}
+
+kk::Result<Sketch> sketch_from_json(std::string_view text) {
+  auto j = json::parse(text, nullptr, false);
+  if (!j.is_object()) return kk::fail("prototype", "the sketch is not a JSON object");
+  auto str = [](const json& o, const char* k) { return o.contains(k) && o[k].is_string() ? o[k].get<std::string>() : std::string(); };
+  Sketch s;
+  s.scope = str(j, "level") == "root" ? std::string() : str(j, "level");
+  s.idea = str(j, "idea");
+  if (j.contains("blocks") && j["blocks"].is_array()) {
+    for (const auto& b : j["blocks"]) {
+      if (b.is_object()) s.blocks.push_back({str(b, "name"), str(b, "purpose"), str(b, "kind"), 0, 0});
+    }
+  }
+  auto full = [&](const std::string& n) {
+    for (const auto& b : s.blocks) {
+      if (b.name == n) return s.id_of(b);
+    }
+    return n;
+  };
+  if (j.contains("dependencies") && j["dependencies"].is_array()) {
+    for (const auto& d : j["dependencies"]) {
+      if (d.is_object()) s.links.push_back({full(str(d, "from")), full(str(d, "to")), str(d, "note")});
+    }
+  }
+  return s;
+}
+
+void lay_out_sketch(Sketch& s) {
+  // Column of a block = the longest chain of dependencies of the sketch that leads to it.
+  std::map<std::string, int> col;
+  for (const auto& b : s.blocks) col[s.id_of(b)] = 0;
+  for (std::size_t round = 0; round < s.blocks.size(); ++round) {
+    bool moved = false;
+    for (const auto& l : s.links) {
+      if (!col.contains(l.from) || !col.contains(l.to)) continue;
+      if (col[l.to] < col[l.from] + 1 && col[l.from] + 1 < static_cast<int>(s.blocks.size())) {
+        col[l.to] = col[l.from] + 1;
+        moved = true;
+      }
+    }
+    if (!moved) break;  // (a cycle stops at the number of blocks)
+  }
+  std::map<int, int> rows;
+  for (auto& b : s.blocks) {
+    if (b.x != 0 || b.y != 0) continue;
+    int c = col[s.id_of(b)];
+    int r = rows[c]++;
+    b.x = static_cast<float>(c) * 320.0f;
+    b.y = static_cast<float>(r) * 170.0f;
+  }
 }
 
 std::map<std::string, std::string> parse_sketch_map(std::string_view text) {
