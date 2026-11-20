@@ -326,15 +326,15 @@ std::vector<Tool> NotesToolHost::tools() const {
   };
 }
 
-bool NotesToolHost::exists(const std::string& id) const { return s_.find(id) != nullptr || new_topics_.contains(id) || new_notes_.contains(id); }
+bool NotesToolHost::known_block(const std::string& id) const { return s_.find(id) != nullptr || new_topics_.contains(id) || new_notes_.contains(id); }
 
-bool NotesToolHost::is_topic(const std::string& id) const {
+bool NotesToolHost::topic_block(const std::string& id) const {
   if (new_topics_.contains(id)) return true;
   const auto* b = s_.find(id);
   return b != nullptr && b->kind == core::BlockKind::Group;
 }
 
-std::string NotesToolHost::title_of(const std::string& id) const {
+std::string NotesToolHost::title_for(const std::string& id) const {
   if (const auto* b = s_.find(id)) return b->purpose.value;
   for (const auto& e : edits_) {
     if (e.id == id && !e.title.empty()) return e.title;
@@ -342,18 +342,18 @@ std::string NotesToolHost::title_of(const std::string& id) const {
   return id;
 }
 
-std::string NotesToolHost::text_of(const std::string& id) const {
+std::string NotesToolHost::text_for(const std::string& id) const {
   if (auto it = texts_.find(id); it != texts_.end()) return it->second;
   const auto* b = s_.find(id);
   return b != nullptr ? read_text(s_.root, core::note_file(*b)) : std::string();
 }
 
-std::string NotesToolHost::new_id(const std::string& parent, const std::string& title) {
+std::string NotesToolHost::fresh_note_id(const std::string& parent, const std::string& title) {
   auto seg = core::ident_from_title(title);
   auto base = parent.empty() ? seg : parent + "." + seg;
   auto id = base;
   std::error_code ec;
-  for (int n = 2; exists(id) || fs::exists(s_.blocks_root() / core::id_to_rel_path(id), ec); ++n) id = base + "_" + std::to_string(n);
+  for (int n = 2; known_block(id) || fs::exists(s_.blocks_root() / core::id_to_rel_path(id), ec); ++n) id = base + "_" + std::to_string(n);
   return id;
 }
 
@@ -363,7 +363,7 @@ ToolOutcome NotesToolHost::call(const ToolCall& c) {
   auto err = [](std::string m) { return ToolOutcome{std::move(m), true, false}; };
   if (c.name == "notes_overview") {
     auto topic = jstr(j, "topic");
-    if (!topic.empty() && !is_topic(topic)) return err("no topic " + topic + " (notes_overview with no topic lists all)");
+    if (!topic.empty() && !topic_block(topic)) return err("no topic " + topic + " (notes_overview with no topic lists all)");
     auto out = notes_overview(s_, topic);
     for (const auto& e : edits_) {
       if (e.kind != "write") out += fmt::format("(proposed in this run) {} {} \"{}\"\n", e.kind, e.id, e.title);
@@ -372,8 +372,8 @@ ToolOutcome NotesToolHost::call(const ToolCall& c) {
   }
   if (c.name == "read_note") {
     auto id = jstr(j, "note");
-    if (!exists(id)) return err("no note " + id + " (ids are in notes_overview)");
-    if (is_topic(id)) return err(id + " is a topic: notes_overview with topic=" + id + " lists its notes");
+    if (!known_block(id)) return err("no note " + id + " (ids are in notes_overview)");
+    if (topic_block(id)) return err(id + " is a topic: notes_overview with topic=" + id + " lists its notes");
     reads_.push_back(id);
     std::vector<std::string> out_links, in_links;
     for (const auto& l : s_.links()) {
@@ -381,8 +381,8 @@ ToolOutcome NotesToolHost::call(const ToolCall& c) {
       if (l.src_block == id) out_links.push_back(l.dst_block);
       if (l.dst_block == id) in_links.push_back(l.src_block);
     }
-    auto text = text_of(id);
-    std::string r = fmt::format("@note {} \"{}\"\n", id, title_of(id));
+    auto text = text_for(id);
+    std::string r = fmt::format("@note {} \"{}\"\n", id, title_for(id));
     if (!out_links.empty()) r += "links: " + core::join(out_links, ", ") + "\n";
     if (!in_links.empty()) r += "linked from: " + core::join(in_links, ", ") + "\n";
     return {r + "--- text\n" + (text.empty() ? "(empty)\n" : text), false, false};
@@ -394,7 +394,7 @@ ToolOutcome NotesToolHost::call(const ToolCall& c) {
     int hits = 0;
     for (const auto& b : s_.blocks) {
       if (b.kind == core::BlockKind::Group) continue;
-      auto text = text_of(b.id);
+      auto text = text_for(b.id);
       auto all = core::fold_title(b.purpose.value + " " + text);
       bool every = std::all_of(words.begin(), words.end(), [&](const std::string& w) { return core::contains(all, w); });
       if (!every) continue;
@@ -418,7 +418,7 @@ ToolOutcome NotesToolHost::call(const ToolCall& c) {
     auto id = jstr(j, "note");
     std::vector<code::Mention> found;
     if (!id.empty()) {
-      if (!exists(id)) return err("no note " + id);
+      if (!known_block(id)) return err("no note " + id);
       found = code::unlinked_mentions(s_, id);
       auto of = code::mentions_of(s_, id);
       found.insert(found.end(), of.begin(), of.end());
@@ -432,13 +432,13 @@ ToolOutcome NotesToolHost::call(const ToolCall& c) {
       }
     }
     std::string out;
-    for (const auto& m : found) out += fmt::format("{} names \"{}\" ({}) at line {}: {}\n", m.src, title_of(m.dst), m.dst, m.line, m.text);
+    for (const auto& m : found) out += fmt::format("{} names \"{}\" ({}) at line {}: {}\n", m.src, title_for(m.dst), m.dst, m.line, m.text);
     return {out.empty() ? "no plain mentions of titles\n" : out, false, false};
   }
   if (c.name == "write_note") {
     auto id = jstr(j, "note");
     auto text = jstr(j, "text");
-    if (!exists(id) || is_topic(id)) return err("no note " + id + " (new_note makes one)");
+    if (!known_block(id) || topic_block(id)) return err("no note " + id + " (new_note makes one)");
     if (text.size() > kMaxText) return err(fmt::format("the text is {} characters: at most {}", text.size(), kMaxText));
     if (!text.empty() && !text.ends_with('\n')) text += '\n';
     // A note new in this run: its own edit gets the text.
@@ -449,7 +449,7 @@ ToolOutcome NotesToolHost::call(const ToolCall& c) {
         return {"proposed: the new text of " + id, false, false};
       }
     }
-    edits_.push_back(NoteEdit{"write", id, "", "", text, text_of(id)});
+    edits_.push_back(NoteEdit{"write", id, "", "", text, text_for(id)});
     texts_[id] = text;
     return {"proposed: the new text of " + id + " (the human approves it)", false, false};
   }
@@ -459,11 +459,11 @@ ToolOutcome NotesToolHost::call(const ToolCall& c) {
     auto title = std::string(core::trim(jstr(j, "title")));
     if (title.empty()) return err("a title is needed");
     if (title.find_first_of("[]|\n") != std::string::npos) return err("a title cannot hold [ ] | or a line break");
-    if (!parent.empty() && !is_topic(parent)) return err("no topic " + parent);
+    if (!parent.empty() && !topic_block(parent)) return err("no topic " + parent);
     auto text = jstr(j, "text");
     if (text.size() > kMaxText) return err(fmt::format("the text is {} characters: at most {}", text.size(), kMaxText));
     if (!topic && !text.empty() && !text.ends_with('\n')) text += '\n';
-    auto id = new_id(parent, title);
+    auto id = fresh_note_id(parent, title);
     edits_.push_back(NoteEdit{topic ? "topic" : "note", id, parent, title, topic ? "" : text, ""});
     (topic ? new_topics_ : new_notes_).insert(id);
     if (!topic) texts_[id] = text;

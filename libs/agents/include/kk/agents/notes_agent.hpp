@@ -81,11 +81,11 @@ class NotesToolHost final : public IToolHost {
   [[nodiscard]] const std::string& summary() const { return summary_; }
 
  private:
-  [[nodiscard]] std::string text_of(const std::string& id) const;  // with this run's edits
-  [[nodiscard]] std::string title_of(const std::string& id) const;
-  [[nodiscard]] bool exists(const std::string& id) const;
-  [[nodiscard]] bool is_topic(const std::string& id) const;
-  std::string new_id(const std::string& parent, const std::string& title);
+  [[nodiscard]] std::string text_for(const std::string& id) const;  // with this run's edits
+  [[nodiscard]] std::string title_for(const std::string& id) const;
+  [[nodiscard]] bool known_block(const std::string& id) const;
+  [[nodiscard]] bool topic_block(const std::string& id) const;
+  std::string fresh_note_id(const std::string& parent, const std::string& title);
   const core::Schema& s_;
   std::string scope_;
   std::vector<NoteEdit> edits_;
