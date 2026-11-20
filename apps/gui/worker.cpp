@@ -13,6 +13,7 @@
 
 #include "kk/agents/changes.hpp"
 #include "kk/agents/engine.hpp"
+#include "kk/agents/run.hpp"
 #include "kk/code/analyzer.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
@@ -122,6 +123,26 @@ void Worker::undo() {
 void Worker::reload_config() {
   post([this] {
     if (auto c = core::load_config(root_)) cfg_ = std::move(*c);
+  });
+}
+
+void Worker::refresh_run() {
+  post([this] {
+    RunInfo info;
+    info.known = true;
+    auto cfg = core::load_config(root_);
+    auto schema = core::load_schema(root_);
+    if (!cfg || !schema) {
+      info.error = !cfg ? cfg.error().str() : schema.error().str();
+    } else {
+      auto t = agents::run_target(*schema, *cfg);
+      info.shown = t.shown;
+      info.run_command = cfg->run_command;
+      info.generated = t.generated;
+      info.error = t.error;
+      info.candidates = agents::program_candidates(root_, *cfg);
+    }
+    run_info_ = std::move(info);
   });
 }
 
@@ -542,6 +563,7 @@ void Worker::loop() {
     m->message = message_;
     m->ticket_edit_error = ticket_edit_error_;
     m->ticket_edit_saved = ticket_edit_saved_;
+    m->run = run_info_;
     m->serial = ++serial_;
     {
       std::lock_guard lk(mu_);

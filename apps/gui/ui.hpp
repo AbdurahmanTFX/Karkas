@@ -22,6 +22,7 @@
 #include "kk/core/config.hpp"
 #include "kk/llm/mcp_bridge.hpp"
 #include "picker.hpp"
+#include "run.hpp"
 #include "selectable.hpp"
 #include "settings.hpp"
 #include "ui_common.hpp"
@@ -80,7 +81,7 @@ class Ui {
   enum class SideView { Explorer, Search, Changes, Settings, Chat };
 
   // shell (ui_shell.cpp)
-  void draw_menu();
+  void draw_menu(const Model* m);
   void draw_activity_bar(const Model* m);
   void draw_status_bar(const Model* m);
   void draw_side_bar(const Model* m);
@@ -100,7 +101,7 @@ class Ui {
     [[nodiscard]] float h() const { return max.y - min.y; }
   };
  public:
-  enum class Tile { Side, Inspector, Tickets, Agents, Build, Costs, Drift, Chat, Count };
+  enum class Tile { Side, Inspector, Tickets, Agents, Build, Costs, Drift, Run, Chat, Count };
   enum class TileMode { Docked, Floating, Window };
   // Where a tile is now (a hidden tile: where it was last).
   [[nodiscard]] TileMode tile_mode(Tile t) const;
@@ -167,6 +168,32 @@ class Ui {
   void bottom_tests(const Model& m);
   void bottom_costs(const Model& m);
   void bottom_drift(const Model& m);
+  // build and run (ui_run.cpp, ADR 0037): the green triangle and the stop square at the right of the
+  // menu bar, the Run menu, the Run tab with the output and the program's input.
+  void bottom_run(const Model& m);
+  void draw_run_buttons(const Model* m);
+  void run_menu(const Model* m);
+  void run_shortcuts();
+  void run_status_item(const Model* m);  // in the status bar while a run goes on
+  void run_program_line(const Model& m);  // the program and its editor
+  void start_run(bool build);             // a run going on is stopped and started again
+  void show_run_tab();
+  void save_run_command(const std::string& command);
+  [[nodiscard]] std::string run_status_text() const;
+  std::unique_ptr<RunSession> run_;
+  bool run_restart_ = false;      // stopped to start again
+  bool run_restart_build_ = true;
+  bool run_was_busy_ = false;     // the run ended since the last frame: the build folder changed
+  bool run_info_asked_ = false;
+  bool run_edit_ = false;         // the program's editor is open
+  bool run_edit_focus_ = false;
+  std::string run_edit_buf_;
+  std::string run_msg_;           // the last problem saving the program
+  std::string run_input_;
+  bool run_follow_ = true;        // keep the newest output in view
+  float run_last_scroll_ = 0.0f;  // of the output, last frame
+  std::uint64_t run_serial_ = ~0ULL;
+  std::vector<RunLine> run_cache_;
   // "Clear" (with a confirmation) and "Restore (N)" at the right of a panel's first line.
   void panel_actions(const char* key, int shown, int hidden, const std::function<void()>& clear_all,
                      const std::function<void()>& restore);

@@ -52,6 +52,16 @@ struct ChangeGhost {
   [[nodiscard]] bool empty() const { return blocks.empty() && ports.empty() && links.empty() && touched.empty(); }
 };
 
+// What "build and run" starts (ADR 0037), worked out in the worker when the GUI asks.
+struct RunInfo {
+  bool known = false;
+  std::string shown;        // the program (from the project root) or the command
+  std::string run_command;  // [project] run_command as written ("" = the program Karkas builds)
+  std::string generated;    // the program Karkas's generated CMake builds ("" = none)
+  std::string error;        // nothing to run: why
+  std::vector<std::string> candidates;  // programs in the build folder, newest first
+};
+
 struct Request {
   std::string scope;      // "" = root
   std::string selected;   // block
@@ -88,6 +98,7 @@ struct Model {
   // The last edit of a ticket by hand (ADR 0033): its error, and a counter of the saved ones.
   std::string ticket_edit_error;
   std::uint64_t ticket_edit_saved = 0;
+  RunInfo run;
   std::string message;
   std::string engine;
   double index_ms = 0;
@@ -125,6 +136,8 @@ class Worker {
   void open_block_folder(const std::string& block);
   void reindex();
   void reload_config();
+  // Works out RunInfo again (karkas.toml, the schema, the build folder) for the next model.
+  void refresh_run();
   // Asks one agent run to stop (its stop file; ADR 0019).
   void stop_run(const fs::path& journal);
   // Saves the rows removed from the bottom panels (.karkas/cleared.json).
@@ -154,6 +167,7 @@ class Worker {
   std::string message_;
   std::string ticket_edit_error_;
   std::uint64_t ticket_edit_saved_ = 0;
+  RunInfo run_info_;
   std::uint64_t serial_ = 0;
 };
 

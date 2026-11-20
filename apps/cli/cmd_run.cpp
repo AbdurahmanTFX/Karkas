@@ -79,10 +79,8 @@ AutoRegister reg([](CLI::App& cli, App& app) {
       }
       return;
     }
-    if (!target.ok()) {
-      std::cerr << "karkas: " << agents::run_target_help(target, agents::program_candidates(root, *cfg));
-      std::exit(1);
-    }
+    // The build comes first even when Karkas does not know the program yet: the programs it makes are
+    // what the human chooses from.
     if (!no_build) {
       progress(cfg->build_command.empty() ? "building" : "building: " + cfg->build_command);
       agents::TestService svc(root, *cfg);
@@ -95,6 +93,10 @@ AutoRegister reg([](CLI::App& cli, App& app) {
         die(b->timed_out ? "build timed out" : "build failed");
       }
       progress(fmt::format("built in {:.1f} s", static_cast<double>(b->duration.count()) / 1000.0));
+    }
+    if (!target.ok()) {
+      std::cerr << "karkas: " << agents::run_target_help(target, agents::program_candidates(root, *cfg));
+      std::exit(1);
     }
     if (!target.command && ::access(target.argv[0].c_str(), X_OK) != 0) {
       die(fmt::format("there is no program {} (the build made none: is the entry block's main() there?)", target.shown));

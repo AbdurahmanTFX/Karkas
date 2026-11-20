@@ -7,6 +7,7 @@ fn      run_ticket(id) -> Result<Outcome>
 fn      design(idea) -> Result<Outcome>
 fn      apply_edit(root, EditOp) -> Result<AppliedEdit>
 fn      bench_run(BenchOptions, Config, progress) -> Result<BenchResult[]>
+fn      run_target(Schema, Config, args) -> RunTarget
 call    libs.llm:send
 call    libs.runner:test
 call    libs.index:view

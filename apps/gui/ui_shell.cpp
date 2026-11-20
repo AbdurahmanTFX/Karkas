@@ -79,7 +79,7 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
     for (const auto& a : m->active) active_blocks_.insert(a.block);
   }
   (void)first_frame;
-  draw_menu();
+  draw_menu(m);
   if (settings_.show_status) draw_status_bar(m);
   if (settings_.show_activity) draw_activity_bar(m);
   dock_space();
@@ -146,7 +146,7 @@ void Ui::set_tab_visible(const char* key, bool on) {
 
 bool Ui::bottom_visible() const {
   if (!settings_.show_bottom) return false;
-  for (const char* k : {"tickets", "agents", "build", "costs", "drift"}) {
+  for (const char* k : {"tickets", "agents", "build", "costs", "drift", "run"}) {
     if (tab_visible(k)) return true;
   }
   return false;  // every tab hidden: no empty panel
@@ -171,6 +171,7 @@ constexpr std::array<TileInfo, static_cast<std::size_t>(Ui::Tile::Count)> kTiles
     {"build", "###tile_build", ImGuiDir_Down, 60, 22},
     {"costs", "###tile_costs", ImGuiDir_Down, 60, 22},
     {"drift", "###tile_drift", ImGuiDir_Down, 60, 22},
+    {"run", "###tile_run", ImGuiDir_Down, 60, 22},
     {"chat", "###chat_window", ImGuiDir_Right, 52, 48},
 }};
 
@@ -413,7 +414,7 @@ void Ui::draw_windows_menu() {
   if (ImGui::BeginMenu(with_icon(Icon::Layers, tr("Bottom panel tabs")).c_str(), settings_.show_bottom)) {
     for (const auto& [key, label, ic] : {std::tuple{"tickets", "Tickets", Icon::Ticket}, std::tuple{"agents", "Agents", Icon::Agent},
                                          std::tuple{"build", "Build & tests", Icon::Hammer}, std::tuple{"costs", "Costs", Icon::Coins},
-                                         std::tuple{"drift", "Drift", Icon::Wave}}) {
+                                         std::tuple{"drift", "Drift", Icon::Wave}, std::tuple{"run", "Run", Icon::Play}}) {
       bool on = tab_visible(key);
       if (ImGui::MenuItem(with_icon(ic, tr(label)).c_str(), nullptr, &on)) set_tab_visible(key, on);
     }
@@ -429,14 +430,15 @@ void Ui::draw_windows_menu() {
   ImGui::Separator();
   // Where each panel lives (ADR 0032): a tile of the layout, floating, or a window of the desktop.
   if (ImGui::BeginMenu(with_icon(Icon::Dock, tr("Tiles and windows")).c_str())) {
-    const std::array<std::pair<Tile, const char*>, 8> tiles = {{{Tile::Side, "Side bar (explorer, search, changes)"},
+    const std::array<std::pair<Tile, const char*>, 9> tiles = {{{Tile::Side, "Side bar (explorer, search, changes)"},
                                                                 {Tile::Inspector, "Inspector"},
                                                                 {Tile::Chat, "Orchestrator chat"},
                                                                 {Tile::Tickets, "Tickets"},
                                                                 {Tile::Agents, "Agents"},
                                                                 {Tile::Build, "Build & tests"},
                                                                 {Tile::Costs, "Costs"},
-                                                                {Tile::Drift, "Drift"}}};
+                                                                {Tile::Drift, "Drift"},
+                                                                {Tile::Run, "Run"}}};
     for (const auto& [t, label] : tiles) {
       if (ImGui::BeginMenu(tr(label))) {
         tile_menu_items(t);
@@ -475,6 +477,9 @@ void Ui::set_project_root(std::filesystem::path root) {
   cleared_ = load_cleared(root_);
   chat_ = std::make_unique<Chat>(root_, find_karkas_cli(), wake_);
   chat_serial_ = ~0ULL;
+  run_ = std::make_unique<RunSession>(root_, find_karkas_cli(), wake_);
+  run_serial_ = ~0ULL;
+  run_info_asked_ = false;
   feed_ = std::make_unique<JournalFeed>(root_ / ".karkas" / "runs");
   live_journal_.clear();
   load_bends();
@@ -502,7 +507,8 @@ void Ui::show_picker(bool create) {
   picker_open_ = true;
 }
 
-void Ui::draw_menu() {
+void Ui::draw_menu(const Model* m) {
+  run_shortcuts();
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) show_picker();
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_N)) show_picker(true);
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Comma)) show_settings_ = !show_settings_;
@@ -581,6 +587,8 @@ void Ui::draw_menu() {
     if (ImGui::MenuItem(with_icon(Icon::Home, tr("Project root")).c_str())) enter("");
     ImGui::EndMenu();
   }
+  run_menu(m);
+  draw_run_buttons(m);
   ImGui::EndMainMenuBar();
 }
 
@@ -709,6 +717,7 @@ void Ui::draw_status_bar(const Model* m) {
           settings_.show_bottom = true;
         }
       }
+      run_status_item(m);
       if (chat_ && chat_->busy()) {
         float a = static_cast<float>(0.6 + 0.4 * std::sin(pulse_ * 5.0));
         std::string t = chat_->current_ticket();

@@ -10,8 +10,10 @@ call    libs.agents:apply_edit
 call    libs.code:check_drift
 call    libs.metrics:active_runs
 call    libs.metrics:request_stop
+call    libs.agents:run_target
 use     libs.core
 inv     the GUI thread never waits for disk or network
 inv     idle CPU use stays near zero
 inv     clearing a panel writes only .karkas/cleared.json: tickets, journals and logs stay
 inv     the chat runs the same karkas commands a user would type
+inv     the green triangle runs the same karkas run a user would type; closing the GUI ends the program

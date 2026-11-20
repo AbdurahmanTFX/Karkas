@@ -91,8 +91,10 @@ std::optional<InputScript> InputScript::parse(std::string_view text, std::string
         io.AddKeyEvent(ImGuiMod_Ctrl, false);
       });
     } else if (cmd == "key" && w.size() == 2 &&
-               (w[1] == "esc" || w[1] == "enter" || w[1] == "end" || w[1] == "home" || w[1] == "backspace" || w[1] == "down")) {
+               (w[1] == "esc" || w[1] == "enter" || w[1] == "end" || w[1] == "home" || w[1] == "backspace" || w[1] == "down" ||
+                w[1] == "f5")) {
       ImGuiKey k = w[1] == "esc"       ? ImGuiKey_Escape
+                   : w[1] == "f5"      ? ImGuiKey_F5
                    : w[1] == "enter"   ? ImGuiKey_Enter
                    : w[1] == "end"     ? ImGuiKey_End
                    : w[1] == "home"    ? ImGuiKey_Home

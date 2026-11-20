@@ -124,13 +124,16 @@ void Ui::draw_bottom(const Model& m) {
     std::string label;
     void (Ui::*body)(const Model&);
   };
-  const std::array<Tab, 5> tabs = {{
+  std::string run_label = tr("Run");
+  if (run_ && run_->busy()) run_label += run_->phase() == RunPhase::Building ? std::string(" · ") + tr("building") : std::string(" ●");
+  const std::array<Tab, 6> tabs = {{
       {Tile::Tickets, "tickets", Icon::Ticket, fmt::format("{} {}", tr("Tickets"), tickets), &Ui::bottom_tickets},
       {Tile::Agents, "agents", Icon::Agent, m.active.empty() ? std::string(tr("Agents")) : fmt::format("{} {}", tr("Agents"), m.active.size()),
        &Ui::bottom_agents},
       {Tile::Build, "build", Icon::Hammer, tr("Build & tests"), &Ui::bottom_tests},
       {Tile::Costs, "costs", Icon::Coins, tr("Costs"), &Ui::bottom_costs},
       {Tile::Drift, "drift", Icon::Wave, drift_label, &Ui::bottom_drift},
+      {Tile::Run, "run", Icon::Play, run_label, &Ui::bottom_run},
   }};
   if (!bottom_select_.empty() && !tab_visible(bottom_select_.c_str())) set_tab_visible(bottom_select_.c_str(), true);
   bool keep_select = false;
@@ -140,6 +143,13 @@ void Ui::draw_bottom(const Model& m) {
     bool select = bottom_select_ == tab.key;
     if (select) ImGui::SetNextWindowFocus();
     if (select && ImGui::FindWindowByName((std::string("###tile_") + tab.key).c_str()) == nullptr) keep_select = true;
+    // A tile added after the layout was saved (the Run tab, ADR 0037): docked with the bottom tabs
+    // the first time it is drawn, not floating in the middle.
+    std::string window = std::string("###tile_") + tab.key;
+    if (ImGui::FindWindowByName(window.c_str()) == nullptr && ImGui::FindWindowSettingsByID(ImHashStr(window.c_str())) == nullptr &&
+        tile_request_[static_cast<std::size_t>(tab.tile)] == 0 && tile_mode(tab.tile) == TileMode::Docked) {
+      tile_request_[static_cast<std::size_t>(tab.tile)] = 1;
+    }
     bool open = true;
     bool visible = begin_tile(tab.tile, with_icon(tab.ic, tab.label), &open, theme::kSideBg, ImVec2(10, 6));
     if (visible) {
