@@ -699,3 +699,16 @@
   inspector with text, links and backlinks, search in texts; run, build, agents and chat hidden.
 - Not done: agents for notes (next stage), word wrap while editing (ImGui 1.91.9 has none).
 - Tests 380; checked under Xvfb (both modes, a folder of notes, editing, links drawn, rename, remove/undo).
+
+## Addition — agents for notes: the notes assistant, AI proposals, mentions without a link (docs/adr/0039)
+
+- Without a model: mentions without a link (a note names another note's title in plain words), listed in the
+  inspector and linked in one click.
+- `Engine::notes` / `karkas notes "<request>" [--block id]`: one assistant run ([roles] notes, medium) over the
+  overview of the notes with tools to read, search, find mentions and propose: a note's new text, a new note, a
+  new topic. Its edits are a proposal N-NNNN, applied all or nothing when approved (refused when a note changed
+  since), at once with auto_approve; `karkas proposal list | show | approve | reject`. `task` in a notes project
+  goes to the assistant (and so MCP kk_task).
+- karkas-gui: the chat is the "Notes assistant" in a notes project; answers carry Show / Approve / Reject; the
+  side bar's "AI proposals" shows each with its diff; the inspector has Ask and the mentions.
+- Not verified here: a real model run (no API key). Tests 386; checked under Xvfb with a prepared proposal.
