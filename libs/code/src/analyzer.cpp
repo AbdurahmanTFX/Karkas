@@ -1,5 +1,7 @@
 #include "kk/code/analyzer.hpp"
 
+#include "kk/core/notes.hpp"
+
 #include <fmt/format.h>
 #include <tree_sitter/api.h>
 
@@ -426,6 +428,7 @@ std::vector<std::string> allowed_api_blocks(const core::Schema& schema, std::str
 
 index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::IndexFacts& facts) {
   index::CheckOutput out;
+  if (core::is_notes_project(schema.project)) return out;  // notes hold no code to drift from (docs/adr/0038)
   const auto& dirs = schema.project.dirs;
   auto issue = [&](std::string code, char sev, std::string block, std::string msg, std::string file, int line) {
     out.issues.push_back(core::Issue{std::move(code), sev, std::move(block), std::move(msg), {std::move(file), line, 0}});

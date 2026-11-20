@@ -2,6 +2,7 @@
 // where they are, folders become topics.
 #include <doctest/doctest.h>
 
+#include "kk/code/drift.hpp"
 #include "kk/code/init.hpp"
 #include "kk/code/notes.hpp"
 #include "kk/core/notes.hpp"
@@ -119,4 +120,14 @@ TEST_CASE("notes: links added and removed from the schema, titles changed with t
   for (const auto& l : load().links()) refs += l.kind == core::LinkKind::Ref && l.dst_block == "story" ? 1 : 0;
   CHECK(refs == 0);
   CHECK_FALSE(code::add_note_link(load(), "game", "nothing"));
+}
+
+TEST_CASE("notes: a note made in Karkas is no leaf of code — no drift checks (contract tests, api)") {
+  test::TempDir d{"vault_drift"};
+  test::write(d / "project.ksl", "@project vault\nlang notes\n");
+  test::write(d / "blocks/idea/block.ksl", "@block idea\npurpose Идея\nkind leaf\n");
+  test::write(d / "blocks/idea/note.txt", "текст\n");
+  auto s = core::load_schema(d.path());
+  REQUIRE(s);
+  CHECK(code::check_drift(*s).empty());
 }
