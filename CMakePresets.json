@@ -69,6 +69,12 @@
       "execution": { "noTestsAction": "error", "timeout": 600 }
     },
     {
+      "name": "dev-fast",
+      "inherits": "dev",
+      "description": "dev without the tests labelled slow: real builds of reference projects (ADR 0029)",
+      "filter": { "exclude": { "label": "slow" } }
+    },
+    {
       "name": "asan",
       "configurePreset": "asan",
       "output": { "outputOnFailure": true }

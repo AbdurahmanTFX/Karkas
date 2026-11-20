@@ -38,8 +38,10 @@ llm::Response tool_response(const std::string& name, const json& input, llm::Usa
 struct FakeTests final : agents::ITestService {
   std::function<agents::TestRun(const std::vector<std::string>&)> fn;
   std::vector<std::vector<std::string>> calls;
+  std::vector<std::vector<std::string>> compile_calls;  // files of each compile_check (ADR 0028)
   std::mutex mu;
   kk::Result<agents::TestRun> build_and_test(const std::vector<std::string>& blocks, bool build_only) override;
+  kk::Result<agents::TestRun> compile_check(const std::vector<std::string>& files) override;
 };
 
 core::Config test_config();

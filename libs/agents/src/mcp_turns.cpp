@@ -1,5 +1,7 @@
 #include "kk/agents/mcp_turns.hpp"
 
+#include "kk/agents/launcher.hpp"
+
 #include <fmt/format.h>
 
 #include <chrono>
@@ -335,12 +337,19 @@ std::string McpTurns::next(const std::string& run, int wait_s, bool list, const 
   while (true) {
     auto turns = queue_.waiting();
     if (list) {
+      // Nothing waits and every ticket this server started has ended: no turn can come any more.
+      if (turns.empty() && tickets_running && tickets_running() == 0) {
+        return "No agent turn waits, and the tickets this server started have ended (their result below; report from it)." +
+               status_text();
+      }
       if (!turns.empty() || std::chrono::steady_clock::now() - t0 >= std::chrono::seconds(wait_s)) {
         if (turns.empty()) return "No agent turn waits." + status_text();
         std::string out = "Turns waiting for their model:\n";
         for (const auto& t : turns) {
+          bool launched = fs::exists(RunLauncher::marker(root_, t.run));
           out += fmt::format("- run {} (turn {}): {} · tier {} → {}, subagent {} · waiting {} s{}\n", t.run, t.seq, who(t), t.tier, t.model,
-                             t.subagent, std::max<std::int64_t>(0, now - t.ts), t.taken ? " · taken" : "");
+                             t.subagent, std::max<std::int64_t>(0, now - t.ts),
+                             launched ? " · served by Karkas's own session (launch), leave it" : (t.taken ? " · taken" : ""));
         }
         out += "Serve a run with kk_agent_next(run=\"<run>\") and kk_agent_act until it ends — yourself when you run its model, "
                "otherwise through its subagent.";
@@ -350,8 +359,10 @@ std::string McpTurns::next(const std::string& run, int wait_s, bool list, const 
       const llm::McpTurn* pick = nullptr;
       for (const auto& t : turns) {
         if (!run.empty() && t.run != run) continue;
-        // A turn another client took is left to it, unless it was abandoned (2 min) or asked by run.
+        // A turn another client took is left to it, unless it was abandoned (2 min) or asked by run; so is
+        // a run Karkas serves with its own session (ADR 0029).
         if (run.empty() && t.taken && now - t.taken_ts < 120) continue;
+        if (run.empty() && fs::exists(RunLauncher::marker(root_, t.run))) continue;
         pick = &t;
         break;
       }
@@ -361,11 +372,17 @@ std::string McpTurns::next(const std::string& run, int wait_s, bool list, const 
         if (!req) return "turn " + pick->id + " is gone (its run ended)";
         return show(*pick, *req, !follows(*pick, after), seen);
       }
-      if (!run.empty() && run_end(run).empty()) {
+      // The run has ended: no turn of it will come, say so now (ADR 0029).
+      if (!run.empty()) {
+        if (auto end = run_end(run); !end.empty()) return fmt::format("Run {} ended: {}.", run, end) + status_text();
+      }
+      if (!run.empty()) {
         // The run (still going) waits on a nested run of its ticket: that one comes first.
         llm::McpTurn own;
         own.run = run;
-        if (auto ticket = ticket_of_run(run); !ticket.empty()) {
+        // A run Karkas serves with its own session leaves a nested run to a session of that run's tier: the
+        // asks of a cheap leaf were served at the price of the Opus orchestrator (Endless Sky C3, ADR 0029).
+        if (auto ticket = ticket_of_run(run); !ticket.empty() && !fs::exists(RunLauncher::marker(root_, run))) {
           own.ticket = ticket;
           if (const auto* n = nested_turn(turns, own)) {
             queue_.take(n->id);
@@ -428,8 +445,9 @@ kk::Result<std::string> McpTurns::act(const std::string& turn, const std::string
                          "another subagent).",
                          t->run, end);
     }
-    // ... or it waits on a nested run of the same ticket (an `ask`): serve that one now.
-    if (const auto* n = nested_turn(waiting, *t)) {
+    // ... or it waits on a nested run of the same ticket (an `ask`): serve that one now — unless Karkas serves
+    // the runs itself, which gives the nested run a session of its own tier (ADR 0029).
+    if (const auto* n = fs::exists(RunLauncher::marker(root_, t->run)) ? nullptr : nested_turn(waiting, *t)) {
       queue_.take(n->id);
       if (auto nreq = queue_.request(n->id)) return nested_note(*n, t->run, turn) + show(*n, *nreq, true, {});
     }

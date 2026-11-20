@@ -183,7 +183,12 @@ VoidResult apply_config_text(Config& cfg, std::string_view text, std::string_vie
   get(t, "project", "build", cfg.build);
   get(t, "project", "build_dir", cfg.build_dir);
   get(t, "project", "cmake_args", cfg.cmake_args);
+  get(t, "project", "build_command", cfg.build_command);
+  get(t, "project", "verify_command", cfg.verify_command);
+  get(t, "project", "compile_commands", cfg.compile_commands);
   get(t, "test", "command", cfg.test_command);
+  get(t, "test", "dir", cfg.test_dir);
+  get(t, "test", "guide", cfg.test_guide);
 
   if (const auto* models = t.get_as<toml::table>("models")) {
     for (const auto& [name, node] : *models) {
@@ -241,6 +246,9 @@ VoidResult apply_config_text(Config& cfg, std::string_view text, std::string_vie
   get(t, "agents", "auto_approve", cfg.auto_approve);
   get(t, "agents", "mode", cfg.agents_mode);
   get(t, "agents", "mcp_wait_s", cfg.mcp_wait_s);
+  get(t, "agents", "launch", cfg.mcp_launch);
+  get(t, "agents", "launch_command", cfg.mcp_launch_command);
+  get(t, "agents", "launch_budget_usd", cfg.mcp_launch_budget_usd);
   if (cfg.agents_mode != "api" && cfg.agents_mode != "mcp") {
     return fail("config", fmt::format("[agents] mode must be \"api\" or \"mcp\", got \"{}\"", cfg.agents_mode),
                 SourceLoc{std::string(file), 0, 0});
@@ -248,6 +256,7 @@ VoidResult apply_config_text(Config& cfg, std::string_view text, std::string_vie
   // The GUI writes string values ("true"): accept them as well.
   if (auto v = t["agents"]["auto_approve"].value<std::string>()) cfg.auto_approve = *v == "true" || *v == "on" || *v == "1";
   get(t, "agents", "review_changes", cfg.review_changes);
+  get(t, "agents", "done_needs_change", cfg.done_needs_change);
   if (auto v = t["agents"]["review_changes"].value<std::string>()) cfg.review_changes = *v == "true" || *v == "on" || *v == "1";
   if (cfg.cache_ttl != "5m" && cfg.cache_ttl != "1h") {
     return fail("config", fmt::format("[cache] ttl must be \"5m\" or \"1h\", got \"{}\"", cfg.cache_ttl),

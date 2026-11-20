@@ -31,9 +31,12 @@ class McpTurns {
   // of the same run with only what is new, or how the run ended. Waits up to wait_s.
   kk::Result<std::string> act(const std::string& turn, const std::string& text, const std::string& calls_json, int wait_s);
 
-  // Lines about the tickets this server started (still running or how they ended); set by
-  // `karkas mcp`, shown when no turn waits.
+  // Lines about the tickets this server started (still running or how they ended, with the result
+  // of an ended one); set by `karkas mcp`, shown when no turn waits.
   std::function<std::string()> tickets_status;
+  // How many tickets or commands this server started still run; -1 when it started none. Set by
+  // `karkas mcp`: a list wait ends as soon as they have all ended, not when wait_s runs out (ADR 0029).
+  std::function<int()> tickets_running;
 
  private:
   [[nodiscard]] std::string run_end(const std::string& run) const;  // "" while the run goes on

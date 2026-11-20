@@ -77,7 +77,9 @@ class Engine {
   kk::Result<TestRun> test(const std::string& block);
 
   // Context texts (exposed for tests: the orchestrator never sees code).
-  std::string context_for(Role role, const std::string& block);
+  // task: what the agent is asked; a worker of an imported block then gets the declarations of the
+  // linked headers that the functions the task names use (ADR 0029).
+  std::string context_for(Role role, const std::string& block, const std::string& task = {});
 
  private:
   Engine(fs::path root, core::Config cfg, EngineOptions opts);

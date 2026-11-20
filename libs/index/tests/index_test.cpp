@@ -259,3 +259,74 @@ TEST_CASE("watch: inotify reports card and ticket changes after a debounce (GUI 
   w.stop();
   CHECK_FALSE(w.running());
 }
+
+TEST_CASE("index: a new ticket or run journal alone refreshes those tables without analyzing or checking the code (ADR 0029)") {
+  test::FixtureCopy p("wavkit");
+  auto idx = open_index(p.path());
+  update(*idx);
+  auto drift_before = idx->snapshot().drift.size();
+  test::write(p / ".karkas/tickets/T-0002.ksl",
+              "@ticket T-0002\nkind    feature\norigin  human\nstatus  open\ntask    louder\n--- trail\n");
+  test::write(p / ".karkas/runs/20261114-worker-stream.ring.jsonl",
+              "{\"type\":\"run_end\",\"ticket\":\"T-0002\",\"role\":\"worker\",\"block\":\"stream.ring\",\"outcome\":\"done\",\"ts\":1}\n");
+  auto st = update(*idx);
+  CHECK(st.changed);
+  CHECK(st.service_only);
+  CHECK(st.analyzed == 0);
+  auto snap = idx->snapshot();
+  REQUIRE(snap.tickets.size() == 1);
+  CHECK(snap.tickets[0].id == "T-0002");
+  CHECK(idx->runs().size() == 1);
+  CHECK(snap.drift.size() == drift_before);
+  // Nothing new: the fast path; a card change: the whole update again.
+  CHECK_FALSE(update(*idx).changed);
+  auto card = p / "blocks/stream/ring/block.ksl";
+  test::write(card, test::read(card) + "\nnote    a change of the card\n");
+  auto st2 = update(*idx);
+  CHECK(st2.changed);
+  CHECK_FALSE(st2.service_only);
+}
+
+TEST_CASE("index: a run served by a launched Claude Code session gets that session's cost (ADR 0031)") {
+  test::FixtureCopy p("wavkit");
+  const std::string run = "20261120-101010-001-worker-stream.ring.jsonl";
+  test::write(p / ".karkas/runs" / run,
+              "{\"type\":\"run_start\",\"ticket\":\"T-0001\",\"ts\":1790000000}\n"
+              "{\"type\":\"run_end\",\"ticket\":\"T-0001\",\"role\":\"worker\",\"block\":\"stream.ring\",\"provider\":\"mcp\","
+              "\"model\":\"claude-sonnet-5-5\",\"tier\":\"medium\",\"attempt\":1,\"input_tokens\":900,\"output_tokens\":80,"
+              "\"cache_write_tokens\":4000,\"cache_write_1h_tokens\":4000,\"cache_read_tokens\":3000,\"cost_usd\":0.02,"
+              "\"duration_ms\":900,\"steps\":3,\"outcome\":\"done\",\"ts\":1790000100}\n");
+  // The session's result reached costs.jsonl after the run had been indexed: the row follows it.
+  auto idx = open_index(p.path());
+  update(*idx);
+  REQUIRE(idx->runs().size() == 1);
+  CHECK_FALSE(idx->runs()[0].session_cost);
+  CHECK(idx->runs()[0].cache_write_1h_tokens == 4000);
+  const std::string session =
+      "{\"run\":\"" + run + "\",\"model\":\"claude-sonnet-5-5\",\"cost_usd\":0.0703,\"is_error\":true,\"usage\":{"
+      "\"input_tokens\":6,\"cache_creation_input_tokens\":16821,\"cache_read_input_tokens\":21224,\"output_tokens\":84,"
+      "\"cache_creation\":{\"ephemeral_1h_input_tokens\":16821}}}\n";
+  test::write(p / ".karkas/mcp/launch/costs.jsonl", session);
+  update(*idx);
+  auto r = idx->runs()[0];
+  CHECK(r.session_cost);
+  CHECK(r.cost_usd == doctest::Approx(0.0703));
+  CHECK(r.cache_write_tokens == 16821);
+  CHECK(r.cache_write_1h_tokens == 16821);
+  CHECK(r.cache_read_tokens == 21224);
+  // A second session of the run (after a refusal) adds to it.
+  test::write(p / ".karkas/mcp/launch/costs.jsonl",
+              session + "{\"run\":\"" + run + "\",\"model\":\"claude-opus-5-5\",\"cost_usd\":0.5746,\"usage\":{\"input_tokens\":22,"
+                        "\"cache_creation_input_tokens\":45524,\"cache_read_input_tokens\":318412,\"output_tokens\":7334}}\n");
+  update(*idx);
+  r = idx->runs()[0];
+  CHECK(r.cost_usd == doctest::Approx(0.6449));
+  CHECK(r.output_tokens == 84 + 7334);
+  // A rebuild from scratch reads both again.
+  idx.reset();
+  fs::remove(p / ".karkas/index.db");
+  auto idx2 = open_index(p.path());
+  update(*idx2);
+  CHECK(idx2->runs()[0].session_cost);
+  CHECK(idx2->runs()[0].cost_usd == doctest::Approx(0.6449));
+}

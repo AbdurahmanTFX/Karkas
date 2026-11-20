@@ -6,15 +6,58 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <map>
+#include <nlohmann/json.hpp>
+#include <optional>
 #include <regex>
 #include <set>
 
 #include "kk/code/gen.hpp"
+#include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/index/index.hpp"
 #include "kk/runner/runner.hpp"
 
 namespace kk::agents {
+
+namespace {
+
+// The behaviour tests a tester wrote in this ticket (ADR 0029), for the project's test command: it gets
+// them in KK_TEST_FILES and may run only those, not its whole suite.
+std::string with_ticket_tests(const std::filesystem::path& root, const std::string& test_dir, const std::string& command) {
+  auto list = core::read_file(root / ".karkas" / "cache" / "ticket_tests.txt");
+  if (!list) return command;
+  std::vector<std::string> files;
+  std::int64_t since = -1;
+  for (const auto& l : core::split(*list, '\n')) {
+    auto f = std::string(core::trim(l));
+    if (f.starts_with('#')) {  // "# T-0001 since=<unix s>": whose list, and from when the test folder's new files count
+      if (auto at = f.find("since="); at != std::string::npos) since = std::atoll(f.c_str() + at + 6);
+      continue;
+    }
+    if (!f.empty() && f.find('\'') == std::string::npos) files.push_back(f);
+  }
+  if (since >= 0 && !test_dir.empty()) {
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(root / test_dir, ec)) {
+      if (!e.is_regular_file(ec)) continue;
+      auto mt = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::clock_cast<std::chrono::system_clock>(std::filesystem::last_write_time(e.path(), ec)).time_since_epoch())
+                    .count();
+      auto rel = core::rel_str(root, e.path());
+      if (mt >= since && std::find(files.begin(), files.end(), rel) == files.end() && rel.find('\'') == std::string::npos) {
+        files.push_back(rel);
+      }
+    }
+  }
+  if (files.empty()) return command;
+  return "export KK_TEST_FILES='" + core::join(files, " ") + "'; " + command;
+}
+
+}  // namespace
+
 
 namespace fs = std::filesystem;
 
@@ -78,7 +121,147 @@ std::string compress_test_output(const std::string& output) {
   return out;
 }
 
+// compile_commands.json of the project's own build: [project] compile_commands, the project root, the
+// build folder, or a folder right under it (a preset's binary dir, build/linux).
+std::optional<fs::path> find_compile_commands(const fs::path& root, const core::Config& cfg) {
+  std::vector<fs::path> cands;
+  if (!cfg.compile_commands.empty()) cands.push_back(root / cfg.compile_commands);
+  cands.push_back(root / "compile_commands.json");
+  cands.push_back(root / cfg.build_dir / "compile_commands.json");
+  std::error_code ec;
+  std::vector<fs::path> under;
+  if (fs::is_directory(root / cfg.build_dir, ec)) {
+    for (const auto& e : fs::directory_iterator(root / cfg.build_dir, ec)) {
+      if (e.is_directory(ec) && fs::is_regular_file(e.path() / "compile_commands.json", ec)) under.push_back(e.path() / "compile_commands.json");
+    }
+  }
+  std::sort(under.begin(), under.end());
+  cands.insert(cands.end(), under.begin(), under.end());
+  for (const auto& c : cands) {
+    if (fs::is_regular_file(c, ec)) return c;
+  }
+  return std::nullopt;
+}
+
+// A shell-like split of a "command" entry: blanks separate, quotes group, a backslash escapes.
+std::vector<std::string> split_command(const std::string& cmd) {
+  std::vector<std::string> out;
+  std::string cur;
+  bool any = false;
+  char quote = 0;
+  for (std::size_t i = 0; i < cmd.size(); ++i) {
+    char c = cmd[i];
+    if (c == '\\' && i + 1 < cmd.size() && quote != '\'') {
+      cur += cmd[++i];
+      any = true;
+    } else if (quote != 0) {
+      if (c == quote) quote = 0;
+      else cur += c;
+    } else if (c == '"' || c == '\'') {
+      quote = c;
+      any = true;
+    } else if (c == ' ' || c == '\t' || c == '\n') {
+      if (any) out.push_back(cur);
+      cur.clear();
+      any = false;
+    } else {
+      cur += c;
+      any = true;
+    }
+  }
+  if (any) out.push_back(cur);
+  return out;
+}
+
+// The compile command of a file without its outputs (object, dependency file): -fsyntax-only checks
+// the file, its warnings included, and writes nothing.
+std::vector<std::string> syntax_only(const std::vector<std::string>& argv) {
+  std::vector<std::string> out;
+  for (std::size_t i = 0; i < argv.size(); ++i) {
+    const auto& a = argv[i];
+    if (a == "-o" || a == "-MF" || a == "-MT" || a == "-MQ") {
+      ++i;
+      continue;
+    }
+    if (a == "-c" || a == "-MD" || a == "-MMD" || (a.starts_with("-o") && a.size() > 2)) continue;
+    out.push_back(a);
+  }
+  out.emplace_back("-fsyntax-only");
+  return out;
+}
+
 }  // namespace
+
+kk::Result<TestRun> TestService::compile_check(const std::vector<std::string>& files) {
+  if (!code::has_own_cmake(root_)) return build_and_test({}, true);
+  auto cc = find_compile_commands(root_, cfg_);
+  if (!cc) return build_and_test({}, true);
+  auto text = core::read_file(*cc);
+  if (!text) return build_and_test({}, true);
+  auto j = nlohmann::json::parse(*text, nullptr, false);
+  if (!j.is_array()) return build_and_test({}, true);
+  struct Entry {
+    fs::path dir;
+    std::vector<std::string> argv;
+  };
+  // One entry per file; a multi-config build lists one per configuration: the release one is preferred
+  // (the configuration a task usually asks to build without warnings).
+  std::map<fs::path, Entry> entries;
+  std::set<fs::path> release;
+  for (const auto& e : j) {
+    if (!e.is_object() || !e.contains("file") || !e.contains("directory")) continue;
+    fs::path dir = e["directory"].get<std::string>();
+    fs::path file = e["file"].get<std::string>();
+    if (file.is_relative()) file = dir / file;
+    Entry en{dir, {}};
+    if (e.contains("arguments") && e["arguments"].is_array()) {
+      for (const auto& a : e["arguments"]) en.argv.push_back(a.get<std::string>());
+    } else if (e.contains("command") && e["command"].is_string()) {
+      en.argv = split_command(e["command"].get<std::string>());
+    }
+    if (en.argv.empty()) continue;
+    auto key = core::normalize(file);
+    bool is_release = e.contains("output") && e["output"].is_string() && core::contains(e["output"].get<std::string>(), "Release");
+    if (!entries.contains(key) || (is_release && !release.contains(key))) {
+      entries.insert_or_assign(key, std::move(en));
+      if (is_release) release.insert(key);
+    }
+  }
+  TestRun out;
+  std::string log;
+  std::vector<std::string> checked, missing;
+  bool ok = true;
+  for (const auto& rel : files) {
+    auto it = entries.find(core::normalize(root_ / rel));
+    if (it == entries.end()) {
+      missing.push_back(rel);
+      continue;
+    }
+    runner::RunOptions ro;
+    ro.argv = syntax_only(it->second.argv);
+    ro.cwd = it->second.dir;
+    ro.timeout = std::chrono::seconds(cfg_.build_timeout_s);
+    auto r = runner::run(ro);
+    if (!r) return std::unexpected(r.error());
+    log += r->output;
+    if (!r->ok()) ok = false;
+    checked.push_back(rel);
+  }
+  if (checked.empty()) return build_and_test({}, true);  // none of them is compiled by the build: build it
+  out.build_ok = ok;
+  out.ok = ok;
+  out.build_warnings = runner::compress_build_warnings(log, root_);
+  if (!ok) {
+    out.build_summary = runner::compress_build_log(log, root_);
+    if (out.build_summary.empty()) out.build_summary = "compile check failed";
+    out.text = "build failed (compile check)\n" + out.build_summary + "\n";
+  } else {
+    out.text = fmt::format("compile check ok: {} (the project's full build and tests run after the last block of the ticket)\n",
+                           core::join(checked, " "));
+  }
+  if (!missing.empty()) out.text += fmt::format("(not compiled by the project's build, not checked: {})\n", core::join(missing, " "));
+  return out;
+}
 
 kk::Result<TestRun> TestService::build_and_test(const std::vector<std::string>& blocks, bool build_only) {
   std::lock_guard lk(g_build_mu);
@@ -100,10 +283,15 @@ kk::Result<TestRun> TestService::build_and_test(const std::vector<std::string>& 
   for (const auto& a : core::split(cfg_.cmake_args, ' ')) {
     if (!core::trim(a).empty()) bo.cmake_args.emplace_back(core::trim(a));
   }
-  auto b = runner::build(bo);
+  // With its own build command the project builds itself (its presets, its build tree): a configure
+  // by Karkas would start a second, full build next to it (ADR 0027). The quicker verify_command, when
+  // there is one, checks the agents' work instead of the release build (ADR 0029).
+  const std::string& own_command = cfg_.verify_command.empty() ? cfg_.build_command : cfg_.verify_command;
+  auto b = own && !own_command.empty() ? runner::build_command(own_command, root_, bo.timeout) : runner::build(bo);
   if (!b) return std::unexpected(b.error());
   out.build_ok = b->ok;
   out.build_summary = b->summary;
+  out.build_warnings = b->warnings;
   index::StateStore store(root_);
   auto files = index::collect_code_files(*schema);
   if (!b->ok) {
@@ -135,7 +323,7 @@ kk::Result<TestRun> TestService::build_and_test(const std::vector<std::string>& 
     const std::string what = cfg_.test_command.empty() ? "ctest" : cfg_.test_command;
     ro.argv = cfg_.test_command.empty()
                   ? std::vector<std::string>{"ctest", "--test-dir", build_dir.string(), "--output-on-failure"}
-                  : std::vector<std::string>{"sh", "-c", cfg_.test_command};
+                  : std::vector<std::string>{"sh", "-c", with_ticket_tests(root_, cfg_.test_dir, cfg_.test_command)};
     ro.cwd = root_;
     ro.timeout = std::chrono::seconds(cfg_.test_timeout_s);
     auto r = runner::run(ro);

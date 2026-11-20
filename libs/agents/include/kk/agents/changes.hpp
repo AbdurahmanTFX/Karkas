@@ -45,6 +45,10 @@ kk::Result<ApplyResult> check_diff(const std::filesystem::path& root, const std:
 // be refused while the model can still correct the proposal in the same run.
 kk::Result<void> check_proposal(const std::filesystem::path& root, std::string_view diff_text);
 
+// The diff with a `files` line added to every new block with code that has none, in a project whose blocks
+// live in their own files (an imported project; docs/adr/0030). Unchanged in a project of Karkas's own.
+std::string name_new_block_files(const std::filesystem::path& root, std::string_view diff_text);
+
 // Parses an agent's diff, runs check_diff and stores it as a pending change C-NNNN. Refused
 // (error listing the problems) when it breaks the schema checks or changes nothing.
 kk::Result<core::Change> propose_change(const std::filesystem::path& root, std::string from, std::string reason,

@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstring>
 #include <map>
+#include <regex>
+#include <unordered_map>
 #include <nlohmann/json.hpp>
 #include <set>
 
@@ -344,6 +346,23 @@ index::FileFacts CppAnalyzer::analyze(const index::CodeFile& file, std::string_v
   return std::move(w.facts);
 }
 
+std::string card_type(std::string t) {
+  if (auto eq = t.find('='); eq != std::string::npos) t = t.substr(0, eq);
+  for (const char* w : {"const", "volatile", "static", "inline", "virtual", "explicit", "constexpr", "typename", "struct",
+                        "class", "enum", "extern", "mutable", "friend"}) {
+    t = std::regex_replace(t, std::regex(std::string("\\b") + w + "\\b"), "");
+  }
+  t = core::replace_all(t, "&", "");
+  t = core::replace_all(t, "\"", "");
+  t = core::replace_all(t, "#", "");
+  t = std::regex_replace(t, std::regex("\\s+"), " ");
+  t = std::regex_replace(t, std::regex(" ?\\* ?"), "*");
+  t = std::regex_replace(t, std::regex(" ?([<>,]) ?"), "$1");
+  return std::string(core::trim(t));
+}
+
+std::string CppAnalyzer::version() const { return "cpp " __DATE__ " " __TIME__; }
+
 Signature decode_signature(std::string_view json_text) {
   Signature s;
   try {
@@ -363,11 +382,18 @@ const std::set<std::string>& common_call_names() {
       "write", "start", "stop", "init", "reset", "clear", "data", "value", "push", "pop", "find", "insert", "erase",
       "empty", "front", "back", "load", "store", "count", "make", "create", "update", "apply", "main", "CHECK",
       "REQUIRE", "log", "error", "ok", "has_value", "fill", "capacity", "min", "max", "abs", "move", "swap",
-      "is_null", "str", "text", "name", "path", "type", "id", "parse", "dump", "load", "save", "list", "add"};
+      "is_null", "str", "text", "name", "path", "type", "id", "parse", "dump", "load", "save", "list", "add",
+      // logging levels (spdlog::debug, logger.info ...): never a call of a block (ADR 0029)
+      "trace", "debug", "info", "warn", "warning", "critical"};
   return names;
 }
 
 std::vector<std::string> allowed_api_blocks(const core::Schema& schema, std::string_view block) {
+  return allowed_api_blocks(schema, block, schema.links());
+}
+
+std::vector<std::string> allowed_api_blocks(const core::Schema& schema, std::string_view block,
+                                            const std::vector<core::LinkInfo>& links) {
   std::set<std::string> out;
   const auto* b = schema.find(block);
   if (b == nullptr) return {};
@@ -376,7 +402,7 @@ std::vector<std::string> allowed_api_blocks(const core::Schema& schema, std::str
       if (x.has_code() && x.id != b->id) out.insert(x.id);
     }
   } else {
-    for (const auto& l : schema.links()) {
+    for (const auto& l : links) {
       if (l.kind == core::LinkKind::State) {
         if (l.src_block == block) out.insert(l.dst_block);
         if (l.dst_block == block) out.insert(l.src_block);
@@ -391,7 +417,7 @@ std::vector<std::string> allowed_api_blocks(const core::Schema& schema, std::str
   if (b->kind == core::BlockKind::Group) {
     for (const auto* l : schema.leaves_under(block)) {
       out.insert(l->id);
-      for (const auto& a : allowed_api_blocks(schema, l->id)) out.insert(a);
+      for (const auto& a : allowed_api_blocks(schema, l->id, links)) out.insert(a);
     }
   }
   out.erase(std::string(block));
@@ -421,6 +447,25 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
   struct Target {
     std::string block, role, path;
   };
+  // Only the roots that hold files are tried: an imported project's blocks have none, and trying
+  // 2 × 318 roots for every include took seconds (ADR 0028).
+  auto holds_files = [&](const std::string& root) {
+    auto it = known.lower_bound(root + "/");
+    return it != known.end() && it->starts_with(root + "/");
+  };
+  std::vector<std::pair<std::string, std::string>> live_api_roots, live_impl_roots;
+  for (const auto& [blk, root] : api_root) {
+    if (holds_files(root)) live_api_roots.emplace_back(blk, root);
+  }
+  for (const auto& [blk, root] : impl_root) {
+    if (holds_files(root)) live_impl_roots.emplace_back(blk, root);
+  }
+  // Files of imported blocks by file name, for the suffix match below.
+  std::unordered_map<std::string, std::vector<const index::CodeFile*>> imported_by_name;
+  for (const auto& f : facts.files) {
+    const auto* ob = f.block.empty() ? nullptr : schema.find(f.block);
+    if (ob != nullptr && ob->external()) imported_by_name[fs::path(f.path).filename().string()].push_back(&f);
+  }
   auto resolve = [&](const index::CodeFile& from, const std::string& inc, bool system) -> std::vector<Target> {
     std::vector<Target> cands;
     auto rel = (fs::path(from.path).parent_path() / inc).lexically_normal().generic_string();
@@ -428,11 +473,11 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
       const auto* f = by_path[rel];
       return {Target{f->block, f->role, rel}};
     }
-    for (const auto& [blk, root] : api_root) {
+    for (const auto& [blk, root] : live_api_roots) {
       auto p = (fs::path(root) / inc).lexically_normal().generic_string();
       if (known.contains(p)) cands.push_back({blk, "api", p});
     }
-    for (const auto& [blk, root] : impl_root) {
+    for (const auto& [blk, root] : live_impl_roots) {
       auto p = (fs::path(root) / inc).lexically_normal().generic_string();
       if (known.contains(p)) cands.push_back({blk, "impl", p});
     }
@@ -441,12 +486,13 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
     if (cands.empty() && !system) {
       const index::CodeFile* hit = nullptr;
       int n = 0;
-      for (const auto& f : facts.files) {
-        const auto* ob = f.block.empty() ? nullptr : schema.find(f.block);
-        if (ob == nullptr || !ob->external()) continue;
-        if (f.path == inc || f.path.ends_with("/" + inc)) {
-          hit = &f;
-          ++n;
+      auto same_name = imported_by_name.find(fs::path(inc).filename().string());
+      if (same_name != imported_by_name.end()) {
+        for (const auto* f : same_name->second) {
+          if (f->path == inc || f->path.ends_with("/" + inc)) {
+            hit = f;
+            ++n;
+          }
         }
       }
       if (n == 1) cands.push_back({hit->block, hit->role, hit->path});
@@ -455,8 +501,9 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
   };
 
   std::map<std::string, std::set<std::string>> allowed;
+  const auto links = schema.links();
   for (const auto& b : schema.blocks) {
-    auto a = allowed_api_blocks(schema, b.id);
+    auto a = allowed_api_blocks(schema, b.id, links);
     allowed[b.id] = {a.begin(), a.end()};
   }
 
@@ -469,6 +516,16 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
     for (const auto& s : it->second.symbols) {
       own_names[f.block].insert(s.name);
       if (f.role == "api") exported[f.block].push_back(&s);
+    }
+  }
+  // The blocks that export a function or method of a name, in the order of `exported` (by block id):
+  // a call is looked up by its name, not against every exported symbol of the project (ADR 0028).
+  std::unordered_map<std::string, std::vector<std::string>> fn_owners;
+  for (const auto& [blk, syms] : exported) {
+    for (const auto* s : syms) {
+      if (s->kind != "method" && s->kind != "function") continue;
+      auto& v = fn_owners[s->name];
+      if (v.empty() || v.back() != blk) v.push_back(blk);
     }
   }
 
@@ -501,12 +558,11 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
         if (kCommon.contains(r.target) || own_names[f.block].contains(r.target)) continue;
         std::vector<std::string> owners;
         bool allowed_owner = false;
-        for (const auto& [blk, syms] : exported) {
+        static const std::vector<std::string> kNoOwner;
+        auto named = fn_owners.find(r.target);
+        const auto& candidates = named == fn_owners.end() ? kNoOwner : named->second;
+        for (const auto& blk : candidates) {
           if (blk == f.block) continue;
-          bool has = std::any_of(syms.begin(), syms.end(), [&](const index::SymbolFact* s) {
-            return s->name == r.target && (s->kind == "method" || s->kind == "function");
-          });
-          if (!has) continue;
           const auto* ob = schema.find(blk);
           if (allowed[f.block].contains(blk) || (ob != nullptr && ob->kind == core::BlockKind::Shared)) allowed_owner = true;
           owners.push_back(blk);
@@ -581,6 +637,23 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
         issue("D04", 'W', b.id,
               fmt::format("fn {} takes {} parameter(s) in the card but {} in api/", p.name, p.params.size(), overloads[0]->params),
               b.file, p.line);
+      } else if (!p.ret.empty()) {
+        // The return type, in the card's form: a card saying "-> int" over a function returning int64_t
+        // misleads every block that reads the card (ADR 0029). Only overloads whose signature is known count.
+        // "std::" is left out on both sides: a card's size_t is the code's std::size_t.
+        auto same_form = [](const std::string& t) { return core::replace_all(card_type(t), "std::", ""); };
+        std::vector<std::string> code_rets;
+        std::vector<std::string> forms;
+        for (const auto* s : overloads) {
+          if (s->signature.empty()) continue;
+          auto ret = card_type(decode_signature(s->signature).ret);
+          code_rets.push_back(ret.empty() ? std::string("void") : ret);
+          forms.push_back(same_form(code_rets.back()));
+        }
+        if (!code_rets.empty() && std::find(forms.begin(), forms.end(), same_form(p.ret)) == forms.end()) {
+          issue("D04", 'W', b.id, fmt::format("fn {} returns {} in the card but {} in the code", p.name, p.ret, code_rets[0]), b.file,
+                p.line);
+        }
       }
     }
   }

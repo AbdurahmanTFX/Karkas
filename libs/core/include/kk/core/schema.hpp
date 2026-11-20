@@ -62,6 +62,8 @@ struct Schema {
   // Order of children for views: entry first, then by data-flow (topological order of
   // leaves, ties by id) so views read left to right like the data (4.7).
   [[nodiscard]] std::vector<const Block*> ordered_children(std::string_view id) const;
+  // The same with leaf_flow_order() computed once by a caller that orders many groups.
+  [[nodiscard]] std::vector<const Block*> ordered_children(std::string_view id, const std::vector<std::string>& order) const;
   [[nodiscard]] std::vector<std::string> leaf_flow_order() const;
 };
 

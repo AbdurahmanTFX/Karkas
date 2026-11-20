@@ -73,6 +73,12 @@ std::string ScriptedModel::request_text(const llm::Request& r) {
   return out;
 }
 
+kk::Result<agents::TestRun> FakeTests::compile_check(const std::vector<std::string>& files) {
+  std::lock_guard lk(mu);
+  compile_calls.push_back(files);
+  return agents::TestRun{true, true, "", {}, "compile check ok\n"};
+}
+
 kk::Result<agents::TestRun> FakeTests::build_and_test(const std::vector<std::string>& blocks, bool build_only) {
   std::lock_guard lk(mu);
   calls.push_back(blocks);
@@ -96,6 +102,8 @@ core::Config test_config() {
   c.prices["m-cheap"] = {0.1, 0.5, -1, -1, -1};
   c.max_steps_worker = 8;
   c.max_steps_tester = 8;
+  // Scripted workers report done without writing files; the check has its own tests (ADR 0031).
+  c.done_needs_change = false;
   c.max_steps_navigator = 4;
   c.max_steps_orchestrator = 4;
   c.max_steps_architect = 12;

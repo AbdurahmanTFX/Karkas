@@ -480,3 +480,122 @@
   T-0013 done directly: $0.26–0.40); 8 runs, 2 orchestrator decisions, all leaf work on the cheap tier.
   A ticket's tester escalates its tier on failure; act-delivered turns are counted in the traffic.
 - Tests 294 (`index/perf` timing-sensitive under `-j8`, passes alone).
+
+## Addition — agents work inside imported blocks (docs/adr/0027)
+
+- From Endless Sky (imported, ~500 files): T-0001 "low-fuel warning with a preference" through
+  kk_task in mode mcp was escalated before any worker ran ("agents do not edit imported blocks yet").
+- Sandbox of an imported block: paths from the project root; reads its files, the headers of linked
+  blocks and of its users, unowned non-code files (not hidden, not build/, .karkas/, blocks/); writes
+  only the files of its card. grep over "." searches its files and those headers; list_dir lists only
+  what is readable. An approved card change rebuilds the sandbox in the same run.
+- Headers: `ApiAccess::Imported` — the public part is the contract (`header_contract_kept`: textual
+  scanner with scopes and access labels; private members, inline bodies, initial values, comments,
+  new includes and public constants are free). On the headers of Endless Sky: a public method added
+  is caught in 192/192 headers, private members pass in 166/166, the header edits of methods A and B
+  pass. A frozen block is re-frozen after such an edit.
+- Checks: `[project] build_command` (the project's own build; Karkas configures nothing), compiler
+  warnings of the worker's own files after build()/test(); the tester never runs on imported blocks,
+  their new invariants are reported as checked by the project's own tests.
+- Data files: `files` may list non-code files (owned like code, skipped by the index and analyzer).
+- Worker: prompt `worker_imported.txt`; context with the listed files (small whole, big by size) and
+  the declarations of linked headers the block uses — big classes as head, labels and the used public
+  members (the most called blocks first).
+- Found on the way, not fixed (bugs.txt 7, 8, 9): ~100 s index updates on Endless Sky; a misleading
+  "strongest tier failed" note for a worker that never ran; spawning the engine after a rebuild.
+- Endless Sky T-0001 again (`ticket run --force`, mode mcp, every turn served by one Opus session):
+  closed done. The orchestrator planned data.settings.preferences → flight.engine →
+  ui.menus.preferences in one decision; three workers did their blocks in 3, 3 and 5 steps, each
+  done at the first attempt; the settings screen's worker took data/_ui/tooltips.txt into its card
+  (C-0001, approved in its run) and wrote the tooltip. 6 files, +28 lines; the changed sources
+  recompile without warnings (-Wall); `karkas check` 0 errors (the 46 warnings were there before).
+  Turn traffic of the run ≈ 296 K characters (the three worker turns ~83–90 K each).
+- Tests 305.
+
+## Addition — faster and cheaper tickets on a big imported project (docs/adr/0028)
+
+- Measured on Endless Sky round 2 (C: 24 min, $0.66; the models worked ~3 min): index updates ~10 min,
+  builds ~9 min, the coordinating Opus session $0.63 (61% cache writes of the orchestrator's big views).
+- Index: links computed once per update (allowed_api_blocks, block_test_hash, ordered_children), D09 by a
+  name → owners map, includes tried only against roots that hold files: 90 s → 5 s per update.
+- Orchestrator: the 8 blocks `locate` finds for the ticket's words in its first decision; compact views of
+  big groups (grouped internal calls, the 20 heaviest external pairs) and of neighbors in L2 views.
+- Workers of imported blocks: neighbor headers with their own 20 KB budget, only with used declarations;
+  build() and the check after the report compile the card's sources by compile_commands.json with
+  -fsyntax-only; the full build and tests run once after the last block; a failing full build goes back
+  to the block whose file the error names (twice at most).
+- Coordinator: the MCP instructions say to wait with kk_agent_next(wait_s=300) and not to look up
+  kk_changes under auto_approve; `[mcp.roles] orchestrator = "medium"` with the session on Sonnet.
+- Endless Sky round 2 again (C2: Sonnet coordinator and orchestrator, Haiku workers): closed done in
+  10.1 min and $0.23 (Sonnet $0.21, Haiku $0.02) against C 23.9 min / $0.66, A 13.4 min / $0.41, B 14.8 min
+  / $0.63. Orchestrator: 22 s and 12.6K input tokens (was ~3.5 min, 53.6K); index updates 3-6 s; workers
+  53 s and 45 s; one full build ~6 min. The Sonnet orchestrator wrote the new fn into a note only, so the
+  panel's worker proposed the missing card lines itself (C-0002, approved in its run).
+- The same on Opus (C2-opus: session and orchestrator strong): 8.4 min and $0.54 (Opus $0.52, Haiku
+  $0.02); the orchestrator decided in 17 s on 13.4K tokens with the complete change (fn, call, notes),
+  workers 54 s and 30 s, full build ~4.3 min. The coordinating session's own context, mostly 1-hour cache
+  writes, is now the price; the medium tier halves it.
+- Checked in the running game (a test plugin in the game's test mode): C2 and C2-opus count, save, load and
+  show; B's round-2 code (method B, Karkas as the map) compiles but never counts (it reads event.Actor(),
+  which the game leaves empty for destroyed ships).
+- Found: kk_agent_next(list) waits out wait_s after the ticket ended; coordinators run `karkas approve
+  api` from the ticket's note (bugs.txt 10, 11).
+- Tests 308.
+
+## Addition — cheaper, faster and surer tickets (docs/adr/0029)
+
+- Endless Sky after ADR 0028: the coordinating Claude Code session was 90-96% of a ticket's money, the release
+  build with LTO most of its time, idle waiting and wrap-up after the ticket ~2 min; method B's feature
+  compiled and never worked, and nothing in Karkas would have caught it.
+- `[agents] launch = "claude"` (RunLauncher): in mode mcp the engine serves its runs itself, one headless
+  Claude Code per run on the claude.ai login (no API key in its environment), the model of the run's tier,
+  a three-sentence system prompt, only kk_agent_next / kk_agent_act (`karkas mcp --only-agent`), started
+  outside the project; costs in .karkas/mcp/launch/costs.jsonl; `karkas bench --method C --auth subscription`.
+- The end of a ticket: kk_agent_next(list) returns when the tickets have ended, with their result; auto_approve
+  freezes the api it approved; the instructions say only the report comes after; self_executable() survives a
+  rebuild (bugs.txt 9-11 fixed).
+- Behaviour tests of imported features: `[test] dir`, `guide`, `command`; a tester writes one test in the
+  project's framework after the last block, KK_TEST_FILES names it for the test command, a failure goes back
+  to the orchestrator. Endless Sky: tests/karkas/run.sh runs a test plugin headlessly and checks
+  `# expect-save` lines of the pilot file.
+- Orchestrator: a fn named only in a note sets the change aside (no model); after a decision that came back
+  the next one is a tier higher; review_changes on by itself below the strongest tier.
+- Views: a card with more than 24 call lines shows one line (PlayerInfo's L2 view 29.7K -> 13.2K characters);
+  an imported worker gets the linked declarations of the functions its task names; D04 checks return types.
+- Index: tickets, changes, probes and run journals refresh only their tables; `karkas check` reads the
+  issues of the index (Endless Sky 4.9 s -> 0.4 s, the same 46 warnings); facts keyed by the analyzer's
+  build; drift.col; SQLite waits 30 s; logging calls are no D09; kDbSchemaVersion 2 (its rebuild path fixed).
+- `[project] verify_command`: a quicker build checks the agents' work (a debug build; the game's debug
+  binary runs its tests ~8x slower).
+- Tests: `slow` label for the four reference builds, `ctest --preset dev-fast`; ccache for their builds.
+- Measured on Endless Sky, method C3 (orchestrator Opus, workers Haiku, behaviour tester Sonnet), four runs,
+  each fixing what the one before showed: the behaviour test caught method B's `event.Actor()` bug every time
+  a Haiku worker made it; a failing test may send a done block again, a tier up (medium, then strong), with
+  the orchestrator's cause in why; run 3 closed done and works in the game (1 -> 2, $1.15); run 4 works but
+  escalated: the tester's test waited for a kill its scenario cannot give, and the fix worker's needs_tester
+  went to a contract tester (now to the behaviour tester, bugs.txt 16). The subscription's usage limit no
+  longer fails a run or raises its tier: the launcher pauses, the turns wait (bugs.txt 15). Method B on this
+  Karkas: 2.3 min without compiling (was 8.6), the same broken counter.
+- Tests: 329 (dev-fast 325 in 25 s, slow 4 in 227 s).
+
+## ADR 0030 — an imported project's build file, failed full builds (2026-11-20)
+
+- A block's new code file reaches the imported project's own build: after the worker's done Karkas adds it to the
+  CMakeLists.txt that names the files of its folder (`agents/build_files`: sorted, one per line or inline, headers
+  only where listed, globs left alone). Endless Sky's round 3 had escalated on the link of a new panel class.
+- A linker error names the block of its symbol (`undefined reference to 'A::f'` -> the card with A.cpp/A.h); a
+  full build no error of which names a block goes to the orchestrator once with its errors, not to the human.
+- A fix worker's not_here that names the behaviour test's file goes to the behaviour tester (bugs.txt 17); the
+  model of a launched run whose safeguards refuse it moves a tier up (bugs.txt 18).
+- A new block with code in an imported project gets its files named as the project names its files
+  (bugs.txt 20).
+- Tests: 341.
+
+## ADR 0031 — the sessions' own cost, a done that changed something (2026-11-20)
+
+- A run served by a launched Claude Code session costs what the session reported (costs.jsonl): runs index
+  (schema 3), `karkas cost`, the GUI and the ticket's cost line; round 3 run 3 said $0.19, its sessions $1.08.
+- The estimate for other MCP clients models the prompt cache (1-hour writes, reads, thinking): 0.81-1.13 of the
+  real cost on four runs (was 0.2-0.3); `karkas cost` prices 1-hour cache writes at 2x; Sonnet's cache read $0.10.
+- A worker's done with no file of its block changed goes to the orchestrator (bugs.txt 14); a planned block's
+  not_here/needs_info too, not up the tree (bugs.txt 13); a session reads only its own part of the run log.

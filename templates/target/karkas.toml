@@ -4,11 +4,25 @@ lang      = "cpp"
 build     = "cmake-ninja"
 build_dir = "build"
 # cmake_args = "-DBUILD_TESTS=ON"   # extra arguments of the CMake configure step
+# A project with its own CMakeLists.txt and its own build tree (presets): the command that builds
+# it, from the project root; Karkas then configures nothing (agents and kk_run_tests use it).
+# build_command = "cmake --build --preset release"
+# Its compile_commands.json (found in the root or the build folder when not set): a worker's build()
+# compiles only its files with it, and the full build runs once per ticket (ADR 0028).
+# compile_commands = "build/release/compile_commands.json"
+# A quicker build that checks the agents' work (no LTO, no optimizer); the release build_command is then
+# left to you or CI (ADR 0029). A debug game can run its tests much slower: measure both.
+# verify_command = "cmake --build --preset debug"
 
 # A project with its own CMakeLists.txt (imported code): the command that runs its tests after
 # the build, from the project root. Without it kk_run_tests / karkas test run ctest.
+# With dir and guide a feature ticket ends with a behaviour test: a tester writes one test in the
+# project's own framework into dir, as the guide says, and the command runs it (it gets the ticket's
+# test files in KK_TEST_FILES); a failing test goes back to the orchestrator (ADR 0029).
 # [test]
 # command = "build/tests/run_all"
+# dir     = "tests/behaviour"
+# guide   = "tests/HOWTO.md"
 
 [models.strong]
 provider = "anthropic"
@@ -64,7 +78,7 @@ ttl = "5m"
 
 [prices]   # USD per 1M tokens; check the official pricing page before relying on these
 "claude-opus-5-5"   = { input = 4.0, output = 20.0, cache_read = 0.20 }
-"claude-sonnet-5-5" = { input = 2.0, output = 10.0 }
+"claude-sonnet-5-5" = { input = 2.0, output = 10.0, cache_read = 0.10 }
 "claude-haiku-5-5"  = { input = 0.10, output = 0.50 }
 cache_write_5m = 1.25
 cache_write_1h = 2.0
@@ -72,3 +86,12 @@ cache_read     = 0.1
 
 [gui]
 editor_command = "kitty -e nvim +{line} {file}"
+
+# Mode mcp (karkas mode mcp): Claude models through Claude Code instead of an API key. With launch =
+# "claude" Karkas serves its agents' turns itself: one headless Claude Code per run (`claude -p` on your
+# claude.ai login, the model of the run's tier, only the two turn tools); no session has to serve them
+# and kk_task / `karkas task` just run (ADR 0029).
+# [agents]
+# mode   = "mcp"
+# launch = "claude"
+# launch_budget_usd = 2   # --max-budget-usd of each run (0 = none)

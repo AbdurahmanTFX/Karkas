@@ -6,6 +6,7 @@
 #include "kk/code/drift.hpp"
 #include "kk/code/gen.hpp"
 #include "kk/core/text.hpp"
+#include "kk/core/validate.hpp"
 #include "kk/index/index.hpp"
 #include "kk/test/support.hpp"
 
@@ -88,6 +89,19 @@ TEST_CASE("drift D04: fn of the card not declared in api/ (and soft parameter ch
   CHECK(core::contains(d[1].message, "reset()"));
 }
 
+TEST_CASE("drift D04: a card's return type that is not the code's is a warning, std:: does not count (ADR 0029)") {
+  Broken p;
+  p.edit("blocks/stream/ring/block.ksl", "fn      fill() -> size_t", "fn      fill() -> int");
+  auto d = p.with("D04");
+  REQUIRE(d.size() == 1);
+  CHECK(d[0].block == "stream.ring");
+  CHECK(d[0].severity == 'W');
+  CHECK(d[0].message == "fn fill returns int in the card but std::size_t in the code");
+  // The reference project says "-> size_t" over "std::size_t fill() const": the same type, no issue.
+  Broken clean;
+  CHECK(clean.with("D04").empty());
+}
+
 TEST_CASE("drift D05: api/ changed after freezing") {
   Broken p;
   auto s = core::load_schema(p.path());
@@ -160,4 +174,53 @@ TEST_CASE("drift: the index stores D issues and marks blocks") {
   auto q = (*idx)->db().q("SELECT COUNT(*) FROM code_refs WHERE from_block='stream.pump' AND to_block='io.reader'");
   REQUIRE(q.step());
   CHECK(q.i64(0) >= 1);
+}
+
+TEST_CASE("drift: the index's issues are what karkas check computed from scratch, in the same order (ADR 0029)") {
+  Broken p;
+  p.edit("blocks/stream/pump/impl/pump.cpp", "#include \"reader.hpp\"", "#include \"reader.hpp\"\n#include \"chain.hpp\"");
+  auto schema = core::load_schema(p.path());
+  REQUIRE(schema);
+  auto expected = core::check_schema(*schema);
+  auto d = code::check_drift(*schema);
+  expected.insert(expected.end(), d.begin(), d.end());
+  REQUIRE_FALSE(expected.empty());
+
+  auto idx = index::Index::open(p.path());
+  REQUIRE(idx);
+  auto an = std::make_unique<code::CppAnalyzer>();
+  REQUIRE((*idx)->update({false, an.get()}));
+  auto got = (*idx)->issues();
+  REQUIRE(got.size() == expected.size());
+  for (std::size_t i = 0; i < got.size(); ++i) CHECK(got[i].str() == expected[i].str());
+}
+
+TEST_CASE("drift: facts of another analyzer version are not reused (ADR 0029)") {
+  struct Versioned final : index::ICodeAnalyzer {
+    code::CppAnalyzer inner;
+    std::string v;
+    int analyzed = 0;
+    index::FileFacts analyze(const index::CodeFile& f, std::string_view c) override {
+      ++analyzed;
+      return inner.analyze(f, c);
+    }
+    index::CheckOutput check(const core::Schema& s, const index::IndexFacts& f) override { return inner.check(s, f); }
+    [[nodiscard]] std::string version() const override { return v; }
+  };
+  test::FixtureCopy p("wavkit");
+  auto idx = index::Index::open(p.path());
+  REQUIRE(idx);
+  Versioned a;
+  a.v = "a";
+  REQUIRE((*idx)->update({false, &a}));
+  CHECK(a.analyzed > 0);
+  a.analyzed = 0;
+  REQUIRE((*idx)->update({false, &a}));
+  CHECK(a.analyzed == 0);  // same version, nothing changed
+  Versioned b;
+  b.v = "b";
+  auto st = (*idx)->update({false, &b});
+  REQUIRE(st);
+  CHECK(st->changed);
+  CHECK(b.analyzed > 0);  // every file again with the new analyzer
 }

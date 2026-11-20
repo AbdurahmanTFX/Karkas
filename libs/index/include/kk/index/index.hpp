@@ -21,7 +21,8 @@ namespace kk::index {
 
 namespace fs = std::filesystem;
 
-inline constexpr std::string_view kDbSchemaVersion = "1";
+// Bump when a table or the KSL checks change (ADR 0029: drift.col, meta service_fingerprint).
+inline constexpr std::string_view kDbSchemaVersion = "3";
 
 // --- structured rows ------------------------------------------------------------------
 struct PortRow {
@@ -72,7 +73,11 @@ struct RunRow {
   std::string ticket, role, block, provider, model, tier;
   int attempt = 0;
   std::int64_t input_tokens = 0, output_tokens = 0, cache_write_tokens = 0, cache_read_tokens = 0;
+  std::int64_t cache_write_1h_tokens = 0;  // part of cache_write_tokens written with a 1-hour TTL (2x the input price)
   double cost_usd = 0;
+  // The tokens and cost are those of the Claude Code session(s) Karkas launched for the run, at list prices
+  // (.karkas/mcp/launch/costs.jsonl, docs/adr/0031), not the estimate from its turns.
+  bool session_cost = false;
   std::int64_t duration_ms = 0;
   int steps = 0;
   std::string outcome;
@@ -122,6 +127,7 @@ struct UpdateStats {
   int files = 0;
   int analyzed = 0;
   double ms = 0;
+  bool service_only = false;  // only tickets, changes, probes or run journals changed (ADR 0029)
 };
 
 struct ViewOptions {
@@ -163,6 +169,9 @@ class Index {
   kk::Result<std::string> status(std::string_view block = "");
   std::string probes(std::string_view target = "");
   std::string drift(std::string_view block = "");
+  // Every issue of the last analysis — KSL checks and drift — in the order `karkas check` prints
+  // them; with update() first, the answer of `karkas check` and kk_check (ADR 0029).
+  std::vector<core::Issue> issues();
 
   // Structured helpers used by agents and the GUI.
   std::vector<std::string> dependent_blocks(std::string_view block);  // leaves depending on its api
@@ -178,6 +187,7 @@ class Index {
   std::map<std::string, FileFacts> facts_cache_;  // by content hash
   bool facts_loaded_ = false;
   std::string last_fingerprint_;
+  std::string last_service_fingerprint_;
 };
 
 // Card text for L2 views: canonical, without comments.
@@ -191,6 +201,8 @@ std::string block_code_hash(const std::vector<CodeFile>& files, std::string_view
 // Hash of what the test results of a block depend on: its own code files and the api/ of
 // every block linked to it. A neighbor's contract change makes earlier results stale.
 std::string block_test_hash(const core::Schema& schema, const std::vector<CodeFile>& files, std::string_view block);
+// The same over the links computed once by the caller (a loop over every block; ADR 0028).
+std::string block_test_hash(const std::vector<core::LinkInfo>& links, const std::vector<CodeFile>& files, std::string_view block);
 // Hash of the block's api/ files ("" when it has none); compared with the frozen hash (D05).
 std::string block_api_hash(const std::vector<CodeFile>& files, std::string_view block);
 // Hash of the top-level structure (ids, kinds, purposes, lifted links) for "approve L0".

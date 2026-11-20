@@ -257,6 +257,7 @@ kk::Result<std::string> cost_report(const core::Config& cfg, const std::vector<i
   };
   std::map<std::string, Agg> groups;
   Agg total;
+  int session_runs = 0;
   for (const auto& r : runs) {
     std::string key;
     if (by == "block") key = r.block;
@@ -267,10 +268,19 @@ kk::Result<std::string> cost_report(const core::Config& cfg, const std::vector<i
     else return kk::fail("args", fmt::format("--by expects block|role|model|ticket, got '{}'", by));
     if (key.empty() && !by.empty() && by != "total") key = "-";
     // Money from the current [prices], not the value stored when the run finished:
-    // prices can be filled in later (16.2), and a report must reflect them.
+    // prices can be filled in later (16.2), and a report must reflect them. Cache writes with a 1-hour
+    // TTL cost 2x the input price, not the 5-minute 1.25x (Claude Code writes 1-hour entries). A run
+    // served by a Claude Code session Karkas launched costs what that session reported (docs/adr/0031).
     double cost = 0;
-    auto c = cost_usd(cfg, r.provider, r.model, Tokens{r.input_tokens, r.output_tokens, r.cache_write_tokens, 0, r.cache_read_tokens});
-    if (c) cost = *c;
+    if (r.session_cost) {
+      cost = r.cost_usd;
+      ++session_runs;
+    } else {
+      const auto w1 = std::min(r.cache_write_1h_tokens, r.cache_write_tokens);
+      auto c = cost_usd(cfg, r.provider, r.model,
+                        Tokens{r.input_tokens, r.output_tokens, r.cache_write_tokens - w1, w1, r.cache_read_tokens});
+      if (c) cost = *c;
+    }
     if (!key.empty()) groups[key].add(r, cost);
     total.add(r, cost);
   }
@@ -286,6 +296,10 @@ kk::Result<std::string> cost_report(const core::Config& cfg, const std::vector<i
                                 "input", "output", "cache_write", "cache_read", "cached", "usd");
   for (const auto& [k, a] : groups) out += row(k, a);
   out += row("total", total);
+  if (session_runs > 0) {
+    out += fmt::format("{} of {} run(s) at the cost their Claude Code session reported{}\n", session_runs, total.runs,
+                       session_runs < total.runs ? "; the others estimated from their turns" : "");
+  }
   return out;
 }
 

@@ -67,6 +67,9 @@ class ICodeAnalyzer {
   virtual ~ICodeAnalyzer() = default;
   virtual FileFacts analyze(const CodeFile& file, std::string_view content) = 0;
   virtual CheckOutput check(const core::Schema& schema, const IndexFacts& facts) = 0;
+  // Changes when analyze() or check() give other results: cached facts and the issues of the index
+  // (which `karkas check` and kk_check now read, ADR 0029) are then made again.
+  [[nodiscard]] virtual std::string version() const { return "1"; }
 };
 
 }  // namespace kk::index

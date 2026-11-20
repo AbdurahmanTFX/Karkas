@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <set>
 
@@ -18,6 +19,46 @@ namespace kk::index {
 using json = nlohmann::json;
 
 namespace {
+
+// The tokens and cost of the Claude Code session(s) that served one run, summed over its rows of
+// .karkas/mcp/launch/costs.jsonl (the launcher writes one row per session it started, docs/adr/0029/0031).
+struct SessionCost {
+  std::int64_t input = 0, output = 0, cache_write = 0, cache_write_1h = 0, cache_read = 0;
+  double usd = 0;
+};
+
+std::map<std::string, SessionCost> read_session_costs(const fs::path& file) {
+  std::map<std::string, SessionCost> out;
+  auto text = core::read_file(file);
+  if (!text) return out;
+  for (const auto& line : core::split(*text, '\n')) {
+    auto j = json::parse(line, nullptr, false);
+    if (!j.is_object() || !j.contains("run") || !j["run"].is_string()) continue;
+    auto& sc = out[j["run"].get<std::string>()];
+    sc.usd += j.value("cost_usd", 0.0);
+    if (j.contains("usage") && j["usage"].is_object()) {
+      const auto& u = j["usage"];
+      sc.input += u.value("input_tokens", std::int64_t{0});
+      sc.output += u.value("output_tokens", std::int64_t{0});
+      sc.cache_write += u.value("cache_creation_input_tokens", std::int64_t{0});
+      sc.cache_read += u.value("cache_read_input_tokens", std::int64_t{0});
+      if (u.contains("cache_creation") && u["cache_creation"].is_object()) {
+        sc.cache_write_1h += u["cache_creation"].value("ephemeral_1h_input_tokens", std::int64_t{0});
+      }
+    }
+  }
+  return out;
+}
+
+void apply_session_cost(RunRow& r, const SessionCost& sc) {
+  r.input_tokens = sc.input;
+  r.output_tokens = sc.output;
+  r.cache_write_tokens = sc.cache_write;
+  r.cache_write_1h_tokens = sc.cache_write_1h;
+  r.cache_read_tokens = sc.cache_read;
+  r.cost_usd = sc.usd;
+  r.session_cost = true;
+}
 
 constexpr std::string_view kDdl = R"SQL(
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -48,7 +89,7 @@ CREATE TABLE IF NOT EXISTS symbols(id INTEGER PRIMARY KEY, file TEXT, block TEXT
 CREATE TABLE IF NOT EXISTS code_refs(from_block TEXT, from_file TEXT, line INTEGER,
   to_block TEXT, to_role TEXT, kind TEXT);
 CREATE TABLE IF NOT EXISTS drift(block TEXT, code TEXT, severity TEXT,
-  message TEXT, file TEXT, line INTEGER);
+  message TEXT, file TEXT, line INTEGER, col INTEGER);
 CREATE TABLE IF NOT EXISTS tickets(id TEXT PRIMARY KEY, kind TEXT, status TEXT,
   origin TEXT, current_block TEXT, created_at INTEGER, closed_at INTEGER, title TEXT);
 CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY, ticket TEXT, role TEXT,
@@ -56,7 +97,8 @@ CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY, ticket TEXT, role TEXT,
   input_tokens INTEGER, output_tokens INTEGER,
   cache_write_tokens INTEGER, cache_read_tokens INTEGER,
   cost_usd REAL, duration_ms INTEGER, steps INTEGER,
-  outcome TEXT, ts INTEGER, journal TEXT UNIQUE);
+  outcome TEXT, ts INTEGER, journal TEXT UNIQUE,
+  cache_write_1h_tokens INTEGER, session_cost INTEGER);
 CREATE TABLE IF NOT EXISTS probes(link_id INTEGER, metric TEXT, n INTEGER,
   min REAL, max REAL, avg REAL, last REAL, run TEXT, ts INTEGER, link TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(block, purpose, inv, hist);
@@ -146,10 +188,12 @@ bool is_header(const fs::path& p) {
   return ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx" || ext == ".ipp" || ext == ".inl";
 }
 
-// Files listed by "files" of an imported block: headers are its api, the rest its impl.
+// Files listed by "files" of an imported block: headers are its api, the rest its impl. Listed files
+// that are not code (data, configuration; ADR 0027) belong to the block but are no code facts.
 void add_listed_files(const core::Schema& schema, const core::Block& b, std::vector<CodeFile>& out) {
   for (const auto& rel : b.file_list()) {
     auto p = schema.root / rel;
+    if (!core::is_code_file(p)) continue;
     auto text = core::read_file(p);
     if (!text) continue;  // E09 reports it
     CodeFile f;
@@ -256,8 +300,12 @@ std::string block_code_hash(const std::vector<CodeFile>& files, std::string_view
 }
 
 std::string block_test_hash(const core::Schema& schema, const std::vector<CodeFile>& files, std::string_view block) {
+  return block_test_hash(schema.links(), files, block);
+}
+
+std::string block_test_hash(const std::vector<core::LinkInfo>& links, const std::vector<CodeFile>& files, std::string_view block) {
   std::set<std::string> deps;
-  for (const auto& l : schema.links()) {
+  for (const auto& l : links) {
     if (l.src_block == block) deps.insert(l.dst_block);
     if (l.dst_block == block) deps.insert(l.src_block);
   }
@@ -400,13 +448,18 @@ kk::VoidResult Index::create_schema() {
     has_meta = s.step();
   }
   if (has_meta) {
-    auto s = db_.q("SELECT value FROM meta WHERE key='schema_version'");
-    std::string v = s.step() ? s.text(0) : "";
+    std::string v;
+    {
+      auto s = db_.q("SELECT value FROM meta WHERE key='schema_version'");
+      v = s.step() ? s.text(0) : "";
+    }  // finished here: a statement still open keeps its tables locked against DROP
     if (v != kDbSchemaVersion) {
       spdlog::info("index: schema version {} -> {}, rebuilding", v, kDbSchemaVersion);
       std::vector<std::string> tables;
-      auto t = db_.q("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'search_%'");
-      while (t.step()) tables.push_back(t.text(0));
+      {
+        auto t = db_.q("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'search_%'");
+        while (t.step()) tables.push_back(t.text(0));
+      }
       for (const auto& name : tables) {
         if (auto r = db_.exec("DROP TABLE IF EXISTS \"" + name + "\""); !r) return r;
       }
@@ -432,7 +485,9 @@ kk::Result<UpdateStats> Index::update(const UpdateOptions& opts) {
   stats.blocks = static_cast<int>(schema->blocks.size());
   stats.files = static_cast<int>(files.size());
 
-  // Fingerprint of everything the index derives from.
+  // Fingerprints (ADR 0029). The code part — cards, code, approvals, tests, the analyzer's version —
+  // decides whether the code is analyzed and checked again; the service part — tickets, changes,
+  // probes, run journals, written by every agent run — only refreshes its own tables.
   std::vector<std::pair<std::string, std::string>> fp;
   fp.emplace_back("project.ksl", file_fingerprint(root_ / "project.ksl"));
   for (const auto& b : schema->blocks) fp.emplace_back("card:" + b.id, file_fingerprint(root_ / b.dir / "block.ksl"));
@@ -441,20 +496,205 @@ kk::Result<UpdateStats> Index::update(const UpdateOptions& opts) {
   auto kdir = karkas_dir(root_);
   fp.emplace_back("approvals", file_fingerprint(store.approvals_file()));
   fp.emplace_back("tests", file_fingerprint(store.tests_file()));
-  fp.emplace_back("tickets", dir_fingerprint(kdir / "tickets"));
-  fp.emplace_back("changes", dir_fingerprint(kdir / "changes"));
-  fp.emplace_back("probes", dir_fingerprint(kdir / "probes"));
-  fp.emplace_back("runs", dir_fingerprint(kdir / "runs"));
   fp.emplace_back("cmake", file_fingerprint(root_ / "CMakeLists.txt"));
-  fp.emplace_back("analyzer", opts.analyzer != nullptr ? "yes" : "no");
+  const std::string analyzer_version = opts.analyzer != nullptr ? opts.analyzer->version() : std::string();
+  fp.emplace_back("analyzer", opts.analyzer != nullptr ? analyzer_version : std::string("no"));
   fp.emplace_back("version", std::string(kDbSchemaVersion));
   std::string fingerprint = combine_hashes(fp);
+  std::vector<std::pair<std::string, std::string>> sfp;
+  sfp.emplace_back("tickets", dir_fingerprint(kdir / "tickets"));
+  sfp.emplace_back("changes", dir_fingerprint(kdir / "changes"));
+  sfp.emplace_back("probes", dir_fingerprint(kdir / "probes"));
+  sfp.emplace_back("runs", dir_fingerprint(kdir / "runs"));
+  sfp.emplace_back("session costs", file_fingerprint(kdir / "mcp" / "launch" / "costs.jsonl"));  // ADR 0031
+  std::string service_fingerprint = combine_hashes(sfp);
   if (last_fingerprint_.empty()) {
     auto s = db_.q("SELECT value FROM meta WHERE key='fingerprint'");
     if (s.step()) last_fingerprint_ = s.text(0);
+    auto s2 = db_.q("SELECT value FROM meta WHERE key='service_fingerprint'");
+    if (s2.step()) last_service_fingerprint_ = s2.text(0);
   }
   schema_ = std::make_unique<core::Schema>(*schema);
+
+  // The service tables: tickets and probes are read again, run journals not in the table are added.
+  auto refresh_service = [&]() -> kk::VoidResult {
+    for (const char* t : {"DELETE FROM tickets", "DELETE FROM probes"}) {
+      if (auto r = db_.exec(t); !r) return std::unexpected(r.error());
+    }
+    // Tickets.
+    {
+      auto ins = db_.q("INSERT OR REPLACE INTO tickets(id, kind, status, origin, current_block, created_at, closed_at, "
+                       "title) VALUES(?,?,?,?,?,?,?,?)");
+      std::error_code ec;
+      std::vector<fs::path> tfiles;
+      for (const auto& e : fs::directory_iterator(kdir / "tickets", ec)) {
+        if (e.path().extension() == ".ksl") tfiles.push_back(e.path());
+      }
+      std::sort(tfiles.begin(), tfiles.end());
+      for (const auto& p : tfiles) {
+        auto text = core::read_file(p);
+        if (!text) continue;
+        auto t = core::parse_ticket_text(*text, core::rel_str(root_, p));
+        if (!t) {
+          spdlog::warn("index: {}", t.error().str());
+          continue;
+        }
+        std::string cur;
+        for (const auto& e : t->trail) {
+          if (e.type != core::TrailEntry::Type::Level) continue;
+          cur = e.get("pick").empty() ? e.get("at") : e.get("pick");
+        }
+        auto mt = mtime_s(p);
+        ins.bind(1, t->id).bind(2, t->kind.value).bind(3, t->status.value).bind(4, t->origin.value).bind_opt(5, cur)
+            .bind(6, mt).bind(7, t->status.value == "closed" ? mt : 0)
+            .bind(8, t->symptom.set ? t->symptom.value : t->task.value);
+        if (auto r = ins.run(); !r) return std::unexpected(r.error());
+      }
+    }
+
+    // Probes: fold raw JSONL into summaries (12.5).
+    {
+      std::map<std::pair<std::string, std::string>, std::int64_t> link_ids;
+      {
+        auto s = db_.q("SELECT id, src_block, dst_block FROM links");
+        while (s.step()) link_ids.emplace(std::make_pair(s.text(1), s.text(2)), s.i64(0));
+      }
+      auto ins = db_.q("INSERT INTO probes(link_id, metric, n, min, max, avg, last, run, ts, link) VALUES(?,?,?,?,?,?,?,?,?,?)");
+      std::error_code ec;
+      std::vector<fs::path> pfiles;
+      for (const auto& e : fs::directory_iterator(kdir / "probes", ec)) {
+        if (e.path().extension() == ".jsonl") pfiles.push_back(e.path());
+      }
+      std::sort(pfiles.begin(), pfiles.end());
+      for (const auto& p : pfiles) {
+        auto text = core::read_file(p);
+        if (!text) continue;
+        struct Agg {
+          std::int64_t n = 0;
+          double min = 0, max = 0, sum = 0, last = 0;
+        };
+        std::map<std::pair<std::string, std::string>, Agg> agg;
+        for (const auto& line : core::split(*text, '\n')) {
+          try {
+            auto j = json::parse(line);
+            std::string link = j.value("link", "");
+            std::string metric = j.value("metric", "");
+            double v = j.value("v", 0.0);
+            auto& a = agg[{link, metric}];
+            if (a.n == 0) a.min = a.max = v;
+            a.min = std::min(a.min, v);
+            a.max = std::max(a.max, v);
+            a.sum += v;
+            a.last = v;
+            ++a.n;
+          } catch (const json::exception&) {
+          }
+        }
+        auto run = p.stem().string();
+        auto ts = mtime_s(p);
+        for (const auto& [key, a] : agg) {
+          std::int64_t lid = 0;
+          auto arrow = key.first.find("->");
+          if (arrow != std::string::npos) {
+            auto it = link_ids.find({key.first.substr(0, arrow), key.first.substr(arrow + 2)});
+            if (it != link_ids.end()) lid = it->second;
+          }
+          ins.bind(1, lid).bind(2, key.second).bind(3, a.n).bind(4, a.min).bind(5, a.max)
+              .bind(6, a.n > 0 ? a.sum / static_cast<double>(a.n) : 0.0).bind(7, a.last).bind(8, run).bind(9, ts)
+              .bind(10, key.first);
+          if (auto r = ins.run(); !r) return std::unexpected(r.error());
+        }
+      }
+    }
+
+    // Runs: load journals that are not in the table yet (16.1). A run whose turns a Claude Code session
+    // launched by Karkas served gets that session's own tokens and cost when the session has ended
+    // (.karkas/mcp/launch/costs.jsonl; several rows when the run was started again, docs/adr/0031).
+    {
+      const auto session_costs = read_session_costs(kdir / "mcp" / "launch" / "costs.jsonl");
+      std::set<std::string> known;
+      {
+        auto s = db_.q("SELECT journal FROM runs WHERE journal IS NOT NULL");
+        while (s.step()) known.insert(s.text(0));
+      }
+      for (const auto& [journal, sc] : session_costs) {
+        if (!known.contains(journal)) continue;
+        auto u = db_.q(
+            "UPDATE runs SET input_tokens=?, output_tokens=?, cache_write_tokens=?, cache_write_1h_tokens=?, "
+            "cache_read_tokens=?, cost_usd=?, session_cost=1 WHERE journal=? AND (session_cost IS NOT 1 OR cost_usd != ?)");
+        u.bind(1, sc.input).bind(2, sc.output).bind(3, sc.cache_write).bind(4, sc.cache_write_1h).bind(5, sc.cache_read)
+            .bind(6, sc.usd).bind(7, journal).bind(8, sc.usd);
+        if (auto r = u.run(); !r) return std::unexpected(r.error());
+      }
+      std::error_code ec;
+      std::vector<fs::path> jfiles;
+      for (const auto& e : fs::directory_iterator(kdir / "runs", ec)) {
+        if (e.is_regular_file(ec) && e.path().extension() == ".jsonl") jfiles.push_back(e.path());
+      }
+      std::sort(jfiles.begin(), jfiles.end());
+      for (const auto& p : jfiles) {
+        auto name = p.filename().string();
+        if (known.contains(name)) continue;
+        auto text = core::read_file(p);
+        if (!text) continue;
+        auto lines = core::split(*text, '\n');
+        for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
+          try {
+            auto j = json::parse(*it);
+            if (j.value("type", "") != "run_end") continue;
+            RunRow r;
+            r.ticket = j.value("ticket", "");
+            r.role = j.value("role", "");
+            r.block = j.value("block", "");
+            r.provider = j.value("provider", "");
+            r.model = j.value("model", "");
+            r.tier = j.value("tier", "");
+            r.attempt = j.value("attempt", 0);
+            r.input_tokens = j.value("input_tokens", std::int64_t{0});
+            r.output_tokens = j.value("output_tokens", std::int64_t{0});
+            r.cache_write_tokens = j.value("cache_write_tokens", std::int64_t{0});
+            r.cache_read_tokens = j.value("cache_read_tokens", std::int64_t{0});
+            r.cache_write_1h_tokens = j.value("cache_write_1h_tokens", std::int64_t{0});
+            r.cost_usd = j.value("cost_usd", 0.0);
+            if (auto sc = session_costs.find(name); sc != session_costs.end()) apply_session_cost(r, sc->second);
+            r.duration_ms = j.value("duration_ms", std::int64_t{0});
+            r.steps = j.value("steps", 0);
+            r.outcome = j.value("outcome", "");
+            r.ts = j.value("ts", std::int64_t{0});
+            r.journal = name;
+            if (auto rr = insert_run(r); !rr) return std::unexpected(rr.error());
+          } catch (const json::exception&) {
+            continue;
+          }
+          break;
+        }
+      }
+    }
+
+    auto set = db_.q("INSERT OR REPLACE INTO meta(key, value) VALUES('service_fingerprint', ?)");
+    set.bind(1, service_fingerprint);
+    return set.run();
+  };
+
   if (!opts.full && fingerprint == last_fingerprint_) {
+    if (service_fingerprint != last_service_fingerprint_) {
+      // Only tickets, changes, probes or journals changed: no code is analyzed or checked.
+      if (auto r = db_.begin(); !r) return std::unexpected(r.error());
+      if (auto r = refresh_service(); !r) {
+        db_.rollback();
+        return std::unexpected(r.error());
+      }
+      if (auto r = db_.commit(); !r) {
+        db_.rollback();
+        return std::unexpected(r.error());
+      }
+      last_service_fingerprint_ = service_fingerprint;
+      stats.changed = true;
+      stats.service_only = true;
+      stats.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      spdlog::debug("index: tickets, changes, probes or runs only, {:.1f} ms", stats.ms);
+      return stats;
+    }
     stats.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     return stats;
   }
@@ -476,15 +716,16 @@ kk::Result<UpdateStats> Index::update(const UpdateOptions& opts) {
   std::vector<std::pair<std::string, FileFacts>> new_facts;
   if (opts.analyzer != nullptr) {
     for (const auto& f : files) {
-      auto it = facts_cache_.find(f.hash);
+      const std::string key = f.hash + "@" + analyzer_version;  // facts of another analyzer are not reused
+      auto it = facts_cache_.find(key);
       if (it == facts_cache_.end() || opts.full) {
         auto text = core::read_file(root_ / f.path);
         if (!text) continue;
         auto ff = opts.analyzer->analyze(f, *text);
-        facts_cache_[f.hash] = ff;
-        new_facts.emplace_back(f.hash, ff);
+        facts_cache_[key] = ff;
+        new_facts.emplace_back(key, ff);
         ++stats.analyzed;
-        it = facts_cache_.find(f.hash);
+        it = facts_cache_.find(key);
       }
       facts.facts[f.path] = it->second;
     }
@@ -532,11 +773,12 @@ kk::Result<UpdateStats> Index::update(const UpdateOptions& opts) {
   auto ins_search = db_.q("INSERT INTO search(block, purpose, inv, hist) VALUES(?,?,?,?)");
   std::map<std::string, std::vector<const CodeFile*>> by_block;
   for (const auto& f : files) by_block[f.block].push_back(&f);
+  const auto links = schema->links();  // once for every block below (ADR 0028)
   for (const auto& b : schema->blocks) {
     std::string api_h = b.has_code() ? facts.api_hash[b.id] : "";
     std::string frozen;
     if (auto it = state->frozen_api.find(b.id); it != state->frozen_api.end()) frozen = it->second;
-    auto code_h = block_test_hash(*schema, files, b.id);
+    auto code_h = block_test_hash(links, files, b.id);
     auto status = b.has_code() ? compute_status(b, by_block[b.id], *state, drift_blocks.contains(b.id), api_h, code_h)
                                : (drift_blocks.contains(b.id) ? core::BlockStatus::Drift : core::BlockStatus::Design);
     ins_block.bind(1, b.id)
@@ -615,169 +857,37 @@ kk::Result<UpdateStats> Index::update(const UpdateOptions& opts) {
     ins_ref.bind_opt(1, r.from_block).bind(2, r.from_file).bind(3, r.line).bind_opt(4, r.to_block).bind_opt(5, r.to_role).bind(6, r.kind);
     if (auto rr = ins_ref.run(); !rr) return fail_tx(rr.error());
   }
-  auto ins_drift = db_.q("INSERT INTO drift(block, code, severity, message, file, line) VALUES(?,?,?,?,?,?)");
+  auto ins_drift = db_.q("INSERT INTO drift(block, code, severity, message, file, line, col) VALUES(?,?,?,?,?,?,?)");
   for (const auto& i : issues) {
     ins_drift.bind_opt(1, i.block).bind(2, i.code).bind(3, std::string(1, i.severity)).bind(4, i.message)
-        .bind_opt(5, i.loc.file).bind(6, i.loc.line);
+        .bind_opt(5, i.loc.file).bind(6, i.loc.line).bind(7, i.loc.col);
     if (auto r = ins_drift.run(); !r) return fail_tx(r.error());
   }
   auto ins_test = db_.q(
       "INSERT OR REPLACE INTO test_results(block, contract_pass, contract_total, unit_pass, unit_total, "
       "integration_pass, integration_total, build_failed, fresh, failures, ts) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
+  const auto test_links = schema->links();
   for (const auto& [id, t] : state->tests) {
-    bool fresh = t.code_hash == block_test_hash(*schema, files, id);
+    bool fresh = t.code_hash == block_test_hash(test_links, files, id);
     ins_test.bind(1, id).bind(2, t.contract.pass).bind(3, t.contract.total).bind(4, t.unit.pass)
         .bind(5, t.unit.total).bind(6, t.integration.pass).bind(7, t.integration.total)
         .bind(8, t.build_failed ? 1 : 0).bind(9, fresh ? 1 : 0).bind(10, core::join(t.failures, "\n")).bind(11, t.ts);
     if (auto r = ins_test.run(); !r) return fail_tx(r.error());
   }
 
-  // Tickets.
-  {
-    auto ins = db_.q("INSERT OR REPLACE INTO tickets(id, kind, status, origin, current_block, created_at, closed_at, "
-                     "title) VALUES(?,?,?,?,?,?,?,?)");
-    std::error_code ec;
-    std::vector<fs::path> tfiles;
-    for (const auto& e : fs::directory_iterator(kdir / "tickets", ec)) {
-      if (e.path().extension() == ".ksl") tfiles.push_back(e.path());
-    }
-    std::sort(tfiles.begin(), tfiles.end());
-    for (const auto& p : tfiles) {
-      auto text = core::read_file(p);
-      if (!text) continue;
-      auto t = core::parse_ticket_text(*text, core::rel_str(root_, p));
-      if (!t) {
-        spdlog::warn("index: {}", t.error().str());
-        continue;
-      }
-      std::string cur;
-      for (const auto& e : t->trail) {
-        if (e.type != core::TrailEntry::Type::Level) continue;
-        cur = e.get("pick").empty() ? e.get("at") : e.get("pick");
-      }
-      auto mt = mtime_s(p);
-      ins.bind(1, t->id).bind(2, t->kind.value).bind(3, t->status.value).bind(4, t->origin.value).bind_opt(5, cur)
-          .bind(6, mt).bind(7, t->status.value == "closed" ? mt : 0)
-          .bind(8, t->symptom.set ? t->symptom.value : t->task.value);
-      if (auto r = ins.run(); !r) return fail_tx(r.error());
-    }
-  }
-
-  // Probes: fold raw JSONL into summaries (12.5).
-  {
-    std::map<std::pair<std::string, std::string>, std::int64_t> link_ids;
-    {
-      auto s = db_.q("SELECT id, src_block, dst_block FROM links");
-      while (s.step()) link_ids.emplace(std::make_pair(s.text(1), s.text(2)), s.i64(0));
-    }
-    auto ins = db_.q("INSERT INTO probes(link_id, metric, n, min, max, avg, last, run, ts, link) VALUES(?,?,?,?,?,?,?,?,?,?)");
-    std::error_code ec;
-    std::vector<fs::path> pfiles;
-    for (const auto& e : fs::directory_iterator(kdir / "probes", ec)) {
-      if (e.path().extension() == ".jsonl") pfiles.push_back(e.path());
-    }
-    std::sort(pfiles.begin(), pfiles.end());
-    for (const auto& p : pfiles) {
-      auto text = core::read_file(p);
-      if (!text) continue;
-      struct Agg {
-        std::int64_t n = 0;
-        double min = 0, max = 0, sum = 0, last = 0;
-      };
-      std::map<std::pair<std::string, std::string>, Agg> agg;
-      for (const auto& line : core::split(*text, '\n')) {
-        try {
-          auto j = json::parse(line);
-          std::string link = j.value("link", "");
-          std::string metric = j.value("metric", "");
-          double v = j.value("v", 0.0);
-          auto& a = agg[{link, metric}];
-          if (a.n == 0) a.min = a.max = v;
-          a.min = std::min(a.min, v);
-          a.max = std::max(a.max, v);
-          a.sum += v;
-          a.last = v;
-          ++a.n;
-        } catch (const json::exception&) {
-        }
-      }
-      auto run = p.stem().string();
-      auto ts = mtime_s(p);
-      for (const auto& [key, a] : agg) {
-        std::int64_t lid = 0;
-        auto arrow = key.first.find("->");
-        if (arrow != std::string::npos) {
-          auto it = link_ids.find({key.first.substr(0, arrow), key.first.substr(arrow + 2)});
-          if (it != link_ids.end()) lid = it->second;
-        }
-        ins.bind(1, lid).bind(2, key.second).bind(3, a.n).bind(4, a.min).bind(5, a.max)
-            .bind(6, a.n > 0 ? a.sum / static_cast<double>(a.n) : 0.0).bind(7, a.last).bind(8, run).bind(9, ts)
-            .bind(10, key.first);
-        if (auto r = ins.run(); !r) return fail_tx(r.error());
-      }
-    }
-  }
-
-  // Runs: load journals that are not in the table yet (16.1).
-  {
-    std::set<std::string> known;
-    {
-      auto s = db_.q("SELECT journal FROM runs WHERE journal IS NOT NULL");
-      while (s.step()) known.insert(s.text(0));
-    }
-    std::error_code ec;
-    std::vector<fs::path> jfiles;
-    for (const auto& e : fs::directory_iterator(kdir / "runs", ec)) {
-      if (e.is_regular_file(ec) && e.path().extension() == ".jsonl") jfiles.push_back(e.path());
-    }
-    std::sort(jfiles.begin(), jfiles.end());
-    for (const auto& p : jfiles) {
-      auto name = p.filename().string();
-      if (known.contains(name)) continue;
-      auto text = core::read_file(p);
-      if (!text) continue;
-      auto lines = core::split(*text, '\n');
-      for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
-        try {
-          auto j = json::parse(*it);
-          if (j.value("type", "") != "run_end") continue;
-          RunRow r;
-          r.ticket = j.value("ticket", "");
-          r.role = j.value("role", "");
-          r.block = j.value("block", "");
-          r.provider = j.value("provider", "");
-          r.model = j.value("model", "");
-          r.tier = j.value("tier", "");
-          r.attempt = j.value("attempt", 0);
-          r.input_tokens = j.value("input_tokens", std::int64_t{0});
-          r.output_tokens = j.value("output_tokens", std::int64_t{0});
-          r.cache_write_tokens = j.value("cache_write_tokens", std::int64_t{0});
-          r.cache_read_tokens = j.value("cache_read_tokens", std::int64_t{0});
-          r.cost_usd = j.value("cost_usd", 0.0);
-          r.duration_ms = j.value("duration_ms", std::int64_t{0});
-          r.steps = j.value("steps", 0);
-          r.outcome = j.value("outcome", "");
-          r.ts = j.value("ts", std::int64_t{0});
-          r.journal = name;
-          if (auto rr = insert_run(r); !rr) return fail_tx(rr.error());
-        } catch (const json::exception&) {
-          continue;
-        }
-        break;
-      }
-    }
-  }
+  if (auto r = refresh_service(); !r) return fail_tx(r.error());
 
   // Meta: project, idea, view order.
   {
     json order = json::object();
+    const auto flow = schema->leaf_flow_order();  // once for every group (ADR 0028)
     std::vector<std::string> top;
-    for (const auto* b : schema->ordered_children("")) top.push_back(b->id);
+    for (const auto* b : schema->ordered_children("", flow)) top.push_back(b->id);
     order[""] = top;
     for (const auto& b : schema->blocks) {
       if (b.children.empty()) continue;
       std::vector<std::string> kids;
-      for (const auto* c : schema->ordered_children(b.id)) kids.push_back(c->id);
+      for (const auto* c : schema->ordered_children(b.id, flow)) kids.push_back(c->id);
       order[b.id] = kids;
     }
     auto set = db_.q("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)");
@@ -786,6 +896,7 @@ kk::Result<UpdateStats> Index::update(const UpdateOptions& opts) {
              {"idea", schema->project.idea.value},
              {"order", order.dump()},
              {"fingerprint", fingerprint},
+             {"service_fingerprint", service_fingerprint},
              {"updated_at", std::to_string(now)}}) {
       set.bind(1, k).bind(2, v);
       if (auto r = set.run(); !r) return fail_tx(r.error());
@@ -793,6 +904,7 @@ kk::Result<UpdateStats> Index::update(const UpdateOptions& opts) {
   }
   if (auto r = db_.commit(); !r) return fail_tx(r.error());
   last_fingerprint_ = fingerprint;
+  last_service_fingerprint_ = service_fingerprint;
   stats.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   spdlog::debug("index: {} blocks, {} files, {} analyzed, {:.1f} ms", stats.blocks, stats.files, stats.analyzed, stats.ms);
   return stats;
@@ -801,21 +913,40 @@ kk::Result<UpdateStats> Index::update(const UpdateOptions& opts) {
 kk::VoidResult Index::insert_run(const RunRow& r) {
   auto s = db_.q(
       "INSERT OR IGNORE INTO runs(ticket, role, block, provider, model, tier, attempt, input_tokens, output_tokens, "
-      "cache_write_tokens, cache_read_tokens, cost_usd, duration_ms, steps, outcome, ts, journal) "
-      "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+      "cache_write_tokens, cache_read_tokens, cost_usd, duration_ms, steps, outcome, ts, journal, cache_write_1h_tokens, "
+      "session_cost) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
   s.bind_opt(1, r.ticket).bind(2, r.role).bind_opt(3, r.block).bind(4, r.provider).bind(5, r.model).bind(6, r.tier)
       .bind(7, r.attempt).bind(8, r.input_tokens).bind(9, r.output_tokens).bind(10, r.cache_write_tokens)
       .bind(11, r.cache_read_tokens).bind(12, r.cost_usd).bind(13, r.duration_ms).bind(14, r.steps)
-      .bind(15, r.outcome).bind(16, r.ts).bind_opt(17, r.journal);
+      .bind(15, r.outcome).bind(16, r.ts).bind_opt(17, r.journal).bind(18, r.cache_write_1h_tokens)
+      .bind(19, static_cast<std::int64_t>(r.session_cost ? 1 : 0));
   return s.run();
+}
+
+std::vector<core::Issue> Index::issues() {
+  std::vector<core::Issue> out;
+  auto s = db_.q("SELECT block, code, severity, message, file, line, col FROM drift ORDER BY rowid");
+  while (s.step()) {
+    core::Issue i;
+    i.block = s.text(0);
+    i.code = s.text(1);
+    auto sev = s.text(2);
+    i.severity = sev.empty() ? 'E' : sev[0];
+    i.message = s.text(3);
+    i.loc.file = s.text(4);
+    i.loc.line = static_cast<int>(s.i64(5));
+    i.loc.col = static_cast<int>(s.i64(6));
+    out.push_back(std::move(i));
+  }
+  return out;
 }
 
 std::vector<RunRow> Index::runs(std::string_view since_ts) {
   std::vector<RunRow> out;
   auto s = db_.q(
       "SELECT id, ticket, role, block, provider, model, tier, attempt, input_tokens, output_tokens, "
-      "cache_write_tokens, cache_read_tokens, cost_usd, duration_ms, steps, outcome, ts, journal FROM runs "
-      "WHERE ts >= ? ORDER BY ts, id");
+      "cache_write_tokens, cache_read_tokens, cost_usd, duration_ms, steps, outcome, ts, journal, cache_write_1h_tokens, "
+      "session_cost FROM runs WHERE ts >= ? ORDER BY ts, id");
   s.bind(1, static_cast<std::int64_t>(since_ts.empty() ? 0LL : std::stoll(std::string(since_ts))));
   while (s.step()) {
     RunRow r;
@@ -837,6 +968,8 @@ std::vector<RunRow> Index::runs(std::string_view since_ts) {
     r.outcome = s.text(15);
     r.ts = s.i64(16);
     r.journal = s.text(17);
+    r.cache_write_1h_tokens = s.i64(18);
+    r.session_cost = s.i64(19) == 1;
     out.push_back(std::move(r));
   }
   return out;

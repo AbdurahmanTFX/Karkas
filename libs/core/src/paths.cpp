@@ -10,6 +10,18 @@
 
 namespace kk::core {
 
+fs::path self_executable() {
+  std::error_code ec;
+  auto exe = fs::read_symlink("/proc/self/exe", ec).string();
+  if (ec || exe.empty()) return {};
+  constexpr std::string_view kDeleted = " (deleted)";
+  if (exe.ends_with(kDeleted)) {
+    auto again = exe.substr(0, exe.size() - kDeleted.size());
+    if (fs::exists(again, ec)) return again;
+  }
+  return exe;
+}
+
 fs::path normalize(const fs::path& p) {
   std::error_code ec;
   auto abs = fs::absolute(p, ec);

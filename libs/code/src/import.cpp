@@ -77,21 +77,6 @@ struct Module {
 bool public_symbol(const index::SymbolFact& s) { return s.access.empty() || s.access == "public"; }
 
 // "const std::string&" → "std::string"; drops qualifiers that say nothing about the data.
-std::string clean_type(std::string t) {
-  if (auto eq = t.find('='); eq != std::string::npos) t = t.substr(0, eq);
-  for (const char* w : {"const", "volatile", "static", "inline", "virtual", "explicit", "constexpr", "typename", "struct",
-                        "class", "enum", "extern", "mutable", "friend"}) {
-    t = std::regex_replace(t, std::regex(std::string("\\b") + w + "\\b"), "");
-  }
-  t = core::replace_all(t, "&", "");
-  t = core::replace_all(t, "\"", "");
-  t = core::replace_all(t, "#", "");
-  t = std::regex_replace(t, std::regex("\\s+"), " ");
-  t = std::regex_replace(t, std::regex(" ?\\* ?"), "*");
-  t = std::regex_replace(t, std::regex(" ?([<>,]) ?"), "$1");
-  return std::string(core::trim(t));
-}
-
 bool type_ok(std::string_view t) {
   if (t.empty()) return false;
   char c = t[0];
@@ -563,10 +548,10 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
         port.dir = core::PortDir::Fn;
         port.name = p;
         for (const auto& [type, name] : sig.params) {
-          auto t = clean_type(type);
+          auto t = card_type(type);
           port.params.push_back(type_ok(t) ? t : (name.empty() ? std::string("arg") : name));
         }
-        auto ret = clean_type(sig.ret);
+        auto ret = card_type(sig.ret);
         if (type_ok(ret) && ret != "void") port.ret = ret;
         b.ports.push_back(std::move(port));
       }

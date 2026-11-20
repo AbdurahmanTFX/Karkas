@@ -272,3 +272,37 @@ TEST_CASE("economy: a tester with a task of a ticket escalates its tier when it 
   CHECK(core::contains(t, "tester       at=stream.ring model=cheap attempt=1 outcome=failed"));
   CHECK(core::contains(t, "status  fixed"));
 }
+
+TEST_CASE("economy: a change whose note names a fn it does not declare goes back once, and the orchestrator decides a tier higher (ADR 0029)") {
+  auto cfg = test::test_config();
+  cfg.roles["orchestrator"] = "medium";
+  Rig rig(cfg);
+  rig.model.tool("propose_change",
+                 {{"reason", "the ring can be reset"}, {"diff", "~ @block stream.ring\n+ note the ring gets fn reset() -> void, which empties it"}});
+  rig.model.tool("escalate", {{"note", "amend later"}});
+  auto r = rig.engine->task("the ring can be reset");
+  REQUIRE(r);
+  REQUIRE(rig.model.calls.size() == 2);  // no model asked anything in between: the check is the program's
+  CHECK(rig.model.calls[0].tier == "medium");
+  CHECK(rig.model.calls[1].tier == "strong");
+  auto back = test::ScriptedModel::request_text(rig.model.calls[1].req);
+  CHECK(core::contains(back, "it was set aside"));
+  CHECK(core::contains(back, "stream.ring: a note names fn reset() but the change declares no \"+ fn reset(...)\" line"));
+  agents::ChangeStore changes(rig.p.path());
+  CHECK(changes.load("C-0001")->status.value == "rejected");
+  CHECK(core::contains(rig.ticket(), "the orchestrator decides on tier strong from here (was medium)"));
+}
+
+TEST_CASE("economy: a change of an orchestrator below the strongest tier is reviewed by its leaves without review_changes (ADR 0029)") {
+  auto cfg = test::test_config();
+  cfg.roles["orchestrator"] = "medium";
+  REQUIRE_FALSE(cfg.review_changes);
+  Rig rig(cfg);
+  rig.model.tool("propose_change", {{"reason", "the ring can be reset"},
+                                    {"diff", "~ @block stream.ring\n+ fn reset() -> void\n+ inv reset() empties the ring"}});
+  rig.model.tool("answer", {{"text", "yes"}});
+  auto r = rig.engine->task("the ring can be reset");
+  REQUIRE(r);
+  REQUIRE(rig.model.calls.size() >= 2);
+  CHECK(core::contains(test::ScriptedModel::request_text(rig.model.calls[1].req), "Is this card enough for your block's part of the ticket"));
+}

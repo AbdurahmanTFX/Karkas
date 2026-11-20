@@ -25,6 +25,15 @@ std::string_view to_string(Role r) {
   return "?";
 }
 
+namespace {
+
+bool is_header(const fs::path& p) {
+  auto ext = p.extension().string();
+  return ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx" || ext == ".ipp" || ext == ".inl";
+}
+
+}  // namespace
+
 Sandbox::Sandbox(const core::Schema& schema, std::string block, Role role)
     : block_(std::move(block)), role_(role), project_(core::normalize(schema.root)) {
   const auto& dirs = schema.project.dirs;
@@ -33,13 +42,39 @@ Sandbox::Sandbox(const core::Schema& schema, std::string block, Role role)
   bool group = b != nullptr && b->kind == core::BlockKind::Group;
   for (const auto& x : schema.blocks) known_.push_back(x.id);
   own_ = core::normalize(group ? schema.root / "tests" / "integration" / block_ : schema.block_dir(block_));
-  read_roots_.push_back({"", own_});
+  // An imported block works on the files of its card where they are (ADR 0027): paths from the
+  // project root, which is its first root (so display() shows them as the card and the compiler do).
+  imported_ = b != nullptr && !group && b->external();
+  read_roots_.push_back({"", imported_ ? project_ : own_});
+  if (imported_) {
+    for (const auto& x : schema.blocks) {
+      for (const auto& f : x.file_list()) listed_owner_[core::normalize(project_ / f)] = x.id;
+    }
+    for (const auto& f : b->file_list()) {
+      auto abs = core::normalize(project_ / f);
+      // The tester checks promises: of an imported block it reads the headers only.
+      if (role == Role::Tester && !is_header(abs)) continue;
+      own_files_.push_back(f);
+      own_listed_.insert(abs);
+    }
+    internal_dirs_ = {core::normalize(project_ / ".karkas"), core::normalize(project_ / dirs.blocks), core::normalize(project_ / "build")};
+  }
+  // The headers an imported block reads of another imported block.
+  auto add_headers = [&](const core::Block& x) {
+    if (!imported_ || !x.external()) return;
+    for (const auto& f : x.file_list()) {
+      if (is_header(f)) read_listed_.insert(core::normalize(project_ / f));
+    }
+  };
   auto add_api = [&](const std::string& id) {
     const auto* x = schema.find(id);
     if (x == nullptr || !x->has_code()) return;
     read_roots_.push_back({id, core::normalize(schema.block_dir(id) / dirs.api)});
+    neighbors_.push_back(id);
+    add_headers(*x);
   };
-  std::vector<std::string> neighbors = code::allowed_api_blocks(schema, block_);
+  const auto links = schema.links();  // once: the users' loop below asks for every block of the schema
+  std::vector<std::string> neighbors = code::allowed_api_blocks(schema, block_, links);
   for (const auto& x : schema.blocks) {
     if (x.kind == core::BlockKind::Shared) neighbors.push_back(x.id);
   }
@@ -54,13 +89,16 @@ Sandbox::Sandbox(const core::Schema& schema, std::string block, Role role)
     for (const auto& x : schema.blocks) {
       if (x.id == block_ || !x.has_code()) continue;
       if (std::find(neighbors.begin(), neighbors.end(), x.id) != neighbors.end()) continue;
-      auto sup = code::allowed_api_blocks(schema, x.id);
+      auto sup = code::allowed_api_blocks(schema, x.id, links);
       if (std::find(sup.begin(), sup.end(), block_) == sup.end()) continue;
       read_roots_.push_back({x.id, core::normalize(schema.block_dir(x.id) / dirs.api), true});
       users_.push_back(x.id);
+      add_headers(x);
     }
   }
-  if (group) {
+  if (imported_) {
+    // Writing: the files of the card only (resolve_imported); no folder of its own.
+  } else if (group) {
     write_roots_.push_back(own_);
   } else if (role == Role::Worker) {
     write_roots_.push_back(core::normalize(own_ / dirs.impl));
@@ -79,11 +117,90 @@ Sandbox::Sandbox(const core::Schema& schema, std::string block, Role role)
   }
 }
 
-std::vector<std::string> Sandbox::neighbor_blocks() const {
-  std::vector<std::string> out;
-  for (const auto& r : read_roots_) {
-    if (!r.label.empty() && !r.user) out.push_back(r.label);
+std::vector<std::string> Sandbox::neighbor_blocks() const { return neighbors_; }
+
+// Karkas's own files, the build folder, other blocks' folders and hidden paths: never read.
+bool Sandbox::internal(const fs::path& abs) const {
+  for (const auto& d : internal_dirs_) {
+    if (core::is_within(d, abs)) return true;
   }
+  for (const auto& part : abs.lexically_relative(project_)) {
+    auto s = part.string();
+    if (s.size() > 1 && s.front() == '.' && s != "..") return true;
+  }
+  return false;
+}
+
+void Sandbox::allow_write_dir(const fs::path& dir) { extra_write_.push_back(core::normalize(dir)); }
+
+kk::Result<fs::path> Sandbox::resolve_imported(const std::string& p, bool write) const {
+  for (const auto& part : fs::path(p)) {
+    if (part == "..") return kk::fail("sandbox", fmt::format("'{}': '..' is not allowed", p));
+  }
+  auto abs = core::normalize(project_ / p);  // resolves symlinks of existing parts
+  if (!core::is_within(project_, abs)) return kk::fail("sandbox", fmt::format("'{}' resolves outside the sandbox", p));
+  // The project's own test folder of an imported project's tester (ADR 0029): read and written.
+  for (const auto& d : extra_write_) {
+    if (!core::is_within(d, abs)) continue;
+    std::error_code ec;
+    if (write && fs::is_symlink(project_ / p, ec)) return kk::fail("sandbox", fmt::format("'{}' is a symlink", p));
+    return abs;
+  }
+  const bool own = own_listed_.contains(abs);
+  auto owner = listed_owner_.find(abs);
+  if (write) {
+    if (role_ != Role::Worker || !own) {
+      std::string whose = owner != listed_owner_.end() && owner->second != block_ ? fmt::format(" ({} belongs to block {})", p, owner->second)
+                                                                                  : std::string();
+      return kk::fail("sandbox", fmt::format("'{}': you may change only the files of your card: {}{}. A new file, or a file of no "
+                                             "block (data, configuration), comes with a card change: report "
+                                             "needs_contract_change with '~ @block {}' and '+ files {}'",
+                                             p, core::join(own_files_, " "), whose, block_, p));
+    }
+    if (is_header(abs) && api_access_ == ApiAccess::None) {
+      return kk::fail("sandbox", fmt::format("'{}': the headers of {} are read-only in this run", p, block_));
+    }
+    std::error_code ec;
+    if (fs::is_symlink(project_ / p, ec)) return kk::fail("sandbox", fmt::format("'{}' is a symlink", p));
+    return abs;
+  }
+  if (own || read_listed_.contains(abs) || core::is_within(own_, abs)) return abs;
+  // A native neighbor's api/ (a mixed project) under its path as well as under its label.
+  for (const auto& r : read_roots_) {
+    if (!r.label.empty() && core::is_within(r.path, abs)) return abs;
+  }
+  if (abs == project_) return abs;
+  if (internal(abs)) {
+    return kk::fail("sandbox", fmt::format("'{}' is not readable: Karkas's own files, the build folder, the cards of other blocks "
+                                           "and hidden paths are outside the sandbox",
+                                           p));
+  }
+  if (owner != listed_owner_.end()) {
+    return kk::fail("sandbox", fmt::format("'{}' belongs to block {}, which is not linked to {}: of other blocks only the headers "
+                                           "of the linked ones are readable",
+                                           p, owner->second, block_));
+  }
+  std::error_code ec;
+  if (fs::is_directory(abs, ec)) return abs;  // a folder: list_dir shows what in it is readable
+  if (core::is_code_file(abs)) {
+    return kk::fail("sandbox", fmt::format("'{}' is code of no block you may read; readable are your files ({}) and the headers "
+                                           "of the blocks linked to {}",
+                                           p, core::join(own_files_, " "), block_));
+  }
+  return abs;  // a project file that is not code and that no card lists (data, configuration)
+}
+
+std::vector<fs::path> Sandbox::search_files(const fs::path& dir) const {
+  std::vector<fs::path> out;
+  if (!imported_ || dir != project_) return out;
+  for (const auto* set : {&own_listed_, &read_listed_}) {
+    for (const auto& f : *set) {
+      std::error_code ec;
+      if (fs::is_regular_file(f, ec)) out.push_back(f);
+    }
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
   return out;
 }
 
@@ -91,10 +208,12 @@ kk::Result<fs::path> Sandbox::resolve(std::string_view path, bool write) const {
   std::string p(core::trim(path));
   if (p.empty()) p = ".";
   if (p.front() == '/' || p.front() == '~' || core::contains(p, "\\")) {
-    return kk::fail("sandbox", fmt::format("'{}': absolute paths are not allowed; use paths relative to the block", p));
+    return kk::fail("sandbox", fmt::format("'{}': absolute paths are not allowed; use paths relative to the {}", p,
+                                           imported_ ? "project root" : "block"));
   }
   const Root* root = &read_roots_.front();
   auto colon = p.find(':');
+  if (imported_ && colon == std::string::npos) return resolve_imported(p, write);
   if (colon != std::string::npos) {
     std::string label = p.substr(0, colon);
     std::string rest = p.substr(colon + 1);
@@ -165,7 +284,10 @@ kk::Result<fs::path> Sandbox::resolve(std::string_view path, bool write) const {
   return abs;
 }
 
-bool Sandbox::is_own_api(const fs::path& abs) const { return core::is_within(core::normalize(own_ / api_dir_), abs); }
+bool Sandbox::is_own_api(const fs::path& abs) const {
+  if (imported_) return own_listed_.contains(abs) && is_header(abs);
+  return core::is_within(core::normalize(own_ / api_dir_), abs);
+}
 
 std::string api_shape(std::string_view text) {
   std::string s;

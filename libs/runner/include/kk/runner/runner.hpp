@@ -42,6 +42,8 @@ bool is_secret_name(std::string_view name);
 
 // Only error lines, deduplicated, paths relative to `root`, at most `max_lines` (stage 5).
 std::string compress_build_log(std::string_view log, const fs::path& root, std::size_t max_lines = 40);
+// Only compiler warning lines ("file:line:col: warning: ..."), deduplicated, paths relative to `root`.
+std::string compress_build_warnings(std::string_view log, const fs::path& root, std::size_t max_lines = 40);
 
 // --- build and test -------------------------------------------------------------------------
 struct BuildOptions {
@@ -56,12 +58,16 @@ struct BuildOptions {
 struct BuildResult {
   bool ok = false;
   bool timed_out = false;
-  std::string summary;  // compressed errors
-  std::string log;      // full output
+  std::string summary;   // compressed errors
+  std::string warnings;  // compressed compiler warnings (of the files compiled in this build)
+  std::string log;       // full output
   std::chrono::milliseconds duration{0};
 };
 
 kk::Result<BuildResult> build(const BuildOptions& opts);
+// A project's own build command (`[project] build_command`, ADR 0027), run by `sh -c` from `cwd`:
+// nothing is configured by Karkas.
+kk::Result<BuildResult> build_command(const std::string& command, const fs::path& cwd, std::chrono::seconds timeout);
 
 struct Counts {
   int pass = 0;

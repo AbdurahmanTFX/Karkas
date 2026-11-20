@@ -389,7 +389,7 @@ TEST_CASE("engine: real build — the ring wraparound bug is found by descent an
   CHECK(snap.block("stream.ring")->status == "passing");
 }
 
-TEST_CASE("engine: approving an import writes the cards, and agents leave imported code alone") {
+TEST_CASE("engine: approving an import writes the cards, and a worker works inside an imported block (ADR 0027)") {
   test::FixtureCopy p{"legacy"};
   test::ScriptedModel model;
   test::FakeTests tests;
@@ -407,10 +407,26 @@ TEST_CASE("engine: approving an import writes the cards, and agents leave import
   CHECK(core::contains(*r, "C-0001 approved: 8 card(s) written"));
   CHECK(core::contains(*r, "describe existing code"));
   CHECK_FALSE(core::contains(*r, "karkas expand"));  // the code exists, no api/ to write
+  // The worker edits the files of its card where they are, the project's build checks it.
+  model.tool("edit_file", {{"path", "src/game/player.cpp"}, {"old", "pos_.x + dt"}, {"new", "pos_.x + 2 * dt"}});
+  model.tool("report", {{"status", "done"}, {"fix", "the player moves twice as fast"}, {"files", {"src/game/player.cpp"}}, {"api", "unchanged"}});
   auto w = (*e)->run_worker("game.player", "", "make the player faster");
-  CHECK(w.status == "failed");
-  CHECK(core::contains(w.cause, "imported"));
-  CHECK(model.calls.empty());  // no model call was spent on it
+  CHECK_MESSAGE(w.status == "done", w.cause);
+  CHECK(core::contains(test::read(p / "src/game/player.cpp"), "pos_.x + 2 * dt"));
+  CHECK(w.api_note.empty());
+  REQUIRE(model.calls.size() == 2);
+  auto first = test::ScriptedModel::request_text(model.calls[0].req);
+  CHECK(core::contains(first, "WORKER of one block of an imported project"));
+  CHECK(core::contains(first, "=== src/game/hpp/player.hpp\n"));  // its header, whole
+  CHECK(core::contains(first, "=== src/game/player.cpp\n"));      // its source, whole (small)
+  CHECK(core::contains(first, "src/game/hpp/world.hpp"));         // the header of the linked block
+  CHECK(core::contains(first, "IsWalkable"));
+  CHECK(core::contains(first, "their public part is the contract"));
+  CHECK_FALSE(core::contains(first, "tests/unit"));
+  // The tester has no Karkas contract tests to write there.
+  auto t = (*e)->run_tester("game.player");
+  CHECK(t.status == "failed");
+  CHECK(core::contains(t.cause, "project's own build and tests"));
 }
 
 TEST_CASE("engine: approving the api confirms blocks marked needs_review, also the entry without an api") {
@@ -649,7 +665,40 @@ TEST_CASE("engine: in a ticket the worker brings an unfrozen api/ in line with t
   REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
   CHECK(core::contains(test::ScriptedModel::request_text(rig.model.calls[1].req), "unfrozen and behind its card"));
   CHECK(core::contains(test::read(rig.p / "blocks/stream/ring/api/ring.hpp"), "virtual void reset() = 0;"));
-  CHECK(core::contains(rig.ticket_text("T-0001"), "api     stream.ring: changed to the card (karkas approve api stream.ring freezes it)"));
+  // Without auto_approve the freeze is the human's: the note says so and names no step for a client.
+  CHECK(core::contains(rig.ticket_text("T-0001"),
+                       "api     stream.ring: changed to the card; a human freezes it with `karkas approve api stream.ring`"));
+  auto frozen = index::StateStore(rig.p.path()).load();
+  REQUIRE(frozen);
+  CHECK_FALSE(frozen->frozen_api.contains("stream.ring"));
+}
+
+TEST_CASE("engine: with auto_approve the api a worker brought in line with an approved card is frozen by the program (ADR 0029)") {
+  auto cfg = test::test_config();
+  cfg.auto_approve = true;
+  Rig rig(true, cfg);
+  REQUIRE(index::StateStore(rig.p.path()).freeze_api("stream.pump", "x"));  // went through approve api; ring was unfrozen
+  auto card = rig.p / "blocks/stream/ring/block.ksl";
+  auto text = test::read(card);
+  text.insert(text.find("\nfn      capacity()"), "\nfn      reset()");
+  test::write(card, text);
+  rig.model.tool("dispatch", dispatch("stream.ring", "S", "card gained reset"));
+  rig.model.tool("edit_file", {{"path", "api/ring.hpp"},
+                               {"old", "  [[nodiscard]] virtual std::size_t fill() const = 0;"},
+                               {"new", "  [[nodiscard]] virtual std::size_t fill() const = 0;\n  virtual void reset() = 0;"}});
+  rig.model.tool("report", {{"status", "done"}, {"fix", "reset() declared and implemented"}, {"api", "changed"}});
+  rig.model.tool("close", {{"verdict", "done"}});
+  auto r = rig.engine->task("the ring can be reset");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  auto ticket = rig.ticket_text("T-0001");
+  CHECK(core::contains(ticket, "api     stream.ring: changed to the card and frozen (auto_approve)"));
+  CHECK_FALSE(core::contains(ticket, "karkas approve api"));
+  auto st = index::StateStore(rig.p.path()).load();
+  REQUIRE(st);
+  REQUIRE(st->frozen_api.contains("stream.ring"));
+  auto s = core::load_schema(rig.p.path());
+  REQUIRE(s);
+  CHECK(st->frozen_api.at("stream.ring") == index::block_api_hash(index::collect_code_files(*s), "stream.ring"));
 }
 
 TEST_CASE("engine: a worker tunes a constant of a frozen api/, which stays frozen with the new hash") {

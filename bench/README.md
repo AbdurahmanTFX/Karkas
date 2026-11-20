@@ -23,7 +23,9 @@ across runs), the same budget and models; approvals in method C count as human i
 By default A and B use an API key (ANTHROPIC_API_KEY, `claude --bare`). `--auth subscription`
 runs them on the claude.ai login instead (the key is removed from Claude Code's environment, the
 user's own settings, skills and MCP servers are left out); those costs are estimates and the
-report lists them apart. Method C always needs an API key.
+report lists them apart. Method C with `--auth subscription` runs in mode mcp with `launch = "claude"`
+(ADR 0029): Karkas serves its agents' turns with one headless Claude Code per run on the login, and the
+cost is those sessions' own estimate (.karkas/mcp/launch/costs.jsonl); with `--auth api` it needs an API key.
 
 Every Claude Code session (methods A/B) runs with `--output-format stream-json --verbose`; its whole
 stream is saved next to the result (`<scenario>-<method>-<rep>.p<N>.jsonl`). The result records

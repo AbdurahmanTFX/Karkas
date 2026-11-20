@@ -82,7 +82,7 @@ kk::Result<Db> Db::open(const std::filesystem::path& file, bool read_only) {
     std::string msg = db.db_ != nullptr ? sqlite3_errmsg(db.db_) : "out of memory";
     return kk::fail("sqlite", fmt::format("cannot open {}: {}", file.string(), msg));
   }
-  sqlite3_busy_timeout(db.db_, 5000);
+  sqlite3_busy_timeout(db.db_, 30000);  // another process may hold it for a whole update (ADR 0029)
   return db;
 }
 

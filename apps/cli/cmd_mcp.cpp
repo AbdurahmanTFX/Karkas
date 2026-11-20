@@ -16,6 +16,7 @@
 #include "kk/agents/mcp_turns.hpp"
 #include "kk/agents/router.hpp"
 #include "kk/core/config.hpp"
+#include "kk/core/paths.hpp"
 #include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
 #include "kk/index/index.hpp"
@@ -49,8 +50,8 @@ struct Started {
 kk::Result<pid_t> spawn_engine(const fs::path& root, const std::vector<std::string>& args, const fs::path& log) {
   std::error_code ec;
   fs::create_directories(log.parent_path(), ec);
-  std::string exe = fs::read_symlink("/proc/self/exe", ec).string();
-  if (ec || exe.empty()) return kk::fail("mcp", "cannot find the karkas executable");
+  std::string exe = core::self_executable().string();  // also after a rebuild (bugs.txt 9)
+  if (exe.empty()) return kk::fail("mcp", "cannot find the karkas executable");
   std::vector<std::string> argv_s = {exe, "--project", root.string()};
   argv_s.insert(argv_s.end(), args.begin(), args.end());
   std::vector<char*> argv;
@@ -74,6 +75,9 @@ kk::Result<pid_t> spawn_engine(const fs::path& root, const std::vector<std::stri
 
 AutoRegister reg([](CLI::App& cli, App& app) {
   auto* cmd = cli.add_subcommand("mcp", "MCP server over stdio for external agents (Claude Code and others)");
+  static bool only_agent = false;
+  cmd->add_flag("--only-agent", only_agent,
+                "only kk_agent_next and kk_agent_act: the server of a Claude Code that Karkas starts for one run (ADR 0029)");
   cmd->callback([&app] {
     auto root = app.root();
     setup_logging(app, root, true);
@@ -150,7 +154,13 @@ AutoRegister reg([](CLI::App& cli, App& app) {
       (*started)[id] = Started{*pid, log.string(), false, 0};
       return std::string();
     };
-    auto next_steps = [mode_of](const std::string& id) {
+    auto next_steps = [root, mode_of](const std::string& id) {
+      if (auto cfg = core::load_config(root); cfg && cfg->mcp() && cfg->mcp_launch == "claude") {
+        return fmt::format("Karkas serves its agents' turns itself ([agents] launch = \"claude\": a headless Claude Code per run "
+                           "on the claude.ai login), so do not serve them. Wait for the end with kk_agent_next(list=true, "
+                           "wait_s=300) until {} has ended, then report its result.",
+                           id);
+      }
       if (mode_of() == "mcp") {
         return fmt::format("Its agents start now and wait for their model (mode mcp: you). Serve them: kk_agent_next(list=true) shows "
                            "who waits and the subagent of each; go on until no turn waits and {} ended.",
@@ -189,17 +199,30 @@ AutoRegister reg([](CLI::App& cli, App& app) {
       }
       return fmt::format("implement {} started in the background (mode api); kk_agent_next(list=true) says when it ended.", target);
     };
-    turns->tickets_status = [root, started, started_mu] {
+    // Notes which started processes have exited (caller holds started_mu).
+    auto reap = [started] {
+      for (auto& [id, s] : *started) {
+        if (s.done) continue;
+        int status = 0;
+        if (waitpid(s.pid, &status, WNOHANG) == s.pid) {
+          s.done = true;
+          s.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+        }
+      }
+    };
+    turns->tickets_running = [started, started_mu, reap] {
       std::lock_guard lock(*started_mu);
+      if (started->empty()) return -1;
+      reap();
+      int running = 0;
+      for (const auto& [id, s] : *started) running += s.done ? 0 : 1;
+      return running;
+    };
+    turns->tickets_status = [root, started, started_mu, reap] {
+      std::lock_guard lock(*started_mu);
+      reap();
       std::string out;
       for (auto& [id, s] : *started) {
-        if (!s.done) {
-          int status = 0;
-          if (waitpid(s.pid, &status, WNOHANG) == s.pid) {
-            s.done = true;
-            s.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
-          }
-        }
         if (!s.done) {
           out += fmt::format("{}: its agents are working (log {}).\n", id, s.log);
           continue;
@@ -208,16 +231,32 @@ AutoRegister reg([](CLI::App& cli, App& app) {
           out += fmt::format("{}: ended with exit code {}; its output is in {}.\n", id, s.exit_code, s.log);
           continue;
         }
+        // The result an ended ticket's client reports from (ADR 0029): what each block's agent did, the
+        // checks, the api and the notes, so no kk_ticket_view is needed for the report.
         core::TicketStore store(root);
-        std::string result;
-        if (auto t = store.load(id)) {
-          for (const auto& r : t->result) {
-            if (r.key == "status") result = "status " + r.text;
-            if (r.key == "note" || r.key == "fix") result += "; " + r.key + " " + r.text;
-          }
-          result = fmt::format("{} ({})", t->status.value, result.empty() ? "no result" : result);
+        auto t = store.load(id);
+        if (!t) {
+          out += fmt::format("{}: ended (exit code {}); its log is {}.\n", id, s.exit_code, s.log);
+          continue;
         }
-        out += fmt::format("{}: ended — {}. kk_ticket_view(id=\"{}\") shows it.\n", id, result, id);
+        auto cut = [](std::string text) {
+          constexpr std::size_t kMax = 240;
+          if (text.size() > kMax) text = text.substr(0, kMax - 3) + "...";
+          return text;
+        };
+        std::string status = t->result_value("status");
+        out += fmt::format("{}: ended — {}{}.\n", id, t->status.value, status.empty() ? "" : " (status " + status + ")");
+        int facts = 0;
+        for (const auto& e : t->trail) {
+          if (e.type != core::TrailEntry::Type::Fact || ++facts > 8) continue;
+          out += "  fact   " + cut(e.text) + "\n";
+        }
+        for (const auto& r : t->result) {
+          if (r.key == "verify" || r.key == "api" || r.key == "note" || r.key == "fix" || r.key == "files") {
+            out += fmt::format("  {:<6} {}\n", r.key, cut(r.text));
+          }
+        }
+        out += fmt::format("  (kk_ticket_view(id=\"{}\") shows the whole ticket.)\n", id);
       }
       return out;
     };
@@ -231,6 +270,14 @@ AutoRegister reg([](CLI::App& cli, App& app) {
       std::string_view file = mode_of() == "mcp" ? "prompts/mcp_instructions_agents.txt" : "prompts/mcp_instructions.txt";
       return std::string(core::trim(templates::get(file).value_or("")));
     };
+    if (only_agent) {
+      o.only_agent_tools = true;
+      o.instructions = [] {
+        return std::string(
+            "This server hands you the turns of one run of Karkas's agents: kk_agent_next(run=...) takes the turn, "
+            "kk_agent_act answers it with calls of the agent's tools and returns the next turn, until the run ends.");
+      };
+    }
     mcp::Server server(*idx, o);
     std::ios::sync_with_stdio(false);
     std::exit(server.serve(std::cin, std::cout));

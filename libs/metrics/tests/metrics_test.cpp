@@ -175,3 +175,29 @@ TEST_CASE("metrics: stats per role and tier, and the runs and MCP traffic of a t
   CHECK(kk::core::contains(one, "total: 3 runs (1 orchestrator, 2 worker), 9 steps"));
   CHECK(kk::core::contains(one, "mcp traffic: 4 turns, 2 of them whole (0 shorter by seen), 42000 chars shown (95% in whole turns)"));
 }
+
+TEST_CASE("metrics: cost report prices 1-hour cache writes at 2x and takes a session's own cost (ADR 0031)") {
+  core::Config c;
+  c.prices["claude-opus-5-5"] = {4.0, 20.0, 0.20, -1, -1};
+  index::RunRow est;
+  est.ticket = "T-1";
+  est.role = "orchestrator";
+  est.provider = "mcp";
+  est.model = "claude-opus-5-5";
+  est.input_tokens = 10;
+  est.output_tokens = 2248;
+  est.cache_write_tokens = 14883;
+  est.cache_write_1h_tokens = 14883;
+  est.cache_read_tokens = 37458;
+  auto rep = metrics::cost_report(c, {est}, "");
+  REQUIRE(rep);
+  // 10*4 + 14883*8 + 37458*0.20 + 2248*20 = 171,567 / 1e6 (the session reported $0.1716); at 1.25x it was 0.1270.
+  CHECK_MESSAGE(core::contains(*rep, "0.1716"), *rep);
+  index::RunRow s = est;
+  s.session_cost = true;
+  s.cost_usd = 0.2;
+  rep = metrics::cost_report(c, {est, s}, "");
+  REQUIRE(rep);
+  CHECK_MESSAGE(core::contains(*rep, "0.3716"), *rep);
+  CHECK(core::contains(*rep, "1 of 2 run(s) at the cost their Claude Code session reported"));
+}

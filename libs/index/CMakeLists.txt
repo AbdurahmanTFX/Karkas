@@ -4,4 +4,5 @@ kk_add_library(index
   PRIVATE_DEPS ${KK_SQLITE_TARGET} kk_xxhash nlohmann_json::nlohmann_json spdlog::spdlog)
 
 kk_add_tests(index
-  SOURCES tests/index_test.cpp tests/views_test.cpp tests/perf_test.cpp)
+  SOURCES tests/index_test.cpp tests/views_test.cpp tests/perf_test.cpp
+  SERIAL "perf: 40+ blocks, ~20k lines: full index < 2 s, unchanged update < 100 ms")

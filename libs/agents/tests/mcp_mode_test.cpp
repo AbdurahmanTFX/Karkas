@@ -4,10 +4,16 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
 #include <thread>
 
 #include "kk/agents/engine.hpp"
+#include "kk/agents/launcher.hpp"
 #include "kk/agents/mcp_turns.hpp"
+#include "kk/llm/mcp_bridge.hpp"
+#include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/test/support.hpp"
 #include "scripted.hpp"
@@ -246,6 +252,240 @@ TEST_CASE("mcp mode: a new run of a role the client has served comes without the
     CHECK(run.provider == "mcp");
     CHECK(run.input_tokens > 0);
     CHECK(run.output_tokens > 0);
+    // As a Claude Code session spends them (ADR 0031): what the turn showed written once to a 1-hour cache,
+    // the context before it read again.
+    CHECK(run.cache_write_tokens > 0);
+    CHECK(run.cache_write_1h_tokens == run.cache_write_tokens);
   }
   CHECK(std::filesystem::exists(p / ".karkas/mcp/traffic"));
+}
+
+TEST_CASE("mcp mode: a list wait ends as soon as the tickets this server started have ended (ADR 0029)") {
+  test::TempDir d;
+  agents::McpTurns turns(d.path());
+  std::atomic<int> running{1};
+  turns.tickets_running = [&] { return running.load(); };
+  turns.tickets_status = [&] { return running ? std::string("T-0001: its agents are working.\n") : std::string("T-0001: ended — done.\n  fact   b done: x\n"); };
+
+  // Still running: the wait runs out (1 s) and says nobody waits.
+  auto t0 = std::chrono::steady_clock::now();
+  auto text = turns.next("", 1, true);
+  CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(900));
+  CHECK(core::contains(text, "No agent turn waits."));
+  CHECK(core::contains(text, "its agents are working"));
+
+  // Ended while the client waits: the wait of 30 s ends at once, with the result.
+  std::thread end_it([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    running = 0;
+  });
+  t0 = std::chrono::steady_clock::now();
+  text = turns.next("", 30, true);
+  end_it.join();
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5));
+  CHECK(core::contains(text, "have ended"));
+  CHECK(core::contains(text, "T-0001: ended — done."));
+  CHECK(core::contains(text, "fact   b done: x"));
+
+  // A server that started nothing keeps waiting for turns of other processes.
+  turns.tickets_running = [] { return -1; };
+  t0 = std::chrono::steady_clock::now();
+  text = turns.next("", 1, true);
+  CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(900));
+}
+
+TEST_CASE("mcp mode: a wait for a run that has ended returns at once, not when wait_s runs out (ADR 0029)") {
+  test::TempDir d;
+  std::filesystem::create_directories(d.path() / ".karkas" / "runs");
+  REQUIRE(core::write_file(d.path() / ".karkas" / "runs" / "r1.jsonl",
+                           R"({"type":"run_start","ticket":"T-0001","role":"worker","block":"b"})" "\n"
+                           R"({"type":"run_end","outcome":"done"})" "\n"));
+  agents::McpTurns turns(d.path());
+  auto t0 = std::chrono::steady_clock::now();
+  auto text = turns.next("r1.jsonl", 30, false);
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5));
+  CHECK(core::contains(text, "Run r1.jsonl ended: done."));
+}
+
+TEST_CASE("mcp mode: with launch = claude Karkas serves a run itself, with a session on the login and never an API key (ADR 0029)") {
+  test::FixtureCopy p{"wavkit"};
+  test::FakeTests tests;
+  auto cfg = test::test_config();
+  cfg.agents_mode = "mcp";
+  cfg.mcp_wait_s = 60;
+  cfg.mcp_launch = "claude";
+  // A stand-in for claude: it notes its arguments and environment, then answers the first turn of its run
+  // with the orchestrator's escalate through the queue's files, as a session does through kk_agent_act.
+  auto fake = p / "fake-claude.sh";
+  test::write(fake, R"SH(#!/bin/sh
+printf '%s\n' "$@" > "$KK_FAKE_OUT/args"
+env > "$KK_FAKE_OUT/env"
+run=$(printf '%s' "$2" | sed -n 's/^Serve Karkas run \([^ ]*\) to its end.*/\1/p')
+stem=${run%.jsonl}
+while [ $# -gt 0 ]; do [ "$1" = "--mcp-config" ] && cfg="$2"; shift; done
+turns="$(dirname "$(dirname "$cfg")")/turns"
+i=0
+while [ ! -f "$turns/$stem-001.req.json" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+printf '%s' '{"text":"","calls":[{"name":"escalate","input":{"note":"served by the stand-in session"}}]}' > "$turns/$stem-001.tmp"
+mv "$turns/$stem-001.tmp" "$turns/$stem-001.resp.json"
+)SH");
+  std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
+  cfg.mcp_launch_command = fake.string();
+  ::setenv("ANTHROPIC_API_KEY", "sk-test-must-not-leak", 1);
+  ::setenv("KK_FAKE_OUT", p.path().c_str(), 1);
+  agents::EngineOptions o;  // no providers: the engine's own MCP bridge, and its launcher
+  o.tests = &tests;
+  auto e = agents::Engine::create(p.path(), cfg, o);
+  REQUIRE_MESSAGE(e, (e ? "" : e.error().str()));
+  auto r = (*e)->task("the ring can be reset");
+  ::unsetenv("ANTHROPIC_API_KEY");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  CHECK(core::contains(test::read(p / ".karkas/tickets/T-0001.ksl"), "served by the stand-in session"));
+  auto args = test::read(p / "args");
+  CHECK(core::contains(args, "--model\nm-strong\n"));  // the model of the orchestrator's tier
+  CHECK(core::contains(args, "--tools\n\n--allowedTools\nmcp__karkas__kk_agent_next\nmcp__karkas__kk_agent_act\n"));
+  CHECK(core::contains(args, "--strict-mcp-config"));
+  auto env = test::read(p / "env");
+  CHECK_FALSE(core::contains(env, "ANTHROPIC_API_KEY"));
+  CHECK(core::contains(env, "MCP_TOOL_TIMEOUT=900000"));
+  // The run is marked as served by Karkas: a client's kk_agent_next leaves it alone.
+  bool marked = false;
+  for (const auto& f : std::filesystem::directory_iterator(p / ".karkas/mcp/launch")) marked = marked || f.path().extension() == ".served";
+  CHECK(marked);
+  auto mcp_json = test::read(p / ".karkas/mcp/launch/mcp.json");
+  CHECK(core::contains(mcp_json, "--only-agent"));
+}
+
+TEST_CASE("mcp mode: a run Karkas serves itself leaves a nested run to a session of that run's tier (ADR 0029)") {
+  test::TempDir d;
+  std::filesystem::create_directories(d.path() / ".karkas" / "runs");
+  REQUIRE(core::write_file(d.path() / ".karkas" / "runs" / "A.jsonl",
+                           R"({"type":"run_start","ticket":"T-0001","role":"orchestrator","block":"root"})" "\n"));
+  llm::McpQueue q(d.path() / ".karkas" / "mcp");
+  llm::McpTurn nested;
+  nested.id = "B-001";
+  nested.run = "B.jsonl";
+  nested.ticket = "T-0001";
+  nested.role = "ask";
+  nested.block = "game.player";
+  nested.tier = "cheap";
+  nested.model = "m-cheap";
+  nested.seq = 1;
+  nested.ts = core::unix_now();
+  REQUIRE(q.put(nested, R"({"id":"B-001","system":"answer","tools":[],"messages":[{"role":"user","content":"Question: why?"}]})"));
+  agents::McpTurns turns(d.path());
+  // Served by a client: the client of the parent gets the nested turn, as before.
+  auto as_client = turns.next("A.jsonl", 1, false);
+  CHECK(core::contains(as_client, "Your run A.jsonl waits for this one"));
+  // Served by Karkas: the nested turn stays for a session of its own tier.
+  std::filesystem::remove(d.path() / ".karkas" / "mcp" / "turns" / "B-001.taken");
+  REQUIRE(core::write_file(agents::RunLauncher::marker(d.path(), "A.jsonl"), ""));
+  auto launched = turns.next("A.jsonl", 1, false);
+  CHECK_FALSE(core::contains(launched, "waits for this one"));
+  CHECK(core::contains(launched, "No turn of run A.jsonl waits yet"));
+}
+
+TEST_CASE("mcp mode: a session that hits the claude.ai usage limit pauses the launches, the turn waits and the try does not count (ADR 0029)") {
+  CHECK(agents::RunLauncher::usage_limit(
+            R"J({"type":"result","subtype":"success","is_error":true,"api_error_status":429,"api_error":"usage_limit_reached","result":"You've hit your 5-hour limit · resets 11:50pm (Asia/Bishkek)"})J") ==
+        "You've hit your 5-hour limit · resets 11:50pm (Asia/Bishkek)");
+  CHECK(agents::RunLauncher::usage_limit(R"({"type":"result","is_error":false,"result":"done"})").empty());
+  CHECK(agents::RunLauncher::usage_limit(R"({"type":"result","is_error":true,"api_error_status":"429","result":"overloaded"})").empty());
+
+  test::FixtureCopy p{"wavkit"};
+  test::FakeTests tests;
+  auto cfg = test::test_config();
+  cfg.agents_mode = "mcp";
+  cfg.mcp_wait_s = 5;  // past the 3 s before a launch, shorter than the pause: without it the turn would time out
+  cfg.mcp_launch = "claude";
+  // The first session ends at once on the usage limit, as claude -p does; the next one serves the turn.
+  auto fake = p / "fake-claude.sh";
+  test::write(fake, R"SH(#!/bin/sh
+n=$(cat "$KK_FAKE_OUT/starts" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$KK_FAKE_OUT/starts"
+if [ "$n" = 1 ]; then
+  echo '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"api_error":"usage_limit_reached","result":"You'"'"'ve hit your 5-hour limit · resets 11:50pm"}'
+  exit 1
+fi
+run=$(printf '%s' "$2" | sed -n 's/^Serve Karkas run \([^ ]*\) to its end.*/\1/p')
+stem=${run%.jsonl}
+while [ $# -gt 0 ]; do [ "$1" = "--mcp-config" ] && cfg="$2"; shift; done
+turns="$(dirname "$(dirname "$cfg")")/turns"
+printf '%s' '{"text":"","calls":[{"name":"escalate","input":{"note":"served after the pause"}}]}' > "$turns/$stem-001.tmp"
+mv "$turns/$stem-001.tmp" "$turns/$stem-001.resp.json"
+)SH");
+  std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
+  cfg.mcp_launch_command = fake.string();
+  ::setenv("KK_FAKE_OUT", p.path().c_str(), 1);
+  const int old_retry = agents::RunLauncher::limit_retry_s;
+  agents::RunLauncher::limit_retry_s = 8;
+  agents::EngineOptions o;
+  o.tests = &tests;
+  auto e = agents::Engine::create(p.path(), cfg, o);
+  REQUIRE_MESSAGE(e, (e ? "" : e.error().str()));
+  auto t0 = std::chrono::steady_clock::now();
+  auto r = (*e)->task("the ring can be reset");
+  auto waited = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - t0).count();
+  agents::RunLauncher::limit_retry_s = old_retry;
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  auto ticket = test::read(p / ".karkas/tickets/T-0001.ksl");
+  CHECK_MESSAGE(core::contains(ticket, "served after the pause"), ticket);
+  CHECK(test::read(p / "starts") == "2\n");  // one failed start, one after the pause: not a third
+  CHECK(waited >= 8);                         // it waited for the pause, past mcp_wait_s
+  CHECK_FALSE(std::filesystem::exists(p / ".karkas/mcp/paused_until"));
+  // The failed start costs nothing and is no row of costs.jsonl.
+  CHECK_FALSE(core::contains(core::read_file(p / ".karkas/mcp/launch/costs.jsonl").value_or(""), "\"is_error\":true"));
+}
+
+TEST_CASE("mcp mode: a run whose model's safeguards refuse it goes on at once with the next tier's model (ADR 0029)") {
+  CHECK_FALSE(agents::RunLauncher::refusal(
+                  R"J({"type":"result","is_error":true,"stop_reason":"refusal","result":"API Error: Sonnet 5.5's safeguards flagged this message (https://www.anthropic.com/legal/aup)."})J")
+                  .empty());
+  CHECK(agents::RunLauncher::refusal(R"({"type":"result","is_error":false,"stop_reason":"end_turn","result":"done"})").empty());
+
+  test::FixtureCopy p{"wavkit"};
+  test::FakeTests tests;
+  auto cfg = test::test_config();
+  cfg.agents_mode = "mcp";
+  cfg.mcp_wait_s = 60;
+  cfg.mcp_launch = "claude";
+  cfg.roles["orchestrator"] = "medium";  // the first run on m-medium, which refuses
+  cfg.mcp_maps.roles["orchestrator"] = "medium";
+  {
+    agents::RunLauncher l(p.path(), cfg);
+    CHECK(l.stronger_model("m-cheap") == "m-medium");
+    CHECK(l.stronger_model("m-medium") == "m-strong");
+    CHECK(l.stronger_model("m-strong").empty());
+  }
+  auto fake = p / "fake-claude.sh";
+  test::write(fake, R"SH(#!/bin/sh
+model=$(printf '%s\n' "$@" | sed -n '/^--model$/{n;p;}')
+echo "$model" >> "$KK_FAKE_OUT/models"
+if [ "$model" = "m-medium" ]; then
+  echo '{"type":"result","subtype":"success","is_error":true,"stop_reason":"refusal","total_cost_usd":0.05,"result":"API Error: the safeguards flagged this message"}'
+  exit 1
+fi
+run=$(printf '%s' "$2" | sed -n 's/^Serve Karkas run \([^ ]*\) to its end.*/\1/p')
+stem=${run%.jsonl}
+while [ $# -gt 0 ]; do [ "$1" = "--mcp-config" ] && cfg="$2"; shift; done
+turns="$(dirname "$(dirname "$cfg")")/turns"
+i=0
+while [ ! -f "$turns/$stem-001.req.json" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+printf '%s' '{"text":"","calls":[{"name":"escalate","input":{"note":"served by the stronger model"}}]}' > "$turns/$stem-001.tmp"
+mv "$turns/$stem-001.tmp" "$turns/$stem-001.resp.json"
+)SH");
+  std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
+  cfg.mcp_launch_command = fake.string();
+  ::setenv("KK_FAKE_OUT", p.path().c_str(), 1);
+  agents::EngineOptions o;
+  o.tests = &tests;
+  auto e = agents::Engine::create(p.path(), cfg, o);
+  REQUIRE_MESSAGE(e, (e ? "" : e.error().str()));
+  auto t0 = std::chrono::steady_clock::now();
+  auto r = (*e)->task("the ring can be reset");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(30));  // at once, not after mcp_wait_s
+  CHECK(core::contains(test::read(p / ".karkas/tickets/T-0001.ksl"), "served by the stronger model"));
+  CHECK(test::read(p / "models") == "m-medium\nm-strong\n");
+  // The refused try's cost is a row of costs.jsonl (a refusal is billed).
+  CHECK(core::contains(core::read_file(p / ".karkas/mcp/launch/costs.jsonl").value_or(""), "\"model\":\"m-medium\""));
 }

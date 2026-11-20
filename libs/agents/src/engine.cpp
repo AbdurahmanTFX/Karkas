@@ -1,6 +1,7 @@
 #include "kk/agents/engine.hpp"
 
 #include "kk/agents/api_edit.hpp"
+#include "kk/agents/build_files.hpp"
 
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
@@ -15,6 +16,7 @@
 #include <set>
 
 #include "kk/agents/changes.hpp"
+#include "kk/agents/launcher.hpp"
 #include "kk/agents/sandbox.hpp"
 #include "kk/agents/tools.hpp"
 #include "kk/code/analyzer.hpp"
@@ -33,6 +35,42 @@ namespace kk::agents {
 using json = nlohmann::json;
 
 namespace {
+
+// The fns a change names in a note of a block ("fn ships_destroyed() -> int64_t") without declaring
+// them: no "+ fn ships_destroyed(" line for that block and none in its card (ADR 0029). One line per gap,
+// for the orchestrator that amends the change.
+std::vector<std::string> fns_only_in_notes(const core::Change& c, const core::Schema& s) {
+  static const std::regex named(R"(\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\()");
+  static const std::regex declared(R"(^fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\()");
+  std::map<std::string, std::set<std::string>> fns;                 // block -> fns the change declares
+  std::map<std::string, std::vector<std::string>> in_notes;         // block -> fns its notes name
+  std::string at;
+  for (const auto& d : c.diff) {
+    if (d.text.starts_with("@block ")) {
+      at = std::string(core::trim(std::string_view(d.text).substr(7)));
+      continue;
+    }
+    if (at.empty() || d.op != '+') continue;
+    std::smatch m;
+    if (std::regex_search(d.text, m, declared)) fns[at].insert(m[1].str());
+    if (d.text.starts_with("note")) {
+      for (auto it = std::sregex_iterator(d.text.begin(), d.text.end(), named); it != std::sregex_iterator(); ++it) {
+        in_notes[at].push_back((*it)[1].str());
+      }
+    }
+  }
+  std::vector<std::string> gaps;
+  for (const auto& [block, names] : in_notes) {
+    const auto* b = s.find(block);
+    for (const auto& n : names) {
+      if (fns[block].contains(n) || (b != nullptr && b->port(n) != nullptr)) continue;
+      gaps.push_back(fmt::format("{}: a note names fn {}() but the change declares no \"+ fn {}(...)\" line for it; add it, and a "
+                                 "\"+ call {}:{}\" line to every block that will call it",
+                                 block, n, n, block, n));
+    }
+  }
+  return gaps;
+}
 
 std::string sget(const json& j, const char* k) {
   if (!j.contains(k) || j[k].is_null()) return {};
@@ -60,6 +98,45 @@ std::string shorten(std::string s, std::size_t n) {
   return s.size() <= n ? s : core::truncate_utf8(s, n - 3) + "...";
 }
 
+// The block whose listed file the first error line of a build names ("source/X.cpp:3:1: error: ..."), or ""
+// (an imported project: the code lives in the files of the cards; ADR 0028).
+// A linker error names no file ("<artificial>:(.text+0x9): undefined reference to `Panel::Panel(Player&)'"): its
+// symbol's class or function is looked up as the stem of a block's file (source/Panel.cpp), as an imported
+// project names them (docs/adr/0030; Endless Sky's round 3 escalated on such a line).
+std::string block_of_build_error(const core::Schema& s, const std::string& summary) {
+  std::map<std::string, std::string> owner;
+  std::map<std::string, std::string> by_stem;
+  for (const auto& b : s.blocks) {
+    for (const auto& f : b.file_list()) {
+      owner[f] = b.id;
+      if (core::is_code_file(fs::path(f))) by_stem.emplace(core::to_lower(fs::path(f).stem().string()), b.id);
+    }
+  }
+  for (const auto& line : core::split(summary, '\n')) {
+    if (!core::contains(line, "error") && !core::contains(line, "undefined") && !core::contains(line, "multiple definition")) {
+      continue;
+    }
+    auto colon = line.find(':');
+    if (colon != std::string::npos && colon != 0) {
+      if (auto it = owner.find(line.substr(0, colon)); it != owner.end()) return it->second;
+    }
+    for (const auto& name : link_error_names(line)) {
+      if (auto it = by_stem.find(core::to_lower(name)); it != by_stem.end()) return it->second;
+    }
+  }
+  return {};
+}
+
+// The source files of an imported block's card (headers are compiled through them).
+std::vector<std::string> own_sources(const core::Block& b) {
+  std::vector<std::string> out;
+  for (const auto& f : b.file_list()) {
+    fs::path p(f);
+    if (core::is_code_file(p) && p.extension().string().starts_with(".c")) out.push_back(f);
+  }
+  return out;
+}
+
 // The inv lines a block gains by the approved changes of a ticket ("+ inv" under its "@block").
 std::vector<std::string> ticket_invariants(const ChangeStore& changes, const std::string& tid, const std::string& block) {
   std::vector<std::string> out;
@@ -81,6 +158,22 @@ std::vector<std::string> ticket_invariants(const ChangeStore& changes, const std
   return out;
 }
 
+// Whether an approved change of the ticket changed the card of `block` (it unfreezes that block's api).
+bool ticket_changed_block(const ChangeStore& changes, const std::string& tid, const std::string& block) {
+  if (tid.empty()) return false;
+  auto cs = changes.list();
+  if (!cs) return false;
+  for (const auto& c : *cs) {
+    if (c.status.value != "approved") continue;
+    auto from = core::split_ws(c.from.value);
+    if (std::find(from.begin(), from.end(), tid) == from.end()) continue;
+    for (const auto& d : c.diff) {
+      if (d.text.starts_with("@block ") && core::trim(std::string_view(d.text).substr(7)) == block) return true;
+    }
+  }
+  return false;
+}
+
 core::TrailEntry level_entry(int level, std::string role, std::vector<core::Attr> attrs) {
   core::TrailEntry e;
   e.type = core::TrailEntry::Type::Level;
@@ -92,15 +185,108 @@ core::TrailEntry level_entry(int level, std::string role, std::vector<core::Attr
   return e;
 }
 
+// What the files of a block hold (path -> hash; "-" when missing): the files of its card for an imported block,
+// the files of its folder but its card otherwise. A worker's done with none of them changed did nothing
+// (docs/adr/0031, bugs.txt 14).
+std::map<std::string, std::string> block_files_state(const fs::path& root, const core::Schema& s, const core::Block& b) {
+  std::map<std::string, std::string> out;
+  auto put = [&](const fs::path& rel) {
+    auto text = core::read_file(root / rel);
+    out[rel.generic_string()] = text ? fmt::format("{:016x}", core::fnv1a64(*text)) : "-";
+  };
+  if (b.external()) {
+    for (const auto& f : b.file_list()) put(fs::path(f));
+    return out;
+  }
+  std::error_code ec;
+  const auto dir = s.block_dir(b.id);
+  for (fs::recursive_directory_iterator it(dir, ec), end; it != end; it.increment(ec)) {
+    if (ec) break;
+    if (!it->is_regular_file(ec) || it->path().filename() == "block.ksl") continue;
+    put(fs::relative(it->path(), root, ec));
+  }
+  return out;
+}
+
+// The cost of a ticket's runs since `since` (docs/adr/0031): a run whose turns a Claude Code session Karkas
+// launched served costs what that session reported (.karkas/mcp/launch/costs.jsonl, at list prices, every
+// try of it counted: a refused one too); the others what their journal holds (the estimate from the turns).
+struct TicketCost {
+  int runs = 0;
+  int sessions = 0;  // runs priced by their session's own cost
+  std::int64_t input = 0, output = 0, cache_write = 0, cache_read = 0;
+  double usd = 0;
+};
+
+TicketCost ticket_cost(const fs::path& root, const std::string& ticket, std::int64_t since) {
+  struct Row {
+    double usd = 0;
+    std::int64_t in = 0, out = 0, cw = 0, cr = 0;
+  };
+  std::map<std::string, Row> session;
+  for (const auto& line : core::split(core::read_file(root / ".karkas/mcp/launch/costs.jsonl").value_or(""), '\n')) {
+    auto j = json::parse(line, nullptr, false);
+    if (!j.is_object() || !j.contains("run") || !j["run"].is_string()) continue;
+    auto& r = session[j["run"].get<std::string>()];
+    r.usd += j.value("cost_usd", 0.0);
+    if (j.contains("usage") && j["usage"].is_object()) {
+      r.in += j["usage"].value("input_tokens", std::int64_t{0});
+      r.out += j["usage"].value("output_tokens", std::int64_t{0});
+      r.cw += j["usage"].value("cache_creation_input_tokens", std::int64_t{0});
+      r.cr += j["usage"].value("cache_read_input_tokens", std::int64_t{0});
+    }
+  }
+  TicketCost tc;
+  std::error_code ec;
+  for (const auto& e : fs::directory_iterator(root / ".karkas" / "runs", ec)) {
+    if (!e.is_regular_file(ec) || e.path().extension() != ".jsonl") continue;
+    auto text = core::read_file(e.path());
+    if (!text) continue;
+    auto lines = core::split(*text, '\n');
+    if (lines.empty()) continue;
+    auto start = json::parse(lines.front(), nullptr, false);
+    if (!start.is_object() || start.value("type", "") != "run_start" || start.value("ticket", "") != ticket ||
+        start.value("ts", std::int64_t{0}) < since) {
+      continue;
+    }
+    ++tc.runs;
+    const auto name = e.path().filename().string();
+    if (auto s = session.find(name); s != session.end()) {
+      ++tc.sessions;
+      tc.usd += s->second.usd;
+      tc.input += s->second.in;
+      tc.output += s->second.out;
+      tc.cache_write += s->second.cw;
+      tc.cache_read += s->second.cr;
+      continue;
+    }
+    for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
+      auto end = json::parse(*it, nullptr, false);
+      if (!end.is_object() || end.value("type", "") != "run_end") continue;
+      tc.usd += end.value("cost_usd", 0.0);
+      tc.input += end.value("input_tokens", std::int64_t{0});
+      tc.output += end.value("output_tokens", std::int64_t{0});
+      tc.cache_write += end.value("cache_write_tokens", std::int64_t{0});
+      tc.cache_read += end.value("cache_read_tokens", std::int64_t{0});
+      break;
+    }
+  }
+  return tc;
+}
+
 }  // namespace
 
-constexpr const char* kImportedBlock =
-    "block is imported code (files): agents do not edit imported blocks yet (docs/adr/0009)";
+// The tester writes Karkas's contract tests; an imported block has none: the project's own build and
+// tests check it (ADR 0016, 0027).
+constexpr const char* kImportedNoTester =
+    "block is imported code (files): it has no Karkas contract tests, the project's own build and tests check it (docs/adr/0027)";
 
 struct Engine::Impl {
   fs::path root;
   core::Config& cfg;
   EngineOptions opts;
+  // Mode mcp with [agents] launch = "claude": the sessions that serve the runs of this engine (ADR 0029).
+  std::unique_ptr<RunLauncher> launcher;
   std::unique_ptr<llm::IHttpTransport> http;
   std::unique_ptr<ITestService> own_tests;
   ITestService* tests = nullptr;
@@ -266,6 +452,16 @@ struct Engine::Impl {
       }
     };
     take(card);
+    // An imported block: the code of its card (headers only for the tester).
+    if (const auto* b = s.find(block); b != nullptr && b->external()) {
+      for (const auto& f : b->file_list()) {
+        fs::path p = s.root / f;
+        if (!core::is_code_file(p)) continue;
+        if (role != Role::Worker && p.extension().string().starts_with(".c")) continue;  // a source
+        take(core::read_file(p).value_or(""));
+      }
+      return out;
+    }
     const auto& dirs = s.project.dirs;
     std::vector<fs::path> dirs_to_read = {s.block_dir(block) / dirs.api, s.block_dir(block) / dirs.tests, s.block_dir(block) / dirs.mocks};
     if (role == Role::Worker) dirs_to_read.push_back(s.block_dir(block) / dirs.impl);
@@ -279,10 +475,78 @@ struct Engine::Impl {
     return out;
   }
 
+  // The functions of an imported block its task names — by the card's fn names or their C++ names
+  // (handle_event or HandleEvent, save) — and the identifiers of their bodies: what the worker of this
+  // task needs from the linked headers, not what the whole 6 000-line file uses (ADR 0029). Empty
+  // when the task names none of them or no body is found: the caller then takes the whole block.
+  static std::set<std::string> focus_identifiers(const core::Schema& s, const std::string& block, const std::string& task,
+                                                 std::vector<std::string>* names) {
+    const auto* b = s.find(block);
+    if (b == nullptr || !b->external() || task.empty()) return {};
+    auto norm = [](std::string_view w) {
+      std::string o;
+      for (char c : w) {
+        if (c != '_') o += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
+      return o;
+    };
+    auto camel = [](const std::string& snake) {
+      std::string o;
+      bool up = true;
+      for (char c : snake) {
+        if (c == '_') {
+          up = true;
+          continue;
+        }
+        o += up ? static_cast<char>(std::toupper(static_cast<unsigned char>(c))) : c;
+        up = false;
+      }
+      return o;
+    };
+    static const std::regex word(R"([A-Za-z_][A-Za-z0-9_]{2,})");
+    std::set<std::string> words;
+    for (auto it = std::sregex_iterator(task.begin(), task.end(), word); it != std::sregex_iterator(); ++it) words.insert(norm(it->str()));
+    std::vector<std::string> wanted;  // C++ names of the named functions, card order
+    for (const auto& p : b->ports) {
+      if (p.dir != core::PortDir::Fn || !words.contains(norm(p.name))) continue;
+      auto cpp = camel(p.name);
+      if (std::find(wanted.begin(), wanted.end(), cpp) == wanted.end()) wanted.push_back(cpp);
+      if (wanted.size() >= 8) break;
+    }
+    if (wanted.empty()) return {};
+    static const std::regex ident(R"([A-Za-z_][A-Za-z0-9_]{2,})");
+    std::set<std::string> out;
+    for (const auto& f : b->file_list()) {
+      fs::path p = s.root / f;
+      if (!core::is_code_file(p) || !p.extension().string().starts_with(".c")) continue;
+      auto text = core::read_file(p);
+      if (!text) continue;
+      for (const auto& fn : wanted) {
+        // A definition: "::Name(" with its body, the braces counted from the first "{" after it.
+        for (std::size_t at = text->find("::" + fn + "("); at != std::string::npos; at = text->find("::" + fn + "(", at + 1)) {
+          auto open = text->find_first_of("{;", at);
+          if (open == std::string::npos || (*text)[open] == ';') continue;
+          int depth = 0;
+          std::size_t end = open;
+          for (; end < text->size(); ++end) {
+            if ((*text)[end] == '{') ++depth;
+            if ((*text)[end] == '}' && --depth == 0) break;
+          }
+          std::string body = text->substr(at, std::min<std::size_t>(end - at + 1, 24 * 1024));
+          for (auto it = std::sregex_iterator(body.begin(), body.end(), ident); it != std::sregex_iterator(); ++it) out.insert(it->str());
+          if (names != nullptr && std::find(names->begin(), names->end(), fn) == names->end()) names->push_back(fn);
+          break;
+        }
+      }
+    }
+    if (out.empty()) return {};
+    for (auto it = std::sregex_iterator(task.begin(), task.end(), ident); it != std::sregex_iterator(); ++it) out.insert(it->str());
+    return out;
+  }
+
   // A neighbor's api/: a small header whole, a big one as the declarations the block uses.
   static void add_neighbor_api(std::string& out, const fs::path& dir, const std::string& label, const std::set<std::string>& used,
                                std::size_t& budget) {
-    constexpr std::size_t kWhole = 2000;
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) return;
     std::vector<fs::path> files;
@@ -290,89 +554,212 @@ struct Engine::Impl {
       if (e.is_regular_file(ec) && core::is_code_file(e.path())) files.push_back(e.path());
     }
     std::sort(files.begin(), files.end());
+    for (const auto& f : files) add_neighbor_file(out, f, label + core::rel_str(dir, f), used, budget);
+  }
+
+  // The files of an imported block's card (ADR 0027): small headers and sources whole, big ones by
+  // size (read by offset/limit or grep), data files by size, files of the card not written yet.
+  static void add_listed(std::string& out, const fs::path& root, const std::vector<std::string>& files, std::size_t& budget) {
+    constexpr std::size_t kHeader = 16384;
+    constexpr std::size_t kSource = 8192;
+    for (const auto& rel : files) {
+      fs::path p = root / rel;
+      std::error_code ec;
+      if (!fs::exists(p, ec)) {
+        out += fmt::format("=== {} (listed in the card, does not exist yet: create it)\n", rel);
+        continue;
+      }
+      auto text = core::read_file(p).value_or("");
+      auto lines = std::count(text.begin(), text.end(), '\n');
+      if (!core::is_code_file(p)) {
+        out += fmt::format("=== {} ({} bytes, {} lines; data of this block: read_file with offset/limit, grep)\n", rel, text.size(), lines);
+        continue;
+      }
+      bool header = !p.extension().string().starts_with(".c");
+      std::size_t max = header ? kHeader : kSource;
+      if (text.size() > max || text.size() > budget) {
+        out += fmt::format("=== {} ({} bytes, {} lines; read_file with offset/limit, grep)\n", rel, text.size(), lines);
+        continue;
+      }
+      budget -= text.size();
+      out += fmt::format("=== {}\n{}{}", rel, text, text.ends_with("\n") ? "" : "\n");
+    }
+  }
+
+  // Lines [from, to) of a header: the declarations whose names the block uses, each with the comment
+  // lines before it. A used type whose body is big shows its head, its access labels and the members
+  // the block uses, without its private part (the classes of imported code, ADR 0027).
+  static void pick_used(const std::vector<std::string>& lines, std::size_t from, std::size_t to, const std::set<std::string>& used,
+                        std::string& kept, std::vector<std::string>& names, bool in_class, bool private_default) {
     static const std::regex type_start(R"(^\s*(?:template\s*<[^>]*>\s*)?(?:struct|class|enum(?:\s+class)?|union)\s+([A-Za-z_]\w*))");
+    static const std::regex class_start(R"(^\s*(?:template\s*<[^>]*>\s*)?(struct|class|union)\s+[A-Za-z_]\w*[^;]*$)");
+    static const std::regex label(R"(^\s*(public|protected|private)\s*:(?!:))");
     static const std::regex constant(R"(([A-Za-z_]\w*)\s*(?:=|\{))");
     static const std::regex function(R"(([A-Za-z_]\w*)\s*\()");
     static const std::regex alias(R"(^\s*using\s+([A-Za-z_]\w*)\s*=)");
-    for (const auto& f : files) {
-      auto name = label + core::rel_str(dir, f);
-      auto text = core::read_file(f).value_or("");
-      if (text.size() <= kWhole && text.size() <= budget) {
-        budget -= text.size();
-        out += fmt::format("=== {}\n{}{}", name, text, text.ends_with("\n") ? "" : "\n");
+    constexpr std::size_t kWholeType = 1500;
+    auto depth_of = [](const std::string& l) {
+      int d = 0;
+      for (char c : l) d += c == '{' ? 1 : c == '}' ? -1 : 0;
+      return d;
+    };
+    bool hidden = in_class && private_default;
+    bool block_comment = false;  // inside /* ... */ (license headers of imported code)
+    std::string comment;
+    for (std::size_t i = from; i < to; ++i) {
+      const auto& l = lines[i];
+      auto t = std::string(core::trim(l));
+      if (block_comment) {
+        block_comment = !core::contains(t, "*/");
         continue;
       }
-      // Chunks: a type with its body, or one declaration, each with the comment lines before it.
-      std::vector<std::string> lines;  // raw: core::split trims, and a struct body keeps its indentation
-      for (std::size_t start = 0; start < text.size();) {
-        auto end = text.find('\n', start);
-        if (end == std::string::npos) end = text.size();
-        lines.push_back(text.substr(start, end - start));
-        start = end + 1;
+      if (t.starts_with("/*")) {
+        auto close = t.find("*/", 2);
+        block_comment = close == std::string::npos;
+        if (block_comment || core::trim(std::string_view(t).substr(close + 2)).empty()) {
+          comment.clear();
+          continue;
+        }
       }
-      if (lines.empty()) continue;
-      std::string kept;
-      std::vector<std::string> names;
-      std::string comment;
-      for (std::size_t i = 0; i < lines.size(); ++i) {
-        const auto& l = lines[i];
-        auto t = std::string(core::trim(l));
-        if (t.empty() || t.starts_with("#")) {
-          comment.clear();
-          continue;
-        }
-        if (t.starts_with("//")) {
-          comment += l + "\n";
-          continue;
-        }
-        if (t.starts_with("namespace ") || t.starts_with("}  // namespace") || t == "}") {
-          kept += l + "\n";
-          comment.clear();
-          continue;
-        }
-        std::size_t end = i;
-        std::string decl;
-        std::smatch m;
-        if (std::regex_search(l, m, type_start)) {
-          decl = m[1];
-          int depth = 0;
-          bool opened = false;
-          for (end = i; end < lines.size(); ++end) {
-            for (char c : lines[end]) {
-              if (c == '{') {
-                ++depth;
-                opened = true;
-              } else if (c == '}') {
-                --depth;
-              }
+      std::smatch m;
+      if (in_class && std::regex_search(l, m, label)) {
+        hidden = m[1] == "private";
+        if (!hidden) kept += l + "\n";
+        comment.clear();
+        continue;
+      }
+      if (t.empty() || t.starts_with("#")) {
+        comment.clear();
+        continue;
+      }
+      if (t.starts_with("//")) {
+        comment += l + "\n";
+        continue;
+      }
+      if (!in_class && (t.starts_with("namespace ") || t.starts_with("}  // namespace") || t == "}")) {
+        kept += l + "\n";
+        comment.clear();
+        continue;
+      }
+      std::size_t end = i;
+      std::string decl;
+      bool type = std::regex_search(l, m, type_start);
+      if (type) {
+        decl = m[1];
+        int depth = 0;
+        bool opened = false;
+        for (end = i; end < to; ++end) {
+          for (char c : lines[end]) {
+            if (c == '{') {
+              ++depth;
+              opened = true;
+            } else if (c == '}') {
+              --depth;
             }
-            if ((opened && depth <= 0) || (!opened && lines[end].find(';') != std::string::npos)) break;
           }
-        } else {
-          while (end < lines.size() && lines[end].find(';') == std::string::npos && lines[end].find('{') == std::string::npos) ++end;
-          std::string joined;
-          for (std::size_t k = i; k <= end && k < lines.size(); ++k) joined += lines[k] + " ";
-          if (std::regex_search(joined, m, alias)) decl = m[1];
-          else if (joined.find('(') != std::string::npos && std::regex_search(joined, m, function)) decl = m[1];
-          else if (std::regex_search(joined, m, constant)) decl = m[1];
+          if ((opened && depth <= 0) || (!opened && lines[end].find(';') != std::string::npos)) break;
         }
-        end = std::min(end, lines.size() - 1);
-        if (!decl.empty()) names.push_back(decl);
-        if (!decl.empty() && used.contains(decl)) {
+      } else {
+        while (end < to && lines[end].find(';') == std::string::npos && lines[end].find('{') == std::string::npos) ++end;
+        // An inline body (or a braced initializer) over several lines belongs to its declaration;
+        // an extern "C" block does not (its declarations are read one by one).
+        if (end < to && lines[end].find('{') != std::string::npos && !core::contains(lines[end], "extern \"C\"")) {
+          const std::size_t open_line = end;
+          int depth = 0;
+          for (std::size_t k = i; k < to; ++k) {
+            depth += depth_of(lines[k]);
+            end = k;
+            if (k >= open_line && depth <= 0) break;
+          }
+        }
+        std::string joined;
+        for (std::size_t k = i; k <= end && k < to; ++k) joined += lines[k] + " ";
+        if (std::regex_search(joined, m, alias)) decl = m[1];
+        else if (joined.find('(') != std::string::npos && std::regex_search(joined, m, function)) decl = m[1];
+        else if (std::regex_search(joined, m, constant)) decl = m[1];
+      }
+      end = std::min(end, to - 1);
+      if (hidden) {
+        comment.clear();
+        i = end;
+        continue;
+      }
+      if (!decl.empty()) names.push_back(decl);
+      if (!decl.empty() && used.contains(decl)) {
+        std::size_t bytes = 0;
+        for (std::size_t k = i; k <= end; ++k) bytes += lines[k].size() + 1;
+        std::smatch cm;
+        if (type && bytes > kWholeType && !in_class && end > i && std::regex_search(l, cm, class_start)) {
+          // Head (up to its '{'), the used public members, the closing line.
+          std::size_t body = i;
+          while (body < end && lines[body].find('{') == std::string::npos) ++body;
+          kept += comment;
+          for (std::size_t k = i; k <= body; ++k) kept += lines[k] + "\n";
+          std::vector<std::string> members;
+          pick_used(lines, body + 1, end, used, kept, members, true, cm[1] == "class");
+          kept += lines[end] + "\n";
+        } else {
           kept += comment;
           for (std::size_t k = i; k <= end; ++k) kept += lines[k] + "\n";
         }
-        comment.clear();
-        i = end;
       }
-      bool any = std::any_of(names.begin(), names.end(), [&](const std::string& n) { return used.contains(n); });
-      if (any && kept.size() <= budget) {
-        budget -= kept.size();
-        out += fmt::format("=== {} ({} bytes; the declarations this block uses, read_file for the rest)\n{}", name, text.size(), kept);
-      } else {
-        if (names.size() > 40) names.resize(40);
-        out += fmt::format("=== {} ({} bytes, use read_file; declares {})\n", name, text.size(), core::join(names, ", "));
-      }
+      comment.clear();
+      i = end;
+    }
+  }
+
+  // A header of an imported neighbor: only the declarations the block uses (a big class as its head,
+  // labels and used public members). False, and nothing written, when it has none or they do not fit.
+  static bool add_used_declarations(std::string& out, const fs::path& f, const std::string& name, const std::set<std::string>& used,
+                                    std::size_t& budget) {
+    auto text = core::read_file(f).value_or("");
+    std::vector<std::string> lines;
+    for (std::size_t start = 0; start < text.size();) {
+      auto end = text.find('\n', start);
+      if (end == std::string::npos) end = text.size();
+      lines.push_back(text.substr(start, end - start));
+      start = end + 1;
+    }
+    if (lines.empty()) return false;
+    std::string kept;
+    std::vector<std::string> names;
+    pick_used(lines, 0, lines.size(), used, kept, names, false, false);
+    bool any = std::any_of(names.begin(), names.end(), [&](const std::string& n) { return used.contains(n); });
+    if (!any || kept.size() > budget) return false;
+    budget -= kept.size();
+    out += fmt::format("=== {} ({} bytes; the declarations this block uses)\n{}", name, text.size(), kept);
+    return true;
+  }
+
+  // One header of a neighbor: whole when small, else the declarations the block uses.
+  static void add_neighbor_file(std::string& out, const fs::path& f, const std::string& name, const std::set<std::string>& used,
+                                std::size_t& budget) {
+    constexpr std::size_t kWhole = 2000;
+    auto text = core::read_file(f).value_or("");
+    if (text.size() <= kWhole && text.size() <= budget) {
+      budget -= text.size();
+      out += fmt::format("=== {}\n{}{}", name, text, text.ends_with("\n") ? "" : "\n");
+      return;
+    }
+    // Chunks: a type with its body, or one declaration, each with the comment lines before it.
+    std::vector<std::string> lines;  // raw: core::split trims, and a struct body keeps its indentation
+    for (std::size_t start = 0; start < text.size();) {
+      auto end = text.find('\n', start);
+      if (end == std::string::npos) end = text.size();
+      lines.push_back(text.substr(start, end - start));
+      start = end + 1;
+    }
+    if (lines.empty()) return;
+    std::string kept;
+    std::vector<std::string> names;
+    pick_used(lines, 0, lines.size(), used, kept, names, false, false);
+    bool any = std::any_of(names.begin(), names.end(), [&](const std::string& n) { return used.contains(n); });
+    if (any && kept.size() <= budget) {
+      budget -= kept.size();
+      out += fmt::format("=== {} ({} bytes; the declarations this block uses, read_file for the rest)\n{}", name, text.size(), kept);
+    } else {
+      if (names.size() > 40) names.resize(40);
+      out += fmt::format("=== {} ({} bytes, use read_file; declares {})\n", name, text.size(), core::join(names, ", "));
     }
   }
 
@@ -399,7 +786,8 @@ struct Engine::Impl {
     }
   }
 
-  std::string context_for(Role role, const std::string& block) {
+  // task: what the agent is asked (a worker of an imported block gets the headers its functions use).
+  std::string context_for(Role role, const std::string& block, const std::string& task = {}) {
     std::lock_guard lk(mu);
     auto s = schema();
     if (!s) return s.error().str();
@@ -485,6 +873,51 @@ struct Engine::Impl {
           for (const auto* l : s->leaves_under(block)) add_files(out, s->block_dir(l->id) / dirs.api, l->id + ":api/", 16384, budget);
           return out;
         }
+        if (b->external()) {
+          // An imported block (ADR 0027): the files of its card where they are, the declarations of
+          // the linked blocks it uses (the most called first), the project's own build as its check.
+          auto v = idx->view(block, 2);
+          out += v ? *v : v.error().message + "\n";
+          std::size_t budget = 48 * 1024;
+          Sandbox sb(*s, block, role);
+          out += "--- files of this block (paths from the project root, as in the card; change them in place)\n";
+          add_listed(out, s->root, sb.own_files(), budget);
+          std::vector<std::string> focus;
+          auto used = role == Role::Worker ? focus_identifiers(*s, block, task, &focus) : std::set<std::string>{};
+          if (used.empty()) used = used_identifiers(*s, block, role, v ? *v : std::string());
+          out += focus.empty() ? std::string("--- headers of linked blocks (the declarations this block uses; read_file <path> for the rest)\n")
+                               : fmt::format("--- headers of linked blocks (the declarations that {} of this task use; read_file <path> "
+                                             "or grep for the rest)\n",
+                                             core::join(focus, ", "));
+          std::map<std::string, int> calls;
+          for (const auto& c : b->calls) ++calls[c.target.block];
+          auto neighbors = sb.neighbor_blocks();
+          std::stable_sort(neighbors.begin(), neighbors.end(), [&](const std::string& x, const std::string& y) { return calls[x] > calls[y]; });
+          // Their own budget, and only headers with declarations the block uses: a turn over the MCP
+          // output limit is saved to a file the model reads in pieces (ADR 0028).
+          std::size_t neighbor_budget = 20 * 1024;
+          std::vector<std::string> more;
+          for (const auto& n : neighbors) {
+            const auto* nb = s->find(n);
+            if (nb == nullptr || n == "shared.probe") continue;
+            if (!nb->external()) {
+              add_neighbor_api(out, s->block_dir(n) / dirs.api, n + ":api/", used, neighbor_budget);
+              continue;
+            }
+            for (const auto& f : nb->file_list()) {
+              fs::path p = s->root / f;
+              if (!core::is_code_file(p) || p.extension().string().starts_with(".c")) continue;
+              if (!add_used_declarations(out, p, f, used, neighbor_budget)) more.push_back(f);
+            }
+          }
+          if (!more.empty()) {
+            std::vector<std::string> first(more.begin(), more.begin() + static_cast<long>(std::min<std::size_t>(more.size(), 10)));
+            out += fmt::format("(+{} more headers of linked blocks: {}{}; grep them or read_file)\n", more.size(), core::join(first, " "),
+                               more.size() > first.size() ? " ..." : "");
+          }
+          out += "--- checks\nthe project's own build and tests (build(), test()); Karkas keeps no test files for an imported block\n";
+          return out;
+        }
         auto v = idx->view(block, 2);
         out += v ? *v : v.error().message + "\n";
         std::size_t budget = 48 * 1024;
@@ -544,16 +977,14 @@ struct Engine::Impl {
       return out;
     }
     const auto* b = s->find(block);
-    if (b != nullptr && b->external()) {
-      out.status = "failed";
-      out.cause = kImportedBlock;
-      return out;
-    }
     if (b == nullptr || !b->has_code()) {
       out.status = "failed";
       out.cause = "not a leaf: " + block;
       return out;
     }
+    // An imported block: its files where they are, its headers' public part as the contract and the
+    // project's own build as the check (ADR 0027).
+    const bool imported = b->external();
     std::string tier = fixed_tier;
     std::string reason;
     if (auto p = cfg.pin(block, "worker"); tier.empty() && !p.tier.empty()) {
@@ -570,8 +1001,11 @@ struct Engine::Impl {
       tier = tier_for("worker", rt.tier);
     }
     say(fmt::format("worker {}: tier {} ({})", block, tier, reason.empty() ? "fixed" : reason));
-    auto system = prompt(prompt_name, {{"block", block}});
-    auto context = context_for(Role::Worker, block);
+    auto system = prompt(imported && prompt_name == "worker" ? "worker_imported" : prompt_name, {{"block", block}});
+    // The focus of the context is what the plan asks of this block (its why names the functions in the
+    // orchestrator's words); the ticket's prose would match plain words like "ships" (ADR 0029).
+    const std::string& focus_task = task;
+    auto context = context_for(Role::Worker, block, focus_task);
     int level = core::trail_level(block);
     // Access to the own api/ in a ticket (ADR 0020): a frozen api lets constant values change
     // (tuning a number is not a contract change); an api unfrozen by an approved @change is
@@ -580,9 +1014,26 @@ struct Engine::Impl {
     std::string api_note;
     std::string users_note;
     if (auto users = Sandbox(*s, block, Role::Worker).user_blocks(); !users.empty()) {
-      users_note = "--- blocks that use this block (their api/ is readable as <block>:api/<file>)\n" + core::join(users, ", ") + "\n";
+      users_note = imported ? "--- blocks that use this block (their headers are readable under their paths)\n" + core::join(users, ", ") + "\n"
+                            : "--- blocks that use this block (their api/ is readable as <block>:api/<file>)\n" + core::join(users, ", ") + "\n";
     }
-    if (!tid.empty() && prompt_name == "worker") {
+    const std::string imported_unfrozen_note =
+        "--- headers of this block\nunfrozen by a change approved in this ticket: bring them in line with the card (add or "
+        "change exactly what the card names, keep every other declaration), then the sources. Report api=changed.\n";
+    if (imported) {
+      // The headers' public part is what other blocks build on; the rest is free (ADR 0027). A change
+      // of this ticket already approved for the block unfreezes them, as it does an api/.
+      if (ticket_changed_block(changes, tid, block)) {
+        api_access = ApiAccess::Full;
+        api_note = imported_unfrozen_note;
+      } else {
+        api_access = ApiAccess::Imported;
+        api_note = "--- headers of this block\ntheir public part is the contract: keep every public or protected declaration "
+                   "as it is. Free: private members (fields, helper methods, types), inline bodies, initial values, "
+                   "comments, new #include lines and new public constants. A new or changed public function, type or "
+                   "field is a card change: report needs_contract_change with the card line in proposal.\n";
+      }
+    } else if (!tid.empty() && prompt_name == "worker") {
       auto st = index::StateStore(root).load();
       bool frozen = st && st->frozen_api.contains(block);
       bool any_frozen = st && !st->frozen_api.empty();
@@ -652,18 +1103,21 @@ struct Engine::Impl {
       spec.max_steps = cfg.max_steps_worker;
       spec.max_tokens = cfg.max_tokens_per_run;
       spec.timeout = std::chrono::seconds(cfg.run_timeout_s);
-      Sandbox sandbox(*s, block, Role::Worker);
+      // The card as it is now: an approval in an earlier attempt may have given the block new files.
+      auto now = schema();
+      Sandbox sandbox(now ? *now : *s, block, Role::Worker);
       sandbox.set_api_access(api_access);
       LeafToolHost host(std::move(sandbox), Role::Worker, *tests, {block});
       if (approve_now) host.set_approve_now(approve_now);
       auto res = runner().run(spec, host);
       if (host.approved_in_run()) {
         // A later attempt starts from the card and the access the approval gave.
-        context = context_for(Role::Worker, block);
+        context = context_for(Role::Worker, block, focus_task);
         api_access = ApiAccess::Full;
-        api_note = "--- api/ of this block\nunfrozen by a change approved in this ticket: bring it in line with the card "
-                   "(add or change exactly what the card names, keep every other declaration), then the impl. Report "
-                   "api=changed.\n";
+        api_note = imported ? imported_unfrozen_note
+                            : "--- api/ of this block\nunfrozen by a change approved in this ticket: bring it in line with the card "
+                              "(add or change exactly what the card names, keep every other declaration), then the impl. Report "
+                              "api=changed.\n";
       }
       if (host.api_written()) {
         if (api_access == ApiAccess::ValuesOnly) {
@@ -674,8 +1128,28 @@ struct Engine::Impl {
             if (!h.empty()) (void)index::StateStore(root).freeze_api(block, h);
           }
           out.api_note = "constants tuned or added, declarations unchanged (re-frozen)";
+        } else if (api_access == ApiAccess::Imported) {
+          // The public part held (the tool refused anything else); a frozen block keeps being frozen
+          // with the new text, a block never frozen stays so.
+          bool refrozen = false;
+          auto st = index::StateStore(root).load();
+          if (auto s2 = schema(); s2 && st && st->frozen_api.contains(block)) {
+            auto h = index::block_api_hash(index::collect_code_files(*s2), block);
+            refrozen = !h.empty() && index::StateStore(root).freeze_api(block, h).has_value();
+          }
+          out.api_note = std::string("headers changed in their private part, constants or includes; public declarations unchanged") +
+                         (refrozen ? " (re-frozen)" : "");
+        } else if (cfg.auto_approve) {
+          // auto_approve: the human left approvals to the program, so it also freezes the api it
+          // approved, now in line with the card; no command is left for a client to run (ADR 0029).
+          bool frozen = false;
+          if (auto s2 = schema()) {
+            auto h = index::block_api_hash(index::collect_code_files(*s2), block);
+            frozen = !h.empty() && index::StateStore(root).freeze_api(block, h).has_value();
+          }
+          out.api_note = frozen ? "changed to the card and frozen (auto_approve)" : "changed to the card";
         } else {
-          out.api_note = "changed to the card (karkas approve api " + block + " freezes it)";
+          out.api_note = "changed to the card; a human freezes it with `karkas approve api " + block + "` (not a step of an agent or client)";
         }
       }
       out.tokens += res.tokens;
@@ -718,9 +1192,11 @@ struct Engine::Impl {
       } else {
         out.cause = res.outcome + (res.error.empty() ? "" : ": " + res.error);
       }
-      // Tests matter more than words (11.3): "fixed" with failing tests is not fixed.
+      // Tests matter more than words (11.3): "fixed" with failing tests is not fixed. An imported block's
+      // files are compiled here; the project's full build and tests run in the ticket (ADR 0028).
       if (status == "fixed" || status == "done") {
-        auto tr = tests->build_and_test({block});
+        auto sources = imported ? own_sources(*b) : std::vector<std::string>{};
+        auto tr = !sources.empty() ? tests->compile_check(sources) : tests->build_and_test({block});
         out.tests_ok = tr && tr->ok;
         out.test_text = tr ? tr->text : tr.error().message;
         if (!out.tests_ok) {
@@ -754,6 +1230,76 @@ struct Engine::Impl {
     return out;
   }
 
+  // The behaviour test of a finished feature of an imported project (ADR 0029): a tester writes one test
+  // in the project's own framework ([test] dir, as [test] guide says) and runs it with the project's test
+  // command, which gets the ticket's test files in KK_TEST_FILES. `what`: the ticket and what was done.
+  LeafOutcome run_behavior_tester(const std::string& block, const std::string& tid, const std::string& what) {
+    LeafOutcome out;
+    auto s = schema();
+    if (!s) {
+      out.status = "failed";
+      out.cause = s.error().message;
+      return out;
+    }
+    std::error_code ec;
+    const fs::path dir = root / cfg.test_dir;
+    fs::create_directories(dir, ec);
+    std::string ctx = context_for(Role::Tester, block);
+    ctx += fmt::format("--- the project's test folder: {} (write your test there, as a new file)\n", cfg.test_dir);
+    std::vector<fs::path> existing;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+      if (e.is_regular_file(ec)) existing.push_back(e.path());
+    }
+    std::sort(existing.begin(), existing.end());
+    for (const auto& f : existing) ctx += "  " + core::rel_str(root, f) + "\n";
+    if (!existing.empty()) {
+      // The shortest existing test shows the format best.
+      auto shortest = *std::min_element(existing.begin(), existing.end(), [](const fs::path& a, const fs::path& b) {
+        std::error_code e1;
+        return fs::file_size(a, e1) < fs::file_size(b, e1);
+      });
+      ctx += "--- an existing test: " + core::rel_str(root, shortest) + "\n" + shorten(core::read_file(shortest).value_or(""), 6000) + "\n";
+    }
+    if (!cfg.test_guide.empty()) {
+      ctx += "--- how a test of this project is written (" + cfg.test_guide + ")\n" +
+             shorten(core::read_file(root / cfg.test_guide).value_or("(the guide file is missing)"), 12000) + "\n";
+    }
+    AgentSpec spec;
+    spec.role = Role::Tester;
+    spec.role_name = "tester";
+    spec.block = block;
+    spec.ticket = tid;
+    spec.tier = tier_for("tester", "cheap", block);
+    spec.system_text = prompt("tester_imported", {{"block", block}});
+    spec.context_text = ctx;
+    spec.task_text = "--- task\n" + what + "\n--- last build/test\n" + last_tests(block);
+    spec.max_steps = std::max(cfg.max_steps_tester, cfg.max_steps_worker);  // it reads the code it tests
+    spec.max_tokens = cfg.max_tokens_per_run;
+    spec.timeout = std::chrono::seconds(cfg.run_timeout_s);
+    Sandbox sb(*s, block, Role::Tester);
+    sb.allow_write_dir(dir);
+    LeafToolHost host(std::move(sb), Role::Tester, *tests, {block});
+    auto res = runner().run(spec, host);
+    out.tokens = res.tokens;
+    out.cost = res.cost;
+    out.tier = spec.tier;
+    out.attempts = 1;
+    if (res.terminal_tool == "report") {
+      auto rep = json::parse(res.terminal_input, nullptr, false);
+      out.status = rep.is_object() ? rep.value("status", "done") : "done";
+      if (rep.is_object()) {
+        out.cause = sget(rep, "cause");
+        out.fix = sget(rep, "fix");
+        out.files = sget(rep, "files");
+      }
+    } else {
+      out.status = res.outcome == "cancelled" ? "cancelled" : "failed";
+      out.cause = res.outcome;
+    }
+    out.test_text = host.last_test_text();
+    return out;
+  }
+
   LeafOutcome run_tester(const std::string& block, const std::string& tid, bool integration = false,
                          const std::string& fix_task = "") {
     LeafOutcome out;
@@ -771,7 +1317,7 @@ struct Engine::Impl {
     }
     if (b->external()) {
       out.status = "failed";
-      out.cause = kImportedBlock;
+      out.cause = kImportedNoTester;
       return out;
     }
     if (!integration) (void)code::write_mocks(*s, block);
@@ -945,13 +1491,20 @@ Engine::Engine(fs::path root, core::Config cfg, EngineOptions opts) : root_(core
       return llm::make_provider(*t, cfg_, *impl_->http);
     };
   }
+  // Karkas serves its agents' turns itself, without a client session (ADR 0029).
+  if (cfg_.mcp() && cfg_.mcp_launch == "claude" && !m.opts.providers) {
+    m.launcher = std::make_unique<RunLauncher>(root_, cfg_);
+    m.launcher->start();
+  }
 }
 
 Engine::~Engine() = default;
 
 index::Index& Engine::index() { return *impl_->idx; }
 
-std::string Engine::context_for(Role role, const std::string& block) { return impl_->context_for(role, block); }
+std::string Engine::context_for(Role role, const std::string& block, const std::string& task) {
+  return impl_->context_for(role, block, task);
+}
 
 LeafOutcome Engine::run_tester(const std::string& block, const std::string& ticket) { return impl_->run_tester(block, ticket); }
 
@@ -1478,17 +2031,58 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
   int plan_total = 0;
   bool reviewed = false;     // one review of the orchestrator's change by its leaves per run
   std::string review_gaps;   // what the leaves found, for the orchestrator's next decision
+  bool linted = false;          // one check of the orchestrator's change for fns named only in notes (ADR 0029)
+  bool behavior_tested = false;  // the behaviour test of an imported feature ran (ADR 0029)
+  std::string behavior_failure;  // its failure, for the orchestrator's next decision
+  std::string behavior_retask;   // and for the worker it sends to fix it
+  int behavior_fixes = 0;        // sends left to fix a failing behaviour test, each a tier higher (ADR 0029)
+  bool behavior_fix_now = false; // the worker of this step fixes it
+  std::string behavior_passed;   // the fix made the test pass: said to the orchestrator once
+  bool escalate_orch = false;   // a decision of the orchestrator came back: the next ones are a tier higher (ADR 0029)
+  bool escalation_said = false;
   int root_visits = 0;
+  int build_repairs = 0;  // full builds of an imported project sent back to a block (ADR 0028)
+  std::string build_failure;  // a full build no error of which names a block's file: for the orchestrator (ADR 0030)
+  std::string build_retask;   // and for the worker it sends next
   constexpr int kMaxRootVisits = 8;  // orchestrator decisions in one run (leaves of a feature + bounces)
   constexpr int kMaxLeavesDone = 10;  // leaves of one feature in one run (a plan has up to 9)
+  constexpr int kLikelyBlocks = 8;    // candidates the code index gives the orchestrator (ADR 0028)
   metrics::Tokens total;
   double cost = 0;
+  const std::int64_t started = core::unix_now();  // the runs of this ticket from now on (its cost line)
+  // The behaviour tests of this ticket for the project's test command (ADR 0029): a list of another
+  // ticket is gone, this ticket's goes when it ends.
+  const fs::path ticket_tests = root_ / ".karkas" / "cache" / "ticket_tests.txt";
+  if (auto old_list = core::read_file(ticket_tests);
+      old_list && !old_list->starts_with("# " + id + "\n") && !old_list->starts_with("# " + id + " ")) {
+    std::error_code ec;
+    fs::remove(ticket_tests, ec);
+  }
+  // The ticket's cost line. In mode mcp with launched sessions (ADR 0029) the sessions' own cost, read when they
+  // have ended (docs/adr/0031): the estimate from the turns was 3-5x below it on Endless Sky.
+  auto cost_line = [&]() -> std::string {
+    if (cfg_.mcp() && m.launcher) {
+      (void)m.launcher->settle(30);
+      auto tc = ticket_cost(m.root, id, started);
+      if (tc.sessions > 0) {
+        return fmt::format("in={} out={} cache_write={} cache_read={} usd={:.4f} ({} of {} run(s) at the cost their Claude Code "
+                           "session reported, at list prices{})",
+                           tc.input, tc.output, tc.cache_write, tc.cache_read, tc.usd, tc.sessions, tc.runs,
+                           tc.sessions < tc.runs ? "; the others estimated from their turns" : "");
+      }
+    }
+    return fmt::format("in={} out={} cache_write={} cache_read={} usd={:.4f}{}", total.input, total.output, total.cache_write(),
+                       total.cache_read, cost, cfg_.mcp() ? " (MCP: an estimate of the client's tokens from the turns)" : "");
+  };
   auto finish = [&](core::TicketStatus st, std::vector<core::ResultLine> lines) -> std::string {
+    {
+      std::error_code ec;
+      fs::remove(ticket_tests, ec);
+    }
     // The status line stays first: it starts a result block (the path view finds the latest).
     if (!done_lines.empty()) lines.insert(lines.begin() + (lines.empty() ? 0 : 1), done_lines.begin(), done_lines.end());
     lines.push_back({"state", m.state_hash(), {}, 0});
-    lines.push_back({"cost", fmt::format("in={} out={} cache_read={} usd={:.4f}{}", total.input, total.output, total.cache_read, cost,
-                                         cfg_.mcp() ? " (MCP: an estimate of the client's tokens from the turns)" : ""), {}, 0});
+    lines.push_back({"cost", cost_line(), {}, 0});
     (void)m.tickets.add_result(id, lines);
     m.set_status(id, st);
     m.reindex();
@@ -1506,8 +2100,7 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
       // The fingerprint like any result: the next run tells "the project changed since" from
       // "nothing changed" (without it, the orchestrator was told "an older run").
       lines.push_back({"state", m.state_hash(), {}, 0});
-      lines.push_back({"cost", fmt::format("in={} out={} cache_read={} usd={:.4f}{}", total.input, total.output, total.cache_read, cost,
-                                         cfg_.mcp() ? " (MCP: an estimate of the client's tokens from the turns)" : ""), {}, 0});
+      lines.push_back({"cost", cost_line(), {}, 0});
       (void)m.tickets.add_result(id, lines);
     }
     m.set_status(id, core::TicketStatus::Open);
@@ -1566,6 +2159,16 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
       for (const auto& line : core::split(*a, '\n')) {
         if (core::contains(line, "written to api/") || core::contains(line, ": declared `")) written += line + "\n";
       }
+      // An imported block has headers, not api/, and a change of it may only give it files (ADR 0027).
+      auto now = m.schema();
+      const auto* nb = now ? now->find(block) : nullptr;
+      if (nb != nullptr && nb->external()) {
+        return fmt::format("{} approved automatically (Auto). The card of {} now reads:\n{}\n{}The headers of this block are "
+                           "unfrozen for this change and every file of its card (a new one too) is writable: add the "
+                           "declarations the card names, if any, do your part and report done (api=changed only when you "
+                           "changed a declaration of a header). Other blocks of the change are sent after yours.",
+                           c->id, block, card, written.empty() ? "" : "Written by the program:\n" + written);
+      }
       return fmt::format("{} approved automatically (Auto). The card of {} now reads:\n{}\n{}api/ is unfrozen for this change: "
                          "bring it in line with the card, then the impl, and report done with api=changed when the tests "
                          "pass. Other blocks of the change are sent after yours.",
@@ -1602,8 +2205,8 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
   // finished: a plan that skipped one goes back to the orchestrator instead of closing.
   auto scope_not_done = [&]() {
     std::set<std::string> done(done_blocks.begin(), done_blocks.end());
-    if (auto t = m.tickets.load(id)) {
-      for (const auto& r : t->result) {
+    if (auto tk = m.tickets.load(id)) {
+      for (const auto& r : tk->result) {
         if (r.key != "fix" && r.key != "files") continue;
         auto colon = r.text.find(':');
         if (colon != std::string::npos) done.insert(r.text.substr(0, colon));
@@ -1688,6 +2291,18 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
       std::string tier = orch ? m.tier_for("orchestrator", "strong", "")
                               : (m.navigator_tier.contains(current) ? m.navigator_tier[current]
                                                                     : m.tier_for("navigator", "medium", current));
+      // A cheaper orchestrator whose change or block came back decides again a tier higher (ADR 0029).
+      if (orch && escalate_orch) {
+        if (auto up = next_tier(cfg_, tier); !up.empty()) {
+          if (!escalation_said) {
+            m.note(id, fmt::format("the orchestrator decides on tier {} from here (was {}): a decision of it came back", up, tier));
+            escalation_said = true;
+          }
+          tier = up;
+        }
+      }
+      // A decision below the strongest tier gets its change reviewed by the leaves it touches.
+      const bool weaker_orchestrator = orch && !next_tier(cfg_, tier).empty();
       AgentSpec spec;
       spec.role = orch ? Role::Orchestrator : Role::Navigator;
       spec.role_name = role;
@@ -1753,6 +2368,35 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
       if (orch && !plan.empty()) {
         decide += "\nPlanned and not sent yet: " + plan_text(plan) + " (a new dispatch replaces the plan; list them in next to keep them).";
       }
+      if (orch && !behavior_failure.empty() && behavior_failure.starts_with("The behaviour test is in doubt")) {
+        decide += "\n" + behavior_failure +
+                  "\nClose with verdict done when the facts show the request is in place, or escalate for a human to check "
+                  "the test.";
+        behavior_failure.clear();
+      }
+      if (orch && !behavior_failure.empty()) {
+        decide += "\n" + behavior_failure +
+                  "\nDispatch the block whose code must change — a block done in this run may get it once more, with the test's "
+                  "output as its task (the test stays as it is; its worker can run it with test()) — or escalate when the test is "
+                  "what is wrong.";
+        behavior_failure.clear();
+      }
+      if (orch && !behavior_passed.empty()) {
+        decide += "\n" + behavior_passed + " Close the ticket when the whole request is in place.";
+        behavior_passed.clear();
+      }
+      if (orch && !build_failure.empty()) {
+        decide += "\n" + build_failure +
+                  "\nDispatch the block whose files must change (a block done in this run may get it once more; its worker "
+                  "gets these errors as its task), or escalate when no block's code can fix them.";
+        build_failure.clear();
+      }
+      if (orch && behavior_fixes > 0 && behavior_failure.empty() && !behavior_retask.empty()) {
+        decide += fmt::format("\nThe behaviour test still fails: {} more send(s) to fix it, each with a stronger model and the "
+                              "test's output. Put the cause you see into why (the file, the condition, what to change): the worker "
+                              "reads only its block.",
+                              behavior_fixes);
+      }
       if (orch && !review_gaps.empty()) {
         decide += "\nThe blocks of your change found gaps; it was set aside. Propose it again with them closed:\n- " + review_gaps;
         review_gaps.clear();
@@ -1761,7 +2405,18 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
         decide += "\nAlready answered in this run (do not send them the ticket again):";
         for (const auto& [blk, why] : answered) decide += "\n- " + blk + ": " + why;
       }
-      spec.task_text = core::path_view(*ticket, current) + decide;
+      // The blocks the code index finds for the words of the ticket (ADR 0028): on a big imported project
+      // the orchestrator otherwise viewed whole groups to find the place (Endless Sky: 157K characters).
+      std::string likely;
+      if (orch && root_visits == 1 && done_blocks.empty()) {
+        std::lock_guard lk(m.mu);
+        auto found = m.idx->locate(ticket->symptom.set ? ticket->symptom.value : ticket->task.value, kLikelyBlocks);
+        if (found.starts_with("@locate")) {
+          likely = "\n--- blocks the code index finds for the words of the ticket (a hint, not a decision)\n" +
+                   found.substr(found.find('\n') + 1);
+        }
+      }
+      spec.task_text = core::path_view(*ticket, current) + likely + decide;
       spec.max_steps = orch ? cfg_.max_steps_orchestrator : cfg_.max_steps_navigator;
       spec.max_tokens = cfg_.max_tokens_per_run;
       spec.timeout = std::chrono::seconds(cfg_.run_timeout_s);
@@ -1791,9 +2446,9 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
           if (planned) {
             attrs.push_back({"plan", fmt::format("1/{}", plan_total)});
             attrs.push_back({"then", core::join([&] {
-                               std::vector<std::string> b;
-                               for (const auto& st : plan) b.push_back(st.block);
-                               return b;
+                               std::vector<std::string> names;
+                               for (const auto& st : plan) names.push_back(st.block);
+                               return names;
                              }(), ",")});
           }
         }
@@ -1812,9 +2467,23 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
                         {{"status", "escalated", {}, 0}, {"note", "the orchestrator's change is not applicable: " + c.error().message, {}, 0}});
         }
         m.trail(id, level_entry(0, role, {{"at", "root"}, {"outcome", "change"}, {"why", shorten("proposed " + c->id, 160)}}));
+        // A note that names a fn the change does not declare: the Sonnet orchestrator of Endless Sky's C2
+        // wrote "fn ships_destroyed() -> int64_t" into a note only, and the panel's worker had to ask for
+        // the fn and call lines. Found here without a model; the change goes back once (ADR 0029).
+        if (!linted) {
+          linted = true;
+          if (auto gaps = fns_only_in_notes(*c, *s); !gaps.empty()) {
+            (void)m.changes.set_status(c->id, "rejected");
+            m.note(id, c->id + " set aside: " + shorten(core::join(gaps, "; "), 400));
+            review_gaps = core::join(gaps, "\n- ");
+            escalate_orch = true;
+            continue;  // back to the orchestrator, which amends the change
+          }
+        }
         // review_changes: the leaves the change touches say whether their card is enough, before
-        // anyone approves it — cheaper than a second change after a worker finds the gap.
-        if (cfg_.review_changes && !reviewed) {
+        // anyone approves it — cheaper than a second change after a worker finds the gap. On by itself
+        // when a cheaper tier than the strongest decided (ADR 0029).
+        if ((cfg_.review_changes || weaker_orchestrator) && !reviewed) {
           reviewed = true;
           std::map<std::string, std::vector<std::string>> lines_of;
           std::string at;
@@ -1840,6 +2509,7 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
             (void)m.changes.set_status(c->id, "rejected");
             m.note(id, c->id + " set aside after its blocks reviewed it: " + shorten(core::join(gaps, "; "), 400));
             review_gaps = core::join(gaps, "\n- ");
+            escalate_orch = true;
             continue;  // back to the orchestrator, which amends the change
           }
         }
@@ -1908,19 +2578,115 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
     if (auto rt = retask.find(current); rt != retask.end()) {
       task = rt->second + "\n" + task;
       retask.erase(rt);
+    } else if (!build_retask.empty()) {
+      task = build_retask + "\n" + task;  // the block the orchestrator chose for a failing full build
     }
-    auto lo = m.run_worker(current, id, task, difficulty, "worker", "", approve_now(current));
+    build_retask.clear();
+    // A send after a failing behaviour test: the test's output with the orchestrator's why, and a stronger model
+    // (Endless Sky C3: two cheap fixes missed that Actor() is empty for kills the orchestrator had explained).
+    std::string fix_tier;
+    behavior_fix_now = behavior_fixes > 0 && !behavior_retask.empty();
+    if (behavior_fix_now) {
+      task = behavior_retask + "\n" + task;
+      fix_tier = behavior_fixes == 2 ? "medium" : "strong";
+      if (cfg_.tier(fix_tier) == nullptr) fix_tier.clear();
+      --behavior_fixes;
+      if (behavior_fixes == 0) behavior_retask.clear();
+    }
+    const auto files_before = cfg_.done_needs_change ? block_files_state(root_, *s, *b) : std::map<std::string, std::string>{};
+    auto lo = m.run_worker(current, id, task, difficulty, "worker", fix_tier, approve_now(current));
     total += lo.tokens;
     cost += lo.cost;
     if (lo.status == "cancelled") return stopped("worker", current);
+    // A done or fixed with no file of the block changed (and no change of its card) did nothing: the orchestrator
+    // hears it instead of the plan going on as if the part were in place (docs/adr/0031, bugs.txt 14).
+    if (cfg_.done_needs_change && (lo.status == "done" || lo.status == "fixed") && lo.api_note.empty()) {
+      auto card = core::load_block_file(s->block_dir(current) / "block.ksl", current);
+      if (block_files_state(root_, *s, card ? *card : *b) == files_before) {
+        const std::string said = lo.fix.empty() ? lo.cause : lo.fix;
+        answer_fact(current, "not_here", "reported " + lo.status + " but changed no file of the block: " + said);
+        answered[current] = "reported " + lo.status + " without changing a file: " + shorten(said, 160);
+        m.note(id, fmt::format("{} reported {} but changed no file of its block: back to the orchestrator", current, lo.status));
+        current = "root";
+        continue;
+      }
+    }
+    // A fix worker that blames the behaviour test (it names the test's file) in a not_here found a flaw in the test,
+    // not a block to go to: the behaviour tester corrects it (Endless Sky C3 run 5: the target of the test was
+    // disabled from the start, the worker said so in a not_here, and the ticket went up to the orchestrator).
+    if (behavior_fix_now && behavior_tested && (lo.status == "not_here" || lo.status == "needs_info")) {
+      const std::string said = lo.cause + "\n" + lo.fix;
+      for (const auto& l : core::split(core::read_file(ticket_tests).value_or(""), '\n')) {
+        auto entry = std::string(core::trim(l));
+        if (entry.empty() || entry.starts_with("#")) continue;
+        if (core::contains(said, entry) || core::contains(said, fs::path(entry).filename().string())) {
+          m.note(id, fmt::format("{} blames the behaviour test {} ({}): it goes to the behaviour tester", current, entry,
+                                 lo.status));
+          lo.status = "needs_tester";
+          break;
+        }
+      }
+    }
     if (lo.status == "fixed" || lo.status == "done") {
       m.set_status(id, core::TicketStatus::Verifying);
+      // A new source file of an imported block reaches the project's own build: Karkas adds it to the
+      // CMakeLists.txt that names the files of its folder (no worker may edit it; docs/adr/0030).
+      if (b->external()) {
+        std::vector<std::string> files;
+        if (auto card = core::load_block_file(s->block_dir(current) / "block.ksl", current)) files = card->file_list();
+        for (const auto& f : core::split(lo.files, ',')) files.emplace_back(core::trim(f));
+        if (auto added = add_sources_to_build(root_, files); !added.empty()) {
+          m.note(id, "Karkas added the new file(s) of " + current + " to the project's build: " + core::join(added, "; "));
+          lo.fix += (lo.fix.empty() ? "" : " ") + std::string("(Karkas added to the build: ") + core::join(added, "; ") + ")";
+        }
+      }
+      // An imported block of a feature with blocks still to come was checked by compiling its files in its
+      // run; the project's full build and tests run once, after the last block (ADR 0028): Endless Sky's
+      // release build with LTO took 3-5 min after every block.
+      const bool defer_full = b->external() && !bug && planned && !plan.empty();
       // An edited api/ (constant values or the card's declarations) is re-tested with every
       // dependent (12.4): a tuned number is checked where it is used.
-      auto plan = regression_plan(*s, m.idx->dependent_blocks(current), current, !lo.api_note.empty());
-      auto tr = m.tests->build_and_test(plan.labels);
+      auto regression = regression_plan(*s, m.idx->dependent_blocks(current), current, !lo.api_note.empty());
+      auto tr = defer_full ? kk::Result<TestRun>(TestRun{true, true, "", {}, "compile check ok; the full build and tests run after the last block\n"})
+                           : m.tests->build_and_test(regression.labels);
       std::string verify = tr ? shorten(tr->text, 300) : tr.error().message;
       bool green = tr && tr->ok;
+      // The full build of an imported project fails: the block whose file an error names gets the errors
+      // as its task (twice at most) instead of the human at once (ADR 0028).
+      if (!green && tr && !tr->build_ok && b->external() && build_repairs < 2) {
+        auto fresh = m.schema();  // the worker's card may have gained files in its run
+        if (auto owner = block_of_build_error(fresh ? *fresh : *s, tr->build_summary); !owner.empty()) {
+          ++build_repairs;
+          if (owner != current) {
+            // This block's part is in place; the error is in another block's file.
+            std::string what = lo.fix.empty() ? lo.cause : lo.fix;
+            done_lines.push_back({"fix", current + ": " + what, {}, 0});
+            if (!lo.files.empty()) done_lines.push_back({"files", current + ": " + lo.files, {}, 0});
+            done_blocks.push_back(current);
+            answered[current] = "done: " + shorten(what, 160);
+          }
+          m.note(id, fmt::format("the full build fails in a file of {}: its worker gets the errors", owner));
+          retask[owner] = "The project's full build fails after the changes of this ticket:\n" + shorten(tr->build_summary, 1500) +
+                          "\nFix these errors in your files (the rest of the change is in place).";
+          current = owner;
+          continue;
+        }
+        // No error names a block's file: the orchestrator gets the build's errors once, not the human at once
+        // (Endless Sky's round 3 escalated on a linker error right after its last block; docs/adr/0030).
+        ++build_repairs;
+        std::string what = lo.fix.empty() ? lo.cause : lo.fix;
+        done_lines.push_back({"fix", current + ": " + what, {}, 0});
+        if (!lo.files.empty()) done_lines.push_back({"files", current + ": " + lo.files, {}, 0});
+        done_blocks.push_back(current);
+        for (const auto& blk : done_blocks) answered.erase(blk);
+        build_failure = "The project's full build fails after the blocks of this ticket, and no error names a file of a block:\n" +
+                        shorten(tr->build_summary, 1500);
+        build_retask = "The project's full build fails after the changes of this ticket:\n" + shorten(tr->build_summary, 1500) +
+                       "\nFix in your files what causes these errors (the rest of the change is in place).";
+        m.note(id, "the full build fails and no error names a block's file: back to the orchestrator");
+        current = "root";
+        continue;
+      }
       // History of the leaf, written by the program (3.10); only kinds whose card takes hist
       // lines (leaf, entry): a hist line in a shared card is a schema error (E08) that stops
       // every agent afterwards.
@@ -1934,7 +2700,15 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
       // (12.1), so the tester adds theirs now — or the new promises stay unchecked (flappy
       // T-0013: rules.columns gained four inv lines, its contract tests stayed 12/12).
       std::string inv_line;
-      if (!bug && green && b->kind == core::BlockKind::Leaf && !inv_tested.contains(current)) {
+      if (!bug && green && b->kind == core::BlockKind::Leaf && b->external() && !inv_tested.contains(current)) {
+        // No Karkas contract tests in imported code (ADR 0027): its new promises are the project's own
+        // tests' business, and the ticket says so.
+        if (auto invs = ticket_invariants(m.changes, id, current); !invs.empty()) {
+          inv_tested.insert(current);
+          inv_line = fmt::format("{}: {} new invariant(s), checked only by the project's own tests (imported block)", current,
+                                 invs.size());
+        }
+      } else if (!bug && green && b->kind == core::BlockKind::Leaf && !inv_tested.contains(current)) {
         auto invs = ticket_invariants(m.changes, id, current);
         if (!invs.empty()) {
           inv_tested.insert(current);
@@ -1950,7 +2724,7 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
           if (tf.status == "cancelled") return stopped("tester", current);
           m.trail(id, level_entry(core::trail_level(current), "tester",
                                   {{"at", current}, {"model", tf.tier}, {"attempt", "1"}, {"outcome", tf.status}}));
-          auto tr2 = m.tests->build_and_test(plan.labels);
+          auto tr2 = m.tests->build_and_test(regression.labels);
           verify = tr2 ? shorten(tr2->text, 300) : tr2.error().message;
           green = tr2 && tr2->ok;
           if (green) {
@@ -1967,6 +2741,77 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
             continue;
           }
         }
+      }
+      // The behaviour of the finished feature of an imported project (ADR 0029): after its last block and the
+      // full build, a test in the project's own framework. Compiling is not enough (Endless Sky, method B: a
+      // counter that compiled, saved and showed, and never counted). A failing test goes to the orchestrator.
+      if (!bug && green && b->external() && plan.empty() && !behavior_tested && !cfg_.test_dir.empty() &&
+          !cfg_.test_command.empty()) {
+        behavior_tested = true;
+        std::string what = fmt::format("Ticket {}: {}\nWhat the workers did:\n", id,
+                                       ticket ? (ticket->task.set ? ticket->task.value : ticket->symptom.value) : std::string());
+        for (const auto& l : done_lines) {
+          if (l.key == "fix") what += "- " + l.text + "\n";
+        }
+        what += "- " + current + ": " + (lo.fix.empty() ? lo.cause : lo.fix) + "\n";
+        // From here the test command gets the files the tester writes into the test folder: its own test()
+        // runs its test (KK_TEST_FILES; "since" = files written from now on).
+        const std::string list_head = fmt::format("# {} since={}\n", id, core::unix_now());
+        (void)core::write_file(ticket_tests, list_head);
+        auto bt = m.run_behavior_tester(current, id, what);
+        total += bt.tokens;
+        cost += bt.cost;
+        if (bt.status == "cancelled") return stopped("tester", current);
+        m.trail(id, level_entry(core::trail_level(current), "tester",
+                                {{"at", current}, {"model", bt.tier}, {"attempt", "1"}, {"outcome", bt.status}}));
+        std::vector<std::string> files;
+        for (const auto& f : core::split(bt.files, ',')) {
+          auto path = std::string(core::trim(f));
+          std::error_code ec;
+          if (!path.empty() && core::is_within(root_ / cfg_.test_dir, root_ / path) && fs::is_regular_file(root_ / path, ec)) {
+            files.push_back(path);
+          }
+        }
+        if (!files.empty()) (void)core::write_file(ticket_tests, list_head + core::join(files, "\n") + "\n");
+        auto tr3 = files.empty() ? kk::Result<TestRun>(kk::fail("tester", "no test file in the test folder"))
+                                 : m.tests->build_and_test({current});
+        if (tr3 && tr3->ok) {
+          inv_line = fmt::format("behaviour test {} passes: {}", core::join(files, " "), shorten(bt.fix, 200));
+        } else if (tr3 && tr3->build_ok) {
+          // The project builds, the feature does not do what the test checks.
+          behavior_failure = fmt::format("The behaviour test {} written for this ticket fails after the last block:\n{}{}",
+                                         core::join(files, " "), shorten(tr3->text, 1500),
+                                         bt.cause.empty() ? "" : "\nThe tester: " + shorten(bt.cause, 400));
+          behavior_fixes = 2;
+          behavior_retask = fmt::format("The behaviour test {} of this ticket fails after the blocks were done:\n{}\nMake your block's part "
+                                        "do what the test checks; run test() (it runs the test too) and do not change the test. "
+                                        "If the test itself is wrong (what it waits for cannot happen, or it checks what the "
+                                        "request does not ask), report status=needs_tester with the flaw in cause.",
+                                        core::join(files, " "), shorten(tr3->text, 1500));
+          std::string done_what = lo.fix.empty() ? lo.cause : lo.fix;
+          done_lines.push_back({"fix", current + ": " + done_what, {}, 0});
+          if (!lo.files.empty()) done_lines.push_back({"files", current + ": " + lo.files, {}, 0});
+          done_lines.push_back({"tests", "behaviour test " + core::join(files, " ") + " fails", {}, 0});
+          done_blocks.push_back(current);
+          // The failing test is news: every block done in this run may be sent once more to fix it (the no-circles
+          // rule kept the orchestrator of Endless Sky's C3 from sending the block it had found the cause in).
+          for (const auto& blk : done_blocks) answered.erase(blk);
+          m.note(id, "the behaviour test " + core::join(files, " ") + " fails: back to the orchestrator");
+          current = "root";
+          continue;
+        } else {
+          inv_line = fmt::format("no behaviour test (tester {}: {})", bt.status,
+                                 shorten(!bt.cause.empty() ? bt.cause : (tr3 ? tr3->text : tr3.error().message), 200));
+        }
+      }
+      if (!bug && green && behavior_fix_now) {
+        // The fix passed the build and the test command, which runs the behaviour test (KK_TEST_FILES): the test
+        // passes now; no more sends for it, and the orchestrator hears it (C3 run 3 was told "still fails").
+        behavior_fixes = 0;
+        behavior_retask.clear();
+        behavior_passed = fmt::format("The behaviour test passes now, after the fix of {}.", current);
+        inv_line = "behaviour test passes after the fix of " + current;
+        m.note(id, behavior_passed);
       }
       if (!bug && green) {
         // A feature often spans blocks: the orchestrator sees what is done and sends the
@@ -1996,6 +2841,58 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
       lines.push_back({"verify", (green ? "" : "REGRESSION ") + verify, {}, 0});
       return finish(green ? core::TicketStatus::Closed : core::TicketStatus::Escalated, lines);
     }
+    if (lo.status == "needs_tester" && behavior_tested) {
+      // The worker found the flaw in the behaviour test of this ticket, not in its block. An imported project has
+      // no contract tests: the contract tester failed at once there (Endless Sky's C3 run 4, a test that waited for
+      // a kill that seldom came). The behaviour tester corrects its test with the finding (ADR 0029).
+      answer_fact(current, lo.status, lo.cause);
+      std::string list = core::read_file(ticket_tests).value_or("");
+      std::vector<std::string> test_files;
+      for (const auto& l : core::split(list, '\n')) {
+        auto entry = std::string(core::trim(l));
+        if (!entry.empty() && !entry.starts_with("#")) test_files.push_back(entry);
+      }
+      std::string what = fmt::format(
+          "The worker of {} found that the behaviour test of this ticket is wrong, not the code:\n{}{}\nThe test: {}\n"
+          "Correct the test so that it checks the request reliably: what it waits for must happen for certain, and its "
+          "check must hold only when the feature works. Never drop or weaken the check of the request. Run test() and "
+          "report done when it passes, failed with the cause otherwise.",
+          current, shorten(lo.cause, 1200), lo.fix.empty() ? "" : "\nSuggested: " + shorten(lo.fix, 600),
+          test_files.empty() ? "(see the test folder)" : core::join(test_files, " "));
+      auto bt = m.run_behavior_tester(current, id, what);
+      total += bt.tokens;
+      cost += bt.cost;
+      if (bt.status == "cancelled") return stopped("tester", current);
+      m.trail(id, level_entry(core::trail_level(current), "tester",
+                              {{"at", current}, {"model", bt.tier}, {"attempt", "2"}, {"outcome", bt.status}}));
+      for (const auto& f : core::split(bt.files, ',')) {
+        auto path = std::string(core::trim(f));
+        std::error_code ec;
+        if (!path.empty() && core::is_within(root_ / cfg_.test_dir, root_ / path) && fs::is_regular_file(root_ / path, ec) &&
+            std::find(test_files.begin(), test_files.end(), path) == test_files.end()) {
+          test_files.push_back(path);
+          list += path + "\n";
+        }
+      }
+      (void)core::write_file(ticket_tests, list);
+      auto tr4 = m.tests->build_and_test({current});
+      behavior_fixes = 0;  // the test was in doubt: no more sends of code for it
+      behavior_retask.clear();
+      if (tr4 && tr4->ok) {
+        behavior_passed = fmt::format("The behaviour test passes now: {} found a flaw in it and the tester corrected it ({}).",
+                                      current, shorten(bt.fix.empty() ? bt.cause : bt.fix, 300));
+        done_lines.push_back({"tests", fmt::format("behaviour test {} passes after the tester corrected it: {}",
+                                                   core::join(test_files, " "), shorten(bt.fix, 200)), {}, 0});
+        m.note(id, fmt::format("the tester corrected the behaviour test ({} found the flaw); it passes", current));
+      } else {
+        behavior_failure = fmt::format(
+            "The behaviour test is in doubt: {} found a flaw in it ({}) and the tester could not correct it:\n{}",
+            current, shorten(lo.cause, 300), shorten(tr4 ? tr4->text : tr4.error().message, 800));
+        m.note(id, "the tester could not correct the behaviour test: back to the orchestrator");
+      }
+      current = "root";
+      continue;
+    }
     if (lo.status == "needs_tester") {
       // The cause is in a contract test of this block: the tester owns tests/contract and
       // fixes it without reading impl/ (12.1); the worker's finding is its task.
@@ -2006,7 +2903,7 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
                              "drop an invariant. Run test() and report done when the tests of the block pass, failed otherwise.";
       // New invariants of the leaf in this feature go to the same tester run, not to a second one.
       std::vector<std::string> invs;
-      if (!bug && b->kind == core::BlockKind::Leaf && !inv_tested.contains(current)) {
+      if (!bug && b->kind == core::BlockKind::Leaf && !b->external() && !inv_tested.contains(current)) {
         invs = ticket_invariants(m.changes, id, current);
         if (!invs.empty()) {
           inv_tested.insert(current);
@@ -2021,8 +2918,8 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
       if (tf.status == "cancelled") return stopped("tester", current);
       m.trail(id, level_entry(core::trail_level(current), "tester",
                               {{"at", current}, {"model", tf.tier}, {"attempt", "1"}, {"outcome", tf.status}}));
-      auto plan = regression_plan(*s, m.idx->dependent_blocks(current), current, false);
-      auto tr = m.tests->build_and_test(plan.labels);
+      auto regression = regression_plan(*s, m.idx->dependent_blocks(current), current, false);
+      auto tr = m.tests->build_and_test(regression.labels);
       std::string verify = tr ? shorten(tr->text, 300) : tr.error().message;
       bool green = tf.status == "done" && tr && tr->ok;
       // What both changed: the worker's files and api/ (it may have done its part before it found
@@ -2060,11 +2957,31 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
       if (!green) lines.push_back({"note", "the tester could not make the contract tests pass; a human checks the test", {}, 0});
       return finish(green ? core::TicketStatus::Closed : core::TicketStatus::Escalated, lines);
     }
+    if ((lo.status == "not_here" || lo.status == "needs_info") && behavior_fix_now) {
+      // The orchestrator picked this block for the failing test: its answer goes back to it, not up the tree,
+      // and the block may be sent again with a stronger model (ADR 0029).
+      answer_fact(current, lo.status, lo.cause);
+      m.note(id, fmt::format("{} could not fix the behaviour test ({}): back to the orchestrator", current, shorten(lo.cause, 200)));
+      current = "root";
+      continue;
+    }
+    if ((lo.status == "not_here" || lo.status == "needs_info") && (planned || !plan.empty())) {
+      // A block of the orchestrator's plan: its answer goes back to the orchestrator, who planned the feature with
+      // the whole ticket in view, not up the tree to a navigator that sees one group (Endless Sky round 3: the
+      // needs_info of flight.engine went up to flight, down to flight.combat.ship_event, whose worker did nothing;
+      // bugs.txt 13, docs/adr/0031). The plan's remaining blocks are in its next decision.
+      answer_fact(current, lo.status, lo.cause);
+      answered[current] = lo.status + ": " + shorten(lo.cause, 160);
+      m.note(id, fmt::format("{} of the plan answered {}: back to the orchestrator", current, lo.status));
+      current = "root";
+      continue;
+    }
     if (lo.status == "not_here" || lo.status == "needs_info") {
       answer_fact(current, lo.status, lo.cause);
       answered[current] = lo.status + ": " + shorten(lo.cause, 160);
       std::string up = b->parent.empty() ? "root" : b->parent;
       ++not_here[up];
+      if (up == "root") escalate_orch = true;  // the orchestrator sent it to the wrong block
       current = up;
       continue;
     }
@@ -2098,13 +3015,20 @@ kk::Result<std::string> Engine::run_ticket(const std::string& id, bool force) {
       if (!rejected.empty()) add("proposal rejected: " + rejected);
       answer_fact(current, lo.status, cause);
       answered[current] = "needs_contract_change: " + shorten(cause, 200);
+      escalate_orch = true;  // the orchestrator's change was not enough for this block
       current = "root";
       continue;
     }
     return finish(core::TicketStatus::Escalated,
                   {{"status", "escalated", {}, 0},
                    {"cause", lo.cause, {}, 0},
-                   {"note", "the strongest tier failed; a human gets the ticket with its full history", {}, 0}});
+                   {"note",
+                    fmt::format("the worker of {} ended with {}{}; a human gets the ticket with its full history", current,
+                                lo.status.empty() ? "no result" : lo.status,
+                                lo.tokens.input + lo.tokens.output + lo.tokens.cache_write() + lo.tokens.cache_read == 0
+                                    ? " before any model call"
+                                    : ""),
+                    {}, 0}});
   }
   return finish(core::TicketStatus::Escalated, {{"status", "escalated", {}, 0}, {"note", "descent did not converge", {}, 0}});
 }

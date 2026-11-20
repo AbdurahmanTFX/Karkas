@@ -229,6 +229,36 @@ std::string first_names(const std::vector<std::string>& names, std::size_t n) {
   return out;
 }
 
+// A card with many call lines (an imported block calls hundreds of functions; Endless Sky's PlayerInfo
+// 407 lines, 16.7K characters) shows them in a view as one line: the neighbors section of the same view
+// groups them per block with their signatures. The card file keeps every line (ADR 0029).
+constexpr std::size_t kCardCallLines = 24;
+
+std::string compact_card_calls(const std::string& text) {
+  auto lines = core::split(text, '\n', false);
+  std::size_t calls = 0;
+  std::set<std::string> targets;
+  for (const auto& l : lines) {
+    if (!l.starts_with("call ")) continue;
+    ++calls;
+    auto target = core::trim(l.substr(5));
+    targets.insert(std::string(target.substr(0, target.find(':'))));
+  }
+  if (calls <= kCardCallLines) return text;
+  std::vector<std::string> kept;
+  bool said = false;
+  for (const auto& l : lines) {
+    if (!l.starts_with("call ")) {
+      kept.push_back(l);
+    } else if (!said) {
+      kept.push_back(fmt::format("call    ({} calls of {} blocks; the neighbors section groups them per block, block.ksl lists each)",
+                                 calls, targets.size()));
+      said = true;
+    }
+  }
+  return core::join(kept, "\n");
+}
+
 }  // namespace
 
 kk::Result<std::string> Index::view(std::string_view block, int level, const ViewOptions& o) {
@@ -246,7 +276,7 @@ kk::Result<std::string> Index::view(std::string_view block, int level, const Vie
     auto card_path = root_ / b.dir / "block.ksl";
     auto card = core::load_block_file(card_path, core::rel_str(root_, card_path));
     if (!card) return std::unexpected(card.error());
-    std::string text = card_text_without_comments(*card);
+    std::string text = compact_card_calls(card_text_without_comments(*card));
     auto nl = text.find('\n');
     std::string out = fmt::format("@view {} level=2 status={}\n", b.id, b.status);
     out += nl == std::string::npos ? "" : text.substr(nl + 1);
@@ -276,19 +306,44 @@ kk::Result<std::string> Index::view(std::string_view block, int level, const Vie
         rows.push_back({other, "state", l.src_port, "", thread_of(other)});
       }
     }
+    std::map<std::string, std::size_t> weight_of;  // "fn|id" / "call|id" -> links the row stands for
     for (const auto& id : callee_order) {
       const auto& sigs = callees[id];
       rows.push_back({id, "fn", sigs.size() == 1 ? sigs[0] : first_names(sigs, 6), "", thread_of(id)});
+      weight_of["fn|" + id] = sigs.size();
     }
-    for (const auto& id : caller_order) rows.push_back({id, "call", first_names(callers[id], 4), "", thread_of(id)});
+    for (const auto& id : caller_order) {
+      rows.push_back({id, "call", first_names(callers[id], 4), "", thread_of(id)});
+      weight_of["call|" + id] = callers[id].size();
+    }
     // Suppliers first, then consumers, callees, callers, state partners.
     auto rank = [](const std::string& d) {
       static const std::vector<std::string> order = {"out", "in", "fn", "call", "state"};
       return std::find(order.begin(), order.end(), d) - order.begin();
     };
     std::stable_sort(rows.begin(), rows.end(), [&](const auto& x, const auto& y) { return rank(x[1]) < rank(y[1]); });
+    // An imported block calls dozens of blocks (Endless Sky's engine: 60 rows, 14K characters): past
+    // 24 rows only the 20 most used neighbors are listed, in the same order (ADR 0028).
+    std::string rest;
+    if (constexpr std::size_t kRows = 24, kKept = 20; rows.size() > kRows) {
+      auto weight = [&](const std::vector<std::string>& r) {
+        auto it = weight_of.find(r[1] + "|" + r[0]);
+        return it == weight_of.end() ? std::size_t{1} : it->second;
+      };
+      std::vector<std::size_t> idx(rows.size());
+      for (std::size_t i = 0; i < idx.size(); ++i) idx[i] = i;
+      std::stable_sort(idx.begin(), idx.end(), [&](std::size_t x, std::size_t y) { return weight(rows[x]) > weight(rows[y]); });
+      std::vector<bool> keep(rows.size(), false);
+      for (std::size_t i = 0; i < kKept; ++i) keep[idx[i]] = true;
+      std::vector<std::vector<std::string>> kept;
+      for (std::size_t i = 0; i < rows.size(); ++i) {
+        if (keep[i]) kept.push_back(rows[i]);
+      }
+      rest = fmt::format("(+{} more linked blocks, used less)\n", rows.size() - kept.size());
+      rows = std::move(kept);
+    }
     if (!rows.empty()) {
-      out += "--- neighbors\n" + table(rows);
+      out += "--- neighbors\n" + table(rows) + rest;
     }
     return out;
   }
@@ -308,16 +363,47 @@ kk::Result<std::string> Index::view(std::string_view block, int level, const Vie
   }
   out += table(rows);
 
+  // A big group of imported code has hundreds of links (Endless Sky: ~157K characters for the two
+  // groups an orchestrator viewed). Past kInternalRows internal links, calls between two blocks share a
+  // line; past kViewRows external rows only the heaviest pairs are listed; small groups look as before
+  // (ADR 0028).
+  constexpr std::size_t kInternalRows = 8;
+  constexpr std::size_t kViewRows = 24;
+  constexpr std::size_t kExternalKept = 20;
   std::vector<std::vector<std::string>> internal;
   std::vector<std::vector<std::string>> lifted_rows;
+  std::vector<const LinkRow*> internal_links;
   for (const auto& l : s.links) {
     if (l.kind == "use" && !o.show_use) continue;
     auto a = child_of(b.id, l.src_block);
     auto c = child_of(b.id, l.dst_block);
     if (a.empty() || c.empty() || a == c) continue;
-    if (a == l.src_block && c == l.dst_block) {
-      internal.push_back({end_ref(l.src_block, l.src_port), arrow(l.kind), end_ref(l.dst_block, l.dst_port),
-                          link_attrs(l, true, true)});
+    if (a == l.src_block && c == l.dst_block) internal_links.push_back(&l);
+  }
+  if (internal_links.size() <= kInternalRows) {
+    for (const auto* l : internal_links) {
+      internal.push_back({end_ref(l->src_block, l->src_port), arrow(l->kind), end_ref(l->dst_block, l->dst_port),
+                          link_attrs(*l, true, true)});
+    }
+  } else {
+    std::map<std::pair<std::string, std::string>, std::size_t> pair_row;  // plain calls of a pair -> row
+    std::vector<std::vector<std::string>> fns;                             // per row: called ports
+    for (const auto* l : internal_links) {
+      auto attrs = link_attrs(*l, true, true);
+      if (l->kind == "call" && attrs.empty()) {
+        auto [it, fresh] = pair_row.try_emplace({l->src_block, l->dst_block}, internal.size());
+        if (fresh) {
+          internal.push_back({l->src_block, arrow(l->kind), l->dst_block, ""});
+          fns.emplace_back();
+        }
+        fns[it->second].push_back(l->dst_port);
+        continue;
+      }
+      internal.push_back({end_ref(l->src_block, l->src_port), arrow(l->kind), end_ref(l->dst_block, l->dst_port), attrs});
+      fns.emplace_back();
+    }
+    for (std::size_t i = 0; i < internal.size(); ++i) {
+      if (!fns[i].empty()) internal[i][2] = end_ref(internal[i][2], fns[i].size() == 1 ? fns[i][0] : first_names(fns[i], 3));
     }
   }
   for (const auto& x : lift(s, b.id, o, kids)) {
@@ -354,13 +440,37 @@ kk::Result<std::string> Index::view(std::string_view block, int level, const Vie
     ext.push_back({dst_in ? "in" : "out", end_ref(l.src_block, l.src_port), arrow(l.kind),
                    end_ref(l.dst_block, l.dst_port), attrs});
   }
+  std::vector<std::size_t> weight(ext.size(), 1);  // links a row stands for
   for (auto& [key, rf] : calls) {
     auto& row = ext[rf.first];
     row[1] = end_ref(row[1], "");
     row[3] = end_ref(row[3], rf.second.size() == 1 ? rf.second[0] : first_names(rf.second, 3));
+    weight[rf.first] = rf.second.size();
+  }
+  std::string ext_rest;
+  if (ext.size() > kViewRows) {
+    // The heaviest pairs, in their original order; the rest as one count.
+    std::vector<std::size_t> idx(ext.size());
+    for (std::size_t i = 0; i < idx.size(); ++i) idx[i] = i;
+    std::stable_sort(idx.begin(), idx.end(), [&](std::size_t x, std::size_t y) { return weight[x] > weight[y]; });
+    std::vector<bool> keep(ext.size(), false);
+    for (std::size_t i = 0; i < kExternalKept; ++i) keep[idx[i]] = true;
+    std::vector<std::vector<std::string>> kept;
+    std::size_t rest_in = 0, rest_out = 0, rest_links = 0;
+    for (std::size_t i = 0; i < ext.size(); ++i) {
+      if (keep[i]) {
+        kept.push_back(ext[i]);
+        continue;
+      }
+      (ext[i][0] == "in" ? rest_in : rest_out) += 1;
+      rest_links += weight[i];
+    }
+    ext = std::move(kept);
+    ext_rest = fmt::format("(+{} more block pairs, {} links: {} in, {} out; neighbors({}) lists them)\n", rest_in + rest_out,
+                           rest_links, rest_in, rest_out, b.id);
   }
   std::stable_sort(ext.begin(), ext.end(), [](const auto& x, const auto& y) { return x[0] < y[0]; });
-  if (!ext.empty()) out += "--- external\n" + table(ext);
+  if (!ext.empty()) out += "--- external\n" + table(ext) + ext_rest;
   auto probes = probe_lines(s, b.id);
   if (!probes.empty()) {
     out += "--- probes\n";
@@ -841,7 +951,7 @@ kk::Result<std::string> Index::status(std::string_view block) {
                              "brings the card in line when api/ is right\n",
                              core::join(differ, "; "));
         } else {
-          out += "api unfrozen by an approved change, already in line with its card (karkas approve api freezes it)\n";
+          out += "api unfrozen by an approved change, already in line with its card (a human freezes it: karkas approve api)\n";
         }
       }
     }

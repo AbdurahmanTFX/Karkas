@@ -7,11 +7,37 @@
 
 #include "app.hpp"
 #include "kk/core/validate.hpp"
+#include "kk/index/index.hpp"
 #ifdef KK_HAVE_CODE
 #include "kk/code/drift.hpp"
 #endif
 
 namespace kk::cli {
+
+namespace {
+
+// KSL checks and, with drift, the code checks. These come from the index, updated first: only files
+// that changed are analyzed, and nothing is when nothing changed (ADR 0029; `karkas check` on
+// Endless Sky 4.9 s -> 0.3 s). Without an index the code is analyzed here as before.
+std::vector<core::Issue> current_issues(const fs::path& root, const core::Schema& schema, bool drift) {
+#ifdef KK_HAVE_CODE
+  if (drift) {
+    if (auto idx = index::Index::open(root)) {
+      if (auto st = (*idx)->update({false, analyzer()}); st) return (*idx)->issues();
+    }
+    auto issues = core::check_schema(schema);
+    auto d = code::check_drift(schema);
+    issues.insert(issues.end(), d.begin(), d.end());
+    return issues;
+  }
+#else
+  (void)root;
+  (void)drift;
+#endif
+  return core::check_schema(schema);
+}
+
+}  // namespace
 
 std::string check_text(const fs::path& root, bool drift, int* errors_out, bool quiet) {
   auto schema = core::load_schema(root);
@@ -19,15 +45,7 @@ std::string check_text(const fs::path& root, bool drift, int* errors_out, bool q
     if (errors_out != nullptr) *errors_out = 1;
     return schema.error().str() + "\n";
   }
-  auto issues = core::check_schema(*schema);
-#ifdef KK_HAVE_CODE
-  if (drift) {
-    auto d = code::check_drift(*schema);
-    issues.insert(issues.end(), d.begin(), d.end());
-  }
-#else
-  (void)drift;
-#endif
+  auto issues = current_issues(root, *schema, drift);
   int errors = 0;
   int warnings = 0;
   std::string out;
@@ -48,11 +66,7 @@ std::string check_text(const fs::path& root, bool drift, int* errors) { return c
 std::string check_summary(const fs::path& root) {
   auto schema = core::load_schema(root);
   if (!schema) return schema.error().str() + "\n";
-  auto issues = core::check_schema(*schema);
-#ifdef KK_HAVE_CODE
-  auto d = code::check_drift(*schema);
-  issues.insert(issues.end(), d.begin(), d.end());
-#endif
+  auto issues = current_issues(root, *schema, true);
   int errors = static_cast<int>(std::count_if(issues.begin(), issues.end(), [](const core::Issue& i) { return i.severity == 'E'; }));
   return core::issues_summary(issues) + fmt::format("check: {} blocks, {} errors, {} warnings{}\n", schema->blocks.size(), errors,
                                                      issues.size() - static_cast<std::size_t>(errors),

@@ -7,6 +7,10 @@ names or numbers of the code (the schema does not hold them). A question about a
 an enum have a value, what does a parameter mean) is one ask to that block, not a search of the schema;
 history and search are often empty. Never rewrite symptom or fact lines. Add at most 2 new facts, only if
 observed via tools.
+The ticket may end with the blocks the code index finds for its words (their files and functions): start
+there. When they cover the request, check a card with view(level 2) only where it decides between two
+blocks, then act; a whole group is worth a view only when none of them fits. A feature: one decision with
+next for the blocks that follow.
 
 Which answer fits:
 - The cause (bug) or the change (feature) lies in one block whose api/ allows it → dispatch to that block;

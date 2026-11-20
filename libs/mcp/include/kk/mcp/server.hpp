@@ -19,6 +19,9 @@ namespace kk::mcp {
 
 struct ServerOptions {
   std::string version = "0.1.0";
+  // Only kk_agent_next and kk_agent_act, with short instructions: the server of a headless Claude Code
+  // that Karkas starts to serve one run of its agents (`karkas mcp --only-agent`, ADR 0029).
+  bool only_agent_tools = false;
   // kk_run_tests(block) → compact result text. Not set → the tool is not offered.
   std::function<std::string(const std::string& block)> run_tests;
   index::ICodeAnalyzer* analyzer = nullptr;  // used for index updates before each call

@@ -18,7 +18,8 @@ struct TestRun {
   bool ok = false;
   std::string build_summary;  // compressed errors
   std::vector<runner::BlockTests> blocks;
-  std::string text;  // compact summary for models
+  std::string text;            // compact summary for models
+  std::string build_warnings;  // compressed compiler warnings of the files this build compiled
 };
 
 class ITestService {
@@ -26,12 +27,21 @@ class ITestService {
   virtual ~ITestService() = default;
   // Builds everything (configure + build); `blocks` are ctest labels, empty = all tests.
   virtual kk::Result<TestRun> build_and_test(const std::vector<std::string>& blocks, bool build_only = false) = 0;
+  // Compiles the given files (relative to the project root) without linking: seconds instead of the
+  // project's full build (ADR 0028). The default builds the project.
+  virtual kk::Result<TestRun> compile_check(const std::vector<std::string>& files) {
+    (void)files;
+    return build_and_test({}, true);
+  }
 };
 
 class TestService final : public ITestService {
  public:
   TestService(std::filesystem::path root, const core::Config& cfg);
   kk::Result<TestRun> build_and_test(const std::vector<std::string>& blocks, bool build_only = false) override;
+  // A project with its own build and a compile_commands.json: each file's compile command with
+  // -fsyntax-only (no object, no link); otherwise the build.
+  kk::Result<TestRun> compile_check(const std::vector<std::string>& files) override;
   static std::string doctest_include();
 
  private:

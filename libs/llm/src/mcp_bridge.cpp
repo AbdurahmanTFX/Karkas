@@ -7,6 +7,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <thread>
 
@@ -108,6 +109,26 @@ kk::Result<std::string> McpQueue::request(const std::string& id) const { return 
 
 void McpQueue::take(const std::string& id) const { (void)write_atomic(turns_dir() / (id + ".taken"), std::to_string(now_s())); }
 
+void McpQueue::release(const std::string& id) const {
+  std::error_code ec;
+  fs::remove(turns_dir() / (id + ".taken"), ec);
+}
+
+void McpQueue::pause_until(std::int64_t ts) const {
+  std::error_code ec;
+  if (ts <= 0) {
+    fs::remove(dir_ / "paused_until", ec);
+    return;
+  }
+  fs::create_directories(dir_, ec);
+  (void)write_atomic(dir_ / "paused_until", std::to_string(ts));
+}
+
+std::int64_t McpQueue::paused_until() const {
+  auto t = core::read_file(dir_ / "paused_until");
+  return t ? std::atoll(t->c_str()) : 0;
+}
+
 kk::VoidResult McpQueue::answer(const std::string& id, const std::string& answer_json) const {
   std::error_code ec;
   if (!fs::exists(turns_dir() / (id + ".req.json"), ec)) return kk::fail("mcp", "no turn " + id + " waits (answered already, or its run ended)");
@@ -199,23 +220,53 @@ McpBridgeProvider::McpBridgeProvider(fs::path queue_dir, int wait_s)
     : dir_(queue_dir), queue_(std::move(queue_dir)), wait_s_(std::max(1, wait_s)) {}
 
 // The client's tokens of a turn, estimated from what the MCP server showed it and what it answered
-// (.karkas/mcp/traffic/<run>.jsonl, ADR 0026): what Karkas sent and got back, not the client's own
-// context, which only the client knows.
+// (.karkas/mcp/traffic/<run>.jsonl, ADR 0026) the way a Claude Code session spends them (docs/adr/0031):
+// - everything new in its context is written to the prompt cache once, with a 1-hour TTL (2x the input
+//   price): what this turn showed, the model's own output, and on the run's first turn the session's
+//   base context (its system prompt and the two tools, ~2K tokens);
+// - every request reads the context cached so far again (cache reads);
+// - the output is about five times the text of the answer: hidden thinking and the tool call's JSON.
+// The old estimate (shown and answered text at the full input price, no cache) was 3-5x below the
+// sessions' own cost on Endless Sky (round 3: $0.19 against $1.08); this one is within 10-20% there
+// (fitted on round 3 run 3, checked on round 2 runs 4 and 5 and round 3 run 1). The real cost of a
+// session Karkas launched replaces it when the session ends (index: costs.jsonl).
 Usage McpBridgeProvider::traffic_usage(const McpTurn& t) const {
   Usage u;
   auto stem = t.run.ends_with(".jsonl") ? t.run.substr(0, t.run.size() - 6) : t.run;
   auto text = core::read_file(dir_ / "traffic" / (stem + ".jsonl"));
   if (!text) return u;
-  std::int64_t shown = 0;
-  std::int64_t answer = 0;
+  // The run's turns in order: characters shown and answered.
+  std::vector<std::string> order;
+  std::map<std::string, std::pair<std::int64_t, std::int64_t>> turns;
   for (const auto& line : core::split(*text, '\n')) {
     auto j = json::parse(line, nullptr, false);
-    if (!j.is_object() || j.value("turn", "") != t.id) continue;
-    if (j.contains("shown")) shown = j.value("shown", 0);
-    if (j.contains("answer")) answer = j.value("answer", 0);
+    if (!j.is_object()) continue;
+    auto id = j.value("turn", "");
+    if (id.empty()) continue;
+    if (!turns.contains(id)) order.push_back(id);
+    auto& [shown, answer] = turns[id];
+    if (j.contains("shown")) shown = j.value("shown", std::int64_t{0});
+    if (j.contains("answer")) answer = j.value("answer", std::int64_t{0});
   }
-  u.input_tokens = shown * 2 / 7;  // 3.5 characters per token
-  u.output_tokens = answer * 2 / 7;
+  constexpr double kCharsPerToken = 3.5;
+  constexpr double kBaseContext = 2000;  // the session's own system prompt and tools
+  constexpr double kOutputPerAnswer = 5;  // thinking and the call's JSON per token of answer text
+  double cached = 0;  // the context written to the cache by the turns before
+  for (std::size_t i = 0; i < order.size(); ++i) {
+    const auto& [shown, answer] = turns[order[i]];
+    const double out = static_cast<double>(answer) / kCharsPerToken * kOutputPerAnswer;
+    const double base = i == 0 ? kBaseContext : 0;
+    const double write = static_cast<double>(shown) / kCharsPerToken + out + base;
+    if (order[i] == t.id) {
+      u.output_tokens = static_cast<std::int64_t>(out);
+      u.cache_write_tokens = static_cast<std::int64_t>(write);
+      u.cache_write_1h_tokens = u.cache_write_tokens;
+      u.cache_read_tokens = static_cast<std::int64_t>(cached + base);
+      u.input_tokens = 20;  // the few uncached tokens a request sends
+      break;
+    }
+    cached += write;
+  }
   return u;
 }
 
@@ -238,7 +289,10 @@ kk::Result<Response> McpBridgeProvider::send(const Request& req) {
   if (auto r = queue_.put(t, turn_request_json(req, t.id)); !r) return std::unexpected(r.error());
   spdlog::info("mcp: turn {} waits for the MCP client ({} {} {})", t.id, t.role, t.block, t.tier);
   auto t0 = std::chrono::steady_clock::now();
+  int polls = 0;
   while (true) {
+    // While no session can start (the usage limit), the wait does not count.
+    if (++polls % 16 == 0 && queue_.paused_until() > now_s()) t0 = std::chrono::steady_clock::now();
     if (auto a = queue_.response(t.id)) {
       queue_.remove(t.id);
       auto r = turn_response(*a, t.id, req.model);

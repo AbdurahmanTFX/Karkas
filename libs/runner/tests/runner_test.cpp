@@ -57,6 +57,22 @@ TEST_CASE("runner: build log compression keeps errors only, deduplicated, at mos
   CHECK_FALSE(core::contains(s, "warning"));
 }
 
+TEST_CASE("runner: warning compression keeps compiler warnings only, deduplicated, paths relative to the root") {
+  std::string log = "[1/3] Building CXX object x.o\n"
+                    "/p/source/Engine.cpp:744:9: warning: unused variable 'x' [-Wunused-variable]\n"
+                    "/p/source/Engine.cpp:744:9: warning: unused variable 'x' [-Wunused-variable]\n"
+                    "/p/source/Engine.cpp:30:1: error: 'y' was not declared\n"
+                    "warning: unused\n";
+  auto w = runner::compress_build_warnings(log, "/p");
+  CHECK(w == "source/Engine.cpp:744:9: warning: unused variable 'x' [-Wunused-variable]");
+  auto r = runner::build_command("echo '/x/a.cpp:1:1: warning: w'; exit 2", std::filesystem::temp_directory_path(),
+                                 std::chrono::seconds(10));
+  REQUIRE(r);
+  CHECK_FALSE(r->ok);
+  CHECK(r->warnings == "/x/a.cpp:1:1: warning: w");
+  CHECK(core::contains(r->summary, "exit 2"));
+}
+
 TEST_CASE("runner: a CMake error keeps its message, not only where it was raised") {
   std::string log =
       "-- Configuring done\n"

@@ -85,15 +85,15 @@ AutoRegister reg([](CLI::App& cli, App& app) {
                                       "rename <id> <name> | purpose <id> \"text\" | remove <id>")->required();
   batch->callback([root] {
     auto r = root();
-    std::string text;
+    std::string script_text;
     if (script == "-") {
-      text.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
+      script_text.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
     } else {
       auto t = core::read_file(script);
       if (!t) die(t.error().message);
-      text = *t;
+      script_text = *t;
     }
-    auto res = agents::apply_edit_script(r, text);
+    auto res = agents::apply_edit_script(r, script_text);
     std::cout << fmt::format("applied {} edits\n", res.applied);
     if (!res.error.empty()) die(res.error);
   });

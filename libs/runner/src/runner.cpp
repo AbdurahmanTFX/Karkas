@@ -29,7 +29,10 @@ std::map<std::string, std::string> clean_environment(const std::map<std::string,
   static const std::set<std::string> keep = {"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE",
                                              "TERM", "TMPDIR", "SHELL", "CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS",
                                              "CCACHE_DIR", "XDG_CACHE_HOME", "PKG_CONFIG_PATH", "CMAKE_PREFIX_PATH",
-                                             "CMAKE_GENERATOR", "NINJA_STATUS", "SOURCE_DATE_EPOCH"};
+                                             "CMAKE_GENERATOR", "NINJA_STATUS", "SOURCE_DATE_EPOCH",
+                                             // a compiler cache for the builds of agents and tests (ADR 0029)
+                                             "CMAKE_C_COMPILER_LAUNCHER", "CMAKE_CXX_COMPILER_LAUNCHER", "CCACHE_BASEDIR",
+                                             "CCACHE_NOHASHDIR", "CCACHE_SLOPPINESS", "CCACHE_DISABLE"};
   std::map<std::string, std::string> env;
   for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
     std::string_view kv(*e);
@@ -154,6 +157,46 @@ std::string compress_build_log(std::string_view log, const fs::path& root, std::
   return core::join(out, "\n");
 }
 
+std::string compress_build_warnings(std::string_view log, const fs::path& root, std::size_t max_lines) {
+  std::string prefix = root.empty() ? "" : root.string() + "/";
+  std::vector<std::string> out;
+  std::set<std::string> seen;
+  std::size_t extra = 0;
+  for (const auto& raw : core::split(log, '\n')) {
+    auto line = std::string(core::trim(raw));
+    if (!core::contains(core::to_lower(line), ": warning:")) continue;
+    if (!prefix.empty()) line = core::replace_all(line, prefix, "");
+    if (line.size() > 300) line = line.substr(0, 300) + "...";
+    if (!seen.insert(line).second) continue;
+    if (out.size() < max_lines) {
+      out.push_back(line);
+    } else {
+      ++extra;
+    }
+  }
+  if (extra > 0) out.push_back(fmt::format("... {} more warning lines", extra));
+  return core::join(out, "\n");
+}
+
+kk::Result<BuildResult> build_command(const std::string& command, const fs::path& cwd, std::chrono::seconds timeout) {
+  BuildResult br;
+  auto r = run({{"sh", "-c", command}, cwd, timeout});
+  if (!r) return std::unexpected(r.error());
+  br.log = r->output;
+  br.ok = r->ok();
+  br.timed_out = r->timed_out;
+  br.duration = r->duration;
+  br.warnings = compress_build_warnings(r->output, cwd);
+  if (!br.ok) {
+    br.summary = compress_build_log(r->output, cwd);
+    if (br.summary.empty()) {
+      br.summary = r->timed_out ? fmt::format("build command timed out after {} s: {}", timeout.count(), command)
+                                : fmt::format("build command failed (exit {}): {}", r->exit_code, command);
+    }
+  }
+  return br;
+}
+
 kk::Result<BuildResult> build(const BuildOptions& opts) {
   BuildResult br;
   auto bdir = opts.build_dir.empty() ? opts.source / "build" : opts.build_dir;
@@ -184,6 +227,7 @@ kk::Result<BuildResult> build(const BuildOptions& opts) {
   br.log += r->output;
   br.ok = r->ok();
   br.timed_out = r->timed_out;
+  br.warnings = compress_build_warnings(r->output, opts.source);
   br.summary = br.ok ? "" : compress_build_log(r->output, opts.source);
   if (!br.ok && br.summary.empty()) br.summary = "build failed";
   br.duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0);

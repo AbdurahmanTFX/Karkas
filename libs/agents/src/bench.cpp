@@ -327,7 +327,7 @@ kk::Result<std::vector<BenchResult>> bench_run(const BenchOptions& o, const core
   if (o.scenario != "s1" && o.scenario != "s2" && o.scenario != "s3") return kk::fail("bench", "--scenario s1|s2|s3");
   if (o.method != "A" && o.method != "B" && o.method != "C") return kk::fail("bench", "--method A|B|C");
   if (!fs::exists(o.bench_dir / "spec.md")) return kk::fail("bench", "no spec.md in " + o.bench_dir.string());
-  if (o.method == "C") {
+  if (o.method == "C" && o.auth != "subscription") {  // on the login the sessions' own costs count (ADR 0029)
     for (const auto& [tier, t] : cfg.models) {
       if (auto p = metrics::check_price(cfg, t.provider, t.model); !p) return std::unexpected(p.error());
     }
@@ -436,7 +436,16 @@ kk::Result<std::vector<BenchResult>> bench_run(const BenchOptions& o, const core
         }
         (void)core::write_file(dir / "project.ksl", project);
       }
-      auto engine = Engine::create(dir, cfg, eo);
+      // Method C on the claude.ai login (ADR 0029): mode mcp, and Karkas serves its agents' turns itself, one
+      // headless Claude Code per run; no API key is needed or passed on.
+      auto ccfg = cfg;
+      const bool on_login = o.auth == "subscription" && !o.providers;
+      if (on_login) {
+        ccfg.agents_mode = "mcp";
+        ccfg.mcp_launch = "claude";
+        r.auth = "subscription";
+      }
+      auto engine = Engine::create(dir, ccfg, eo);
       if (!engine) return std::unexpected(engine.error());
       auto& e = **engine;
       auto note = [&](const kk::Result<std::string>& res) {
@@ -457,14 +466,28 @@ kk::Result<std::vector<BenchResult>> bench_run(const BenchOptions& o, const core
       }
       (void)e.index().update();
       for (const auto& run : e.index().runs()) {
-        r.cost_usd += run.cost_usd;
+        r.cost_usd += on_login ? 0.0 : run.cost_usd;
         r.input_tokens += run.input_tokens;
         r.output_tokens += run.output_tokens;
         r.cache_write_tokens += run.cache_write_tokens;
         r.cache_read_tokens += run.cache_read_tokens;
         r.model_calls += run.steps;
-        r.cost_by_model[run.model] += run.cost_usd;
-        r.cost_by_role[run.role] += run.cost_usd;
+        if (!on_login) {
+          r.cost_by_model[run.model] += run.cost_usd;
+          r.cost_by_role[run.role] += run.cost_usd;
+        }
+      }
+      if (on_login) {
+        // What the launched sessions cost, by Claude Code's own estimate (ADR 0029).
+        if (auto costs = core::read_file(dir / ".karkas" / "mcp" / "launch" / "costs.jsonl")) {
+          for (const auto& l : core::split(*costs, '\n')) {
+            auto j = nlohmann::json::parse(l, nullptr, false);
+            if (!j.is_object()) continue;
+            r.cost_usd += j.value("cost_usd", 0.0);
+            r.cost_by_model[j.value("model", std::string("?"))] += j.value("cost_usd", 0.0);
+          }
+        }
+        r.notes.push_back("subscription: costs are Claude Code's estimates of the launched sessions");
       }
     }
     r.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

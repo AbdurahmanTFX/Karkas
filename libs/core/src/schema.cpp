@@ -255,9 +255,10 @@ std::vector<std::string> Schema::leaf_flow_order() const {
   return order;
 }
 
-std::vector<const Block*> Schema::ordered_children(std::string_view id) const {
+std::vector<const Block*> Schema::ordered_children(std::string_view id) const { return ordered_children(id, leaf_flow_order()); }
+
+std::vector<const Block*> Schema::ordered_children(std::string_view id, const std::vector<std::string>& order) const {
   auto kids = children(id);
-  auto order = leaf_flow_order();
   std::map<std::string, std::size_t> rank;
   for (std::size_t i = 0; i < order.size(); ++i) rank[order[i]] = i;
   auto rank_of = [&](const Block* b) {

@@ -224,6 +224,9 @@ std::vector<Tool> make_tools(const ServerOptions& o) {
                     {"wait_s", {{"type", "integer"}, {"description", "wait up to this many seconds for the next turn (default 60, max 300)"}}}}},
                   {"required", {"turn"}}}});
   }
+  if (o.only_agent_tools) {
+    std::erase_if(t, [](const Tool& x) { return x.name != "kk_agent_next" && x.name != "kk_agent_act"; });
+  }
   return t;
 }
 

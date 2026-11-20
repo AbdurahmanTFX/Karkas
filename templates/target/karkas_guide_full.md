@@ -54,9 +54,14 @@ and you are their model. The MCP server's instructions say so when it starts.
 - A feature is planned in one decision of the orchestrator (dispatch with next): its blocks run one
   after another, and the ticket closes when the last is done. With Auto a worker's card change is
   approved in its own run. `karkas stats <ticket>` shows the runs and the traffic of the turns.
-- Go on until no turn waits and the ticket ended; then report its result (kk_ticket_view).
-  Proposed schema changes wait for the user (kk_changes); after approval: kk_ticket_run, and
+- Go on until kk_agent_next says the ticket ended: that answer carries its result (what each block's
+  agent did, the checks); report from it. After the ticket run nothing else yourself: no approve, no
+  build. Proposed schema changes wait for the user (kk_changes); after approval: kk_ticket_run, and
   kk_implement builds the code of an approved new schema.
+- `[agents] launch = "claude"`: Karkas serves the turns itself, one headless Claude Code per run
+  (`claude -p` on the claude.ai login, the model of the run's tier, only kk_agent_next / kk_agent_act,
+  started outside the project); then nobody serves turns: kk_task (or `karkas task` in a terminal)
+  and wait for the end. The sessions' streams and costs are in .karkas/mcp/launch/.
 - Commands that run agents (karkas approve, expand, implement, ticket run) wait for you to serve
   their turns: never run one in the foreground of your own shell; use kk_implement /
   kk_ticket_run or the background, or the command waits on you while you wait on it.
@@ -98,7 +103,19 @@ kk_model_for <block> explains it.
 - Karkas never writes the project's CMakeLists.txt: add new source files to it yourself.
 - Contract tests go into the project's own test suite. kk_run_tests builds the project and runs
   `[test] command` of karkas.toml (set it once, e.g. `command = "build/test/run_all"`;
-  extra configure flags go to `[project] cmake_args`).
+  extra configure flags go to `[project] cmake_args`). A project with its own presets or build
+  tree sets `[project] build_command` (e.g. `"cmake --build --preset linux-release"`): Karkas
+  then builds with it and configures nothing.
+- Karkas's agents work inside imported blocks too (kk_task, kk_debug): a worker changes the files
+  of its card in place; the public part of its headers is the contract (a new public function is
+  a card change), the private part, inline bodies and new constants are free; data files of no
+  block come to a block with `+ files <path>`. Its check is the project's own build and tests:
+  a worker's build() compiles only its files (by compile_commands.json, seconds), and the full
+  build and tests run once after the last block of the ticket. `[project] verify_command` (a debug
+  build without LTO) makes that check quicker; the release build is then yours.
+- Compiling is not proof: with `[test] dir`, `guide` and `command` a feature ends with a behaviour
+  test that a tester writes in the project's own framework and the test command runs (it gets the
+  ticket's test files in KK_TEST_FILES); a failing test goes back to the orchestrator.
 
 ## Changing an existing schema
 - A new block, link, port or function is a schema change: kk_propose_change with

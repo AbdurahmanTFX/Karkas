@@ -5,6 +5,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <map>
 #include <set>
@@ -272,10 +273,151 @@ kk::Result<void> check_proposal(const fs::path& root, std::string_view diff_text
   return {};
 }
 
+namespace {
+
+std::string most_common(const std::vector<std::string>& xs) {
+  std::map<std::string, int> n;
+  for (const auto& x : xs) ++n[x];
+  std::string best;
+  int top = 0;
+  for (const auto& [x, c] : n) {
+    if (c > top) best = x, top = c;
+  }
+  return best;
+}
+
+bool is_header_path(const fs::path& p) {
+  auto e = p.extension().string();
+  return e == ".h" || e == ".hh" || e == ".hpp" || e == ".hxx";
+}
+
+// "pilot_statistics" -> "PilotStatistics"
+std::string camel(const std::string& s) {
+  std::string out;
+  bool up = true;
+  for (char c : s) {
+    if (c == '_' || c == '-') {
+      up = true;
+      continue;
+    }
+    out += up ? static_cast<char>(std::toupper(static_cast<unsigned char>(c))) : c;
+    up = false;
+  }
+  return out;
+}
+
+}  // namespace
+
+// A new block with code in an imported project gets the files it will be written in, named as the project names
+// its files (docs/adr/0030): Endless Sky's round 3 orchestrator proposed two new leaves without `files`, their
+// workers found only a block.ksl ("no api/, no impl/") and the ticket escalated. The folder and the extensions
+// are those of the code files of the block's siblings (or of the blocks it calls or uses), the name its first
+// `note types:` type or its last id segment, lower case where the siblings' files are.
+std::string name_new_block_files(const fs::path& root, std::string_view diff_text) {
+  auto lines = parse_diff(diff_text);
+  auto schema = core::load_schema(root);
+  if (!lines || !schema) return std::string(diff_text);
+  if (std::none_of(schema->blocks.begin(), schema->blocks.end(), [](const core::Block& b) { return b.external(); })) {
+    return std::string(diff_text);  // a project of Karkas's own: code under blocks/
+  }
+  struct New {
+    std::string id;
+    int header_line = 0;
+    std::string kind = "leaf";
+    bool has_files = false;
+    std::string type;
+    std::vector<std::string> links;  // the blocks of its call and use lines
+  };
+  std::vector<New> fresh;
+  New* cur = nullptr;
+  for (const auto& d : *lines) {
+    std::string_view t = d.text;
+    if (t.starts_with("@block ")) {
+      cur = nullptr;
+      if (d.op == '+') {
+        fresh.push_back({std::string(core::trim(t.substr(7))), d.line});
+        cur = &fresh.back();
+      }
+      continue;
+    }
+    if (cur == nullptr || d.op != '+') continue;
+    auto words = core::split_ws(t);
+    if (words.empty()) continue;
+    if (words[0] == "kind" && words.size() > 1) cur->kind = words[1];
+    if (words[0] == "files") cur->has_files = true;
+    if (words[0] == "note" && words.size() > 2 && words[1] == "types:" && cur->type.empty()) {
+      cur->type = words[2];
+      while (!cur->type.empty() && (cur->type.back() == ',' || cur->type.back() == ';' || cur->type.back() == '.')) cur->type.pop_back();
+    }
+    if ((words[0] == "call" || words[0] == "use") && words.size() > 1) {
+      cur->links.push_back(words[1].substr(0, words[1].find(':')));
+    }
+  }
+  std::map<int, std::string> insert_after;  // diff line -> "files ..." line
+  std::set<std::string> taken;
+  for (const auto& b : schema->blocks) {
+    for (const auto& f : b.file_list()) taken.insert(f);
+  }
+  for (const auto& n : fresh) {
+    if (n.has_files || (n.kind != "leaf" && n.kind != "entry" && n.kind != "shared")) continue;
+    auto parent = n.id.substr(0, n.id.rfind('.') == std::string::npos ? 0 : n.id.rfind('.'));
+    auto files_of = [&](auto pick) {
+      std::vector<fs::path> out;
+      for (const auto& b : schema->blocks) {
+        if (!pick(b)) continue;
+        for (const auto& f : b.file_list()) {
+          if (core::is_code_file(fs::path(f))) out.emplace_back(f);
+        }
+      }
+      return out;
+    };
+    auto near = files_of([&](const core::Block& b) { return b.parent == parent && !parent.empty(); });
+    if (near.empty()) {
+      near = files_of([&](const core::Block& b) { return std::find(n.links.begin(), n.links.end(), b.id) != n.links.end(); });
+    }
+    if (near.empty()) near = files_of([](const core::Block& b) { return b.external(); });
+    std::vector<std::string> src_dirs, hdr_dirs, src_ext, hdr_ext;
+    bool lower = true;
+    for (const auto& p : near) {
+      (is_header_path(p) ? hdr_dirs : src_dirs).push_back(p.parent_path().generic_string());
+      (is_header_path(p) ? hdr_ext : src_ext).push_back(p.extension().string());
+      auto stem = p.stem().string();
+      if (std::any_of(stem.begin(), stem.end(), [](unsigned char c) { return std::isupper(c); })) lower = false;
+    }
+    auto last = n.id.substr(n.id.rfind('.') == std::string::npos ? 0 : n.id.rfind('.') + 1);
+    std::string name = lower ? last : (n.type.empty() ? camel(last) : n.type);
+    std::vector<std::string> files;
+    if (n.kind != "shared" && !src_dirs.empty()) {
+      auto dir = fs::path(most_common(src_dirs));
+      files.push_back((dir / (name + most_common(src_ext))).generic_string());
+    }
+    if (!hdr_dirs.empty()) {
+      auto dir = fs::path(most_common(hdr_dirs));
+      files.push_back((dir / (name + most_common(hdr_ext))).generic_string());
+    }
+    if (files.empty() || std::any_of(files.begin(), files.end(), [&](const std::string& f) { return taken.contains(f); })) {
+      continue;  // nothing to go by, or the name is another block's file: the proposal stays as it is
+    }
+    for (const auto& f : files) taken.insert(f);
+    insert_after[n.header_line] = "+ files   " + core::join(files, " ");
+  }
+  if (insert_after.empty()) return std::string(diff_text);
+  std::string out;
+  int line = 0;
+  for (const auto& raw : core::split(diff_text, '\n', false)) {
+    ++line;
+    out += raw + "\n";
+    if (auto it = insert_after.find(line); it != insert_after.end()) out += it->second + "\n";
+  }
+  return out;
+}
+
 kk::Result<core::Change> propose_change(const fs::path& root, std::string from, std::string reason,
-                                        std::string_view diff_text) {
+                                        std::string_view diff_text_in) {
   reason = std::string(core::trim(reason));
   if (reason.empty() || reason.find('\n') != std::string::npos) return kk::fail("change", "reason: one line saying why");
+  const std::string named = name_new_block_files(root, diff_text_in);
+  std::string_view diff_text = named;
   if (auto ok = check_proposal(root, diff_text); !ok) return std::unexpected(ok.error());
   auto lines = parse_diff(diff_text);
   if (!lines) return std::unexpected(lines.error());

@@ -25,6 +25,10 @@ std::string target_name(std::string_view block_id);
 
 bool is_code_file(const fs::path& p);  // .cpp .cc .cxx .c .hpp .hh .h .hxx .ipp .inl
 
+// The running executable. After a rebuild replaced it, /proc/self/exe reads "<path> (deleted)":
+// the new file at <path> is taken then (bugs.txt 9). "" when it cannot be found.
+fs::path self_executable();
+
 // Finds the project root: the nearest ancestor of `start` holding project.ksl.
 Result<fs::path> find_project_root(const fs::path& start);
 

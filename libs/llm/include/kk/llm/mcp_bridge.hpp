@@ -38,6 +38,12 @@ class McpQueue {
   [[nodiscard]] std::optional<McpTurn> turn(const std::string& id) const;
   [[nodiscard]] kk::Result<std::string> request(const std::string& id) const;  // request JSON text
   void take(const std::string& id) const;
+  // A taken turn whose server ended without answering goes back to waiting (the next session takes it).
+  void release(const std::string& id) const;
+  // While the sessions that serve turns cannot start (the claude.ai usage limit, ADR 0029), a turn waits
+  // without timing out: until a unix time, 0 = no pause.
+  void pause_until(std::int64_t ts) const;
+  [[nodiscard]] std::int64_t paused_until() const;
   [[nodiscard]] kk::VoidResult answer(const std::string& id, const std::string& answer_json) const;
   // Provider side.
   [[nodiscard]] kk::VoidResult put(const McpTurn& meta, const std::string& request_json) const;
