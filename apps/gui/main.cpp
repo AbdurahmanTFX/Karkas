@@ -7,6 +7,7 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include <imgui_internal.h>
 #include <spdlog/spdlog.h>
 
 #include <GL/gl.h>
@@ -28,6 +29,7 @@
 #include "png.hpp"
 #include "script.hpp"
 #include "ui.hpp"
+#include "viewports.hpp"
 #include "worker.hpp"
 
 namespace fs = std::filesystem;
@@ -37,7 +39,7 @@ namespace {
 void usage() {
   std::cerr << "usage: karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]\n"
                "                  [--lang en|ru] [--block-scale F] [--settings] [--chat] [--script \"...\"]\n"
-               "                  [--drag x1,y1,x2,y2]\n"
+               "                  [--drag x1,y1,x2,y2] [--layout file.ini]\n"
                "                  [--frames N] [--screenshot out.png] [--version]\n";
 }
 
@@ -70,7 +72,7 @@ void screenshot_to(GLFWwindow* window, const std::string& path) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string project, scope, select, screenshot, lang;
+  std::string project, scope, select, screenshot, lang, layout_file;
   float block_scale = 0;
   bool all_levels = false;
   bool open_settings = false;
@@ -88,6 +90,7 @@ int main(int argc, char** argv) {
     else if (a == "--block-scale") block_scale = std::strtof(next().c_str(), nullptr);
     else if (a == "--settings") open_settings = true;
     else if (a == "--chat") open_chat = true;
+    else if (a == "--layout") layout_file = next();
     else if (a == "--script") script_text += next() + ";";
     else if (a == "--drag") script_text += "drag " + kk::core::replace_all(next(), ",", " ") + ";";
     else if (a == "--frames") frames = std::atoi(next().c_str());
@@ -126,6 +129,11 @@ int main(int argc, char** argv) {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   if (frames > 0) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+  // The windows of the tiles sent out (ADR 0032) carry the same application id: one group in
+  // the task bar, and window rules of the desktop can name them ("karkas").
+  glfwWindowHintString(GLFW_WAYLAND_APP_ID, "karkas");
+  glfwWindowHintString(GLFW_X11_CLASS_NAME, "karkas");
+  glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "karkas");
   GLFWwindow* window = glfwCreateWindow(1600, 950, "Karkas", nullptr, nullptr);
   if (window == nullptr) {
     std::cerr << "karkas-gui: cannot create an OpenGL 3.3 window\n";
@@ -138,11 +146,11 @@ int main(int argc, char** argv) {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
-  // Panels lie on the edges over the schema (ui_shell.cpp, ADR 0021): no docking.
+  // Tiles over the schema (ui_shell.cpp, ADR 0021, 0032): docking, windows of the desktop.
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  io.ConfigWindowsResizeFromEdges = true;  // panels are resized at their inner border
+  io.ConfigWindowsResizeFromEdges = true;
   io.ConfigWindowsMoveFromTitleBarOnly = true;  // a drag inside a window selects text or pans, never moves it
-  io.IniFilename = nullptr;  // positions come from gui.json
+  io.IniFilename = nullptr;  // the dock layout is kept in ~/.config/karkas/gui_layout.ini (below)
   float xs = 1.0f;
   float ys = 1.0f;
   glfwGetWindowContentScale(window, &xs, &ys);
@@ -160,11 +168,28 @@ int main(int argc, char** argv) {
   io.FontGlobalScale = settings.ui_scale;
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init("#version 330");
+  kk::gui::viewports::init(window, true);
+  // The dock layout of the tiles from the last run; headless checks always start from the
+  // default layout and never write it.
+  // --layout FILE: this file instead (also in headless checks, which otherwise use neither).
+  fs::path layout = !layout_file.empty() ? fs::path(layout_file) : persist ? kk::gui::layout_path() : fs::path();
+  if (!layout.empty()) {
+    if (auto ini = kk::core::read_file(layout)) ImGui::LoadIniSettingsFromMemory(ini->data(), ini->size());
+  }
+  auto save_layout = [&](bool now) {
+    if (!io.WantSaveIniSettings && !now) return;
+    io.WantSaveIniSettings = false;
+    if (layout.empty()) return;
+    std::size_t n = 0;
+    const char* text = ImGui::SaveIniSettingsToMemory(&n);
+    (void)kk::core::write_file(layout, std::string(text, n));
+  };
   // Mouse cursors of the desktop's theme (cursors.hpp): the GLFW ones are the old X11 set when
   // the cursor library cannot resolve the theme (its hand points to the upper right).
   struct ThemeCursors {
     GLFWcursor* c[ImGuiMouseCursor_COUNT] = {};
     ImGuiMouseCursor last = -2;
+    int windows = 1;
     bool any = false;
   } cursors;
   {
@@ -200,11 +225,15 @@ int main(int argc, char** argv) {
       cursors.last = -1;
       return;
     }
-    if (cur == cursors.last) return;
+    int windows = ImGui::GetPlatformIO().Viewports.Size;
+    if (cur == cursors.last && windows == cursors.windows) return;
     if (cursors.last == -1) glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     GLFWcursor* c = cur >= 0 && cur < ImGuiMouseCursor_COUNT ? cursors.c[cur] : nullptr;
+    // Every window of the desktop (the tiles sent out) shows the same cursor.
+    kk::gui::viewports::set_cursor_everywhere(c != nullptr ? c : cursors.c[ImGuiMouseCursor_Arrow]);
     glfwSetCursor(window, c != nullptr ? c : cursors.c[ImGuiMouseCursor_Arrow]);
     cursors.last = cur;
+    cursors.windows = windows;
   };
 
   // Redraw on events only (14.8): near 0% CPU while idle; ~20 fps while agents work
@@ -232,11 +261,14 @@ int main(int argc, char** argv) {
       while (!root && glfwWindowShouldClose(window) == 0) {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
+        kk::gui::viewports::before_new_frame();
         if (frames > 0 && picker_frames >= frames) script->step(io);
         ImGui::NewFrame();
+        kk::gui::viewports::keep_floating_inside();
         bool open = true;
         if (auto chosen = picker.draw(&open, true)) root = *chosen;
         render(window);
+        kk::gui::viewports::render_other_windows(window);
         apply_cursor();
         // Headless check of the welcome screen: capture once the script is done.
         if (frames > 0 && ++picker_frames >= frames && script->done() && !root) {
@@ -288,8 +320,10 @@ int main(int argc, char** argv) {
         auto t0 = std::chrono::steady_clock::now();
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
+        kk::gui::viewports::before_new_frame();
         if (phase == 1) script->step(io);
         ImGui::NewFrame();
+        kk::gui::viewports::keep_floating_inside();
         ui.request().char_w = ImGui::CalcTextSize("abcdefghijklmnopqrstuvwxyz").x / 26.0f;
         ui.request().line_h = ImGui::GetTextLineHeightWithSpacing();
         bool animate = ui.draw(model, first);
@@ -298,7 +332,9 @@ int main(int argc, char** argv) {
         if (ui.quit_requested()) glfwSetWindowShouldClose(window, GLFW_TRUE);
         worker.set_request(ui.request());
         render(window);
+        kk::gui::viewports::render_other_windows(window);
         apply_cursor();
+        save_layout(false);
         if (profile) {
           double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
           prof_sum += ms;
@@ -332,6 +368,19 @@ int main(int argc, char** argv) {
           }
           if (phase == 3 || std::chrono::steady_clock::now() - start > std::chrono::seconds(30)) {
             if (!screenshot.empty()) screenshot_to(window, screenshot);
+            save_layout(true);
+            // Headless check of the tiles (ADR 0032): the windows of the desktop and the tiles docked.
+            if (std::getenv("KARKAS_GUI_LIST_WINDOWS") != nullptr) {
+              for (ImGuiViewport* v : ImGui::GetPlatformIO().Viewports) {
+                auto* vp = static_cast<ImGuiViewportP*>(v);
+                std::cerr << "window " << (vp->Window != nullptr ? vp->Window->Name : "(main)") << " at " << vp->Pos.x << "," << vp->Pos.y
+                          << " size " << vp->Size.x << "x" << vp->Size.y << ((vp->Flags & ImGuiViewportFlags_NoDecoration) ? "" : " decorated")
+                          << "\n";
+              }
+              for (ImGuiWindow* w : GImGui->Windows) {
+                if (w->WasActive && w->DockIsActive && w->DockNode != nullptr) std::cerr << "docked " << w->Name << " in " << w->DockNode->ID << "\n";
+              }
+            }
             quit = true;
             break;
           }
@@ -347,6 +396,7 @@ int main(int argc, char** argv) {
       quit = true;
     }
   }
+  if (frames == 0) save_layout(true);  // changes of the last seconds (ImGui saves a few seconds after a change)
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   for (auto* c : cursors.c) {

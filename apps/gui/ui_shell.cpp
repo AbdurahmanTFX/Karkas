@@ -8,6 +8,7 @@
 #include <misc/cpp/imgui_stdlib.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -19,6 +20,7 @@
 #include "kk/core/text.hpp"
 #include "theme.hpp"
 #include "ui.hpp"
+#include "viewports.hpp"
 #include "widgets.hpp"
 
 namespace kk::gui {
@@ -79,23 +81,22 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
   draw_menu();
   if (settings_.show_status) draw_status_bar(m);
   if (settings_.show_activity) draw_activity_bar(m);
-  layout_panels();
+  dock_space();
   if (m == nullptr) {
     if (begin_editor_window()) {
       ImGui::SetCursorScreenPos(ImVec2(free_area_.min.x + 16, free_area_.min.y + 16));
       ui::muted("%s", mp ? mp->message.c_str() : tr("indexing..."));
     }
     ImGui::End();
-    if (settings_.show_side) draw_side_bar(m);
-    if (settings_.show_inspector) {
-      if (begin_panel("Inspector###Inspector", insp_area_, 'L', theme::kSideBg, ImVec2(10, 8), &settings_.inspector_frac)) {
-        ui::panel_title(tr("INSPECTOR"));
+    draw_side_bar(m);
+    bool insp = settings_.show_inspector;
+    if (insp) {
+      if (begin_tile(Tile::Inspector, tr("Inspector"), &insp, theme::kSideBg, ImVec2(10, 8))) ui::muted("%s", tr("indexing..."));
+      ImGui::End();
+      if (!insp) {
+        settings_.show_inspector = false;
+        settings_changed();
       }
-      ImGui::End();
-    }
-    if (bottom_visible()) {
-      if (begin_panel("Panel###panel", bottom_area_, 'T', theme::kSideBg, ImVec2(10, 4), &settings_.bottom_frac)) ImGui::TextUnformatted("");
-      ImGui::End();
     }
     draw_settings_window(m);
     draw_chat_window(m);
@@ -118,9 +119,9 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
   }
   if (req_.change.empty()) ghost_shown_.clear();
   draw_editor(*m);
-  if (settings_.show_side) draw_side_bar(m);
+  draw_side_bar(m);
   if (settings_.show_inspector) draw_inspector(*m);
-  if (bottom_visible()) draw_bottom(*m);
+  draw_bottom(*m);
   draw_settings_window(m);
   draw_chat_window(m);
   draw_dialogs(*m);
@@ -149,68 +150,237 @@ bool Ui::bottom_visible() const {
   return false;  // every tab hidden: no empty panel
 }
 
-void Ui::layout_panels() {
-  const ImGuiViewport* vp = ImGui::GetMainViewport();
-  ImVec2 a = vp->WorkPos;
-  ImVec2 z(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y);
-  float width = std::max(1.0f, vp->WorkSize.x);
-  float height = std::max(1.0f, vp->WorkSize.y);
-  float side_w = settings_.show_side ? std::clamp(settings_.side_frac * width, 160.0f, width * 0.6f) : 0.0f;
-  float insp_w = settings_.show_inspector ? std::clamp(settings_.inspector_frac * width, 200.0f, width * 0.6f) : 0.0f;
-  if (side_w + insp_w > width - 160.0f && side_w + insp_w > 0) {  // a narrow window: both shrink
-    float k = std::max(0.0f, width - 160.0f) / (side_w + insp_w);
-    side_w *= k;
-    insp_w *= k;
+// --- tiles (ADR 0032) ----------------------------------------------------------------------
+
+namespace {
+
+struct TileInfo {
+  const char* key;     // in gui.json (os_windows, hidden_tabs)
+  const char* window;  // window id ("###...")
+  ImGuiDir edge;       // default place in the layout
+  float w, h;          // default size when floating (in font sizes)
+};
+
+constexpr std::array<TileInfo, static_cast<std::size_t>(Ui::Tile::Count)> kTiles = {{
+    {"side", "###side", ImGuiDir_Left, 20, 40},
+    {"inspector", "###Inspector", ImGuiDir_Right, 26, 44},
+    {"tickets", "###tile_tickets", ImGuiDir_Down, 60, 22},
+    {"agents", "###tile_agents", ImGuiDir_Down, 60, 22},
+    {"build", "###tile_build", ImGuiDir_Down, 60, 22},
+    {"costs", "###tile_costs", ImGuiDir_Down, 60, 22},
+    {"drift", "###tile_drift", ImGuiDir_Down, 60, 22},
+    {"chat", "###chat_window", ImGuiDir_Right, 52, 48},
+}};
+
+const TileInfo& info(Ui::Tile t) { return kTiles[static_cast<std::size_t>(t)]; }
+
+constexpr ImGuiID kDockSpace = 0x6b61726bu;  // "kark": the same id in every run (kept in the layout file)
+
+// The dockspace node holding `node`, or nullptr when it is not part of our dockspace.
+bool in_dockspace(ImGuiDockNode* node) {
+  while (node != nullptr && node->ParentNode != nullptr) node = node->ParentNode;
+  return node != nullptr && node->ID == kDockSpace;
+}
+
+}  // namespace
+
+Ui::TileMode Ui::tile_mode(Tile t) const {
+  const auto& keys = settings_.os_windows;
+  if (std::find(keys.begin(), keys.end(), info(t).key) != keys.end() && viewports::enabled()) return TileMode::Window;
+  ImGuiWindow* w = ImGui::FindWindowByName(info(t).window);
+  if (w == nullptr) return t == Tile::Chat ? TileMode::Floating : TileMode::Docked;  // not drawn yet: the default layout
+  return w->DockId != 0 ? TileMode::Docked : TileMode::Floating;
+}
+
+void Ui::set_tile_mode(Tile t, TileMode mode) {
+  auto i = static_cast<std::size_t>(t);
+  std::erase(settings_.os_windows, std::string(info(t).key));
+  if (mode == TileMode::Window && viewports::enabled()) settings_.os_windows.emplace_back(info(t).key);
+  tile_request_[i] = mode == TileMode::Docked ? 1 : mode == TileMode::Floating ? 2 : 3;
+  settings_changed();
+}
+
+void Ui::build_default_layout() {
+  // The layout of ADR 0021: the side bar on the left, the inspector on the right, the bottom
+  // tabs between them under the schema; the chat floats. The central part stays empty.
+  ImGui::DockBuilderRemoveNode(kDockSpace);
+  ImGui::DockBuilderAddNode(kDockSpace, ImGuiDockNodeFlags_DockSpace);
+  ImGui::DockBuilderSetNodeSize(kDockSpace, ImVec2(std::max(200.0f, work_.w()), std::max(200.0f, work_.h())));
+  ImGuiID center = kDockSpace;
+  float side = std::clamp(settings_.side_frac, 0.08f, 0.5f);
+  float insp = std::clamp(settings_.inspector_frac, 0.08f, 0.5f);
+  float bottom = std::clamp(settings_.bottom_frac, 0.08f, 0.8f);
+  ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, side, nullptr, &center);
+  ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, insp / std::max(0.2f, 1.0f - side), nullptr, &center);
+  ImGuiID down = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, bottom, nullptr, &center);
+  for (std::size_t i = 0; i < kTiles.size(); ++i) {
+    const auto& ti = kTiles[i];
+    if (i == static_cast<std::size_t>(Tile::Chat)) continue;
+    if (std::find(settings_.os_windows.begin(), settings_.os_windows.end(), ti.key) != settings_.os_windows.end()) continue;
+    ImGuiID node = ti.edge == ImGuiDir_Left ? left : ti.edge == ImGuiDir_Right ? right : down;
+    ImGui::DockBuilderDockWindow(ti.window, node);
+    last_dock_[i] = node;
   }
-  float bottom_h = bottom_visible() ? std::clamp(settings_.bottom_frac * height, 90.0f, height * 0.85f) : 0.0f;
-  work_ = {a, z};
-  side_area_ = {a, ImVec2(a.x + side_w, z.y)};
-  insp_area_ = {ImVec2(z.x - insp_w, a.y), z};
-  bottom_area_ = {ImVec2(a.x + side_w, z.y - bottom_h), ImVec2(z.x - insp_w, z.y)};
-  free_area_ = {ImVec2(a.x + side_w, a.y), ImVec2(z.x - insp_w, z.y - bottom_h)};
-  // A drag of a border ended: the new sizes are kept for the next start.
-  if (panel_dragged_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-    panel_dragged_ = false;
-    settings_changed();
+  ImGui::DockBuilderFinish(kDockSpace);
+  bottom_select_ = "tickets";  // the first tab of the bottom tiles in front
+}
+
+void Ui::apply_dock_requests() {
+  ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(kDockSpace);
+  for (std::size_t i = 0; i < kTiles.size(); ++i) {
+    if (tile_request_[i] != 1) continue;
+    tile_request_[i] = 0;
+    const auto& ti = kTiles[i];
+    // Its last place; else the place of a tile of the same edge; else a new part split off the
+    // schema at its default edge.
+    ImGuiDockNode* node = ImGui::DockBuilderGetNode(last_dock_[i]);
+    if (node == nullptr || !in_dockspace(node) || node->IsCentralNode() || node->IsSplitNode()) {
+      node = nullptr;
+      // The chat gets a tile of its own under the inspector (both are read side by side).
+      if (i == static_cast<std::size_t>(Tile::Chat)) {
+        ImGuiWindow* insp = ImGui::FindWindowByName(info(Tile::Inspector).window);
+        if (insp != nullptr && insp->DockNode != nullptr && in_dockspace(insp->DockNode) && !insp->DockNode->IsCentralNode()) {
+          ImGuiID below = 0;
+          ImGuiID above = 0;
+          ImGui::DockBuilderSplitNode(insp->DockNode->ID, ImGuiDir_Down, 0.6f, &below, &above);
+          node = ImGui::DockBuilderGetNode(below);
+        }
+      }
+      for (std::size_t k = 0; k < kTiles.size() && node == nullptr; ++k) {
+        if (k == static_cast<std::size_t>(Tile::Chat) && i != k) continue;
+        if (k == i || kTiles[k].edge != ti.edge) continue;
+        ImGuiWindow* w = ImGui::FindWindowByName(kTiles[k].window);
+        if (w != nullptr && w->DockNode != nullptr && in_dockspace(w->DockNode) && !w->DockNode->IsCentralNode()) node = w->DockNode;
+      }
+    }
+    ImGuiID target = node != nullptr ? node->ID : 0;
+    if (target == 0 && central != nullptr) {
+      float ratio = ti.edge == ImGuiDir_Down ? 0.3f : 0.25f;
+      ImGuiID rest = 0;
+      target = ImGui::DockBuilderSplitNode(central->ID, ti.edge, ratio, nullptr, &rest);
+      central = ImGui::DockBuilderGetCentralNode(kDockSpace);
+    }
+    if (target != 0) {
+      ImGui::DockBuilderDockWindow(ti.window, target);
+      last_dock_[i] = target;
+    }
   }
 }
 
-bool Ui::begin_panel(const char* name, const Area& r, char edge, ImU32 bg, ImVec2 padding, float* frac) {
-  bool vertical = edge == 'T';  // resized in height
-  float total = std::max(1.0f, vertical ? work_.h() : work_.w());
-  ImGui::SetNextWindowPos(r.min, ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(r.w(), r.h()), ImGuiCond_Always);
-  if (vertical) {
-    ImGui::SetNextWindowSizeConstraints(ImVec2(r.w(), 90.0f), ImVec2(r.w(), total * 0.85f));
+void Ui::dock_space() {
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  work_ = {vp->WorkPos, ImVec2(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y)};
+  ImGui::SetNextWindowPos(vp->WorkPos, ImGuiCond_Always);
+  ImGui::SetNextWindowSize(vp->WorkSize, ImGuiCond_Always);
+  ImGui::SetNextWindowViewport(vp->ID);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGuiWindowFlags fl = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                        ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus |
+                        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                        ImGuiWindowFlags_NoScrollWithMouse;
+  ImGui::Begin("###dockhost", nullptr, fl);
+  ImGui::PopStyleVar(3);
+  if (reset_layout_ || ImGui::DockBuilderGetNode(kDockSpace) == nullptr) {
+    reset_layout_ = false;
+    build_default_layout();
+  }
+  apply_dock_requests();
+  dock_id_ = kDockSpace;
+  // The central part is the schema: nothing docks over it, the mouse goes through it.
+  ImGui::DockSpace(kDockSpace, ImVec2(0, 0), ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_NoDockingOverCentralNode);
+  ImGui::End();
+  if (ImGuiDockNode* c = ImGui::DockBuilderGetCentralNode(kDockSpace); c != nullptr && c->Size.x > 1 && c->Size.y > 1) {
+    free_area_ = {c->Pos, ImVec2(c->Pos.x + c->Size.x, c->Pos.y + c->Size.y)};
   } else {
-    ImGui::SetNextWindowSizeConstraints(ImVec2(edge == 'R' ? 160.0f : 200.0f, r.h()), ImVec2(total * 0.6f, r.h()));
+    free_area_ = work_;
+  }
+}
+
+bool Ui::begin_tile(Tile t, const std::string& title, bool* open, ImU32 bg, ImVec2 padding, ImGuiWindowFlags extra) {
+  auto i = static_cast<std::size_t>(t);
+  const auto& ti = info(t);
+  ImGuiWindow* w = ImGui::FindWindowByName(ti.window);
+  bool docked = w != nullptr && w->DockIsActive;
+  bool out = tile_mode(t) == TileMode::Window;
+  // A window of the desktop: never merged back into the main window, decorated by the window
+  // manager (its title bar moves and resizes it), with a task bar entry like an application.
+  ImGuiWindowClass wc;
+  wc.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags_NoCloseButton;  // each tab has its own close button
+  if (out) {
+    wc.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoAutoMerge;
+    wc.ViewportFlagsOverrideClear = ImGuiViewportFlags_NoDecoration | ImGuiViewportFlags_NoTaskBarIcon;
+  }
+  ImGui::SetNextWindowClass(&wc);
+  float fs = ImGui::GetFontSize();
+  ImVec2 size(std::min(ti.w * fs, std::max(200.0f, free_area_.w() * 0.9f)), std::min(ti.h * fs, std::max(160.0f, free_area_.h() * 0.9f)));
+  int& req = tile_request_[i];
+  if (req == 2 || req == 3) {
+    // Out of the layout (SetNextWindowPos undocks) to the middle of the schema, or to a free
+    // spot of the desktop.
+    ImVec2 pos = req == 3 ? viewports::spot_for_new_window(size)
+                          : ImVec2(free_area_.min.x + (free_area_.w() - size.x) * 0.5f, free_area_.min.y + (free_area_.h() - size.y) * 0.4f);
+    ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(size, ImGuiCond_Always);
+    req = 0;
+    docked = false;
   }
   ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::col(bg));
   ImGui::PushStyleColor(ImGuiCol_Border, theme::col(theme::kBorder));
-  ImGui::PushStyleColor(ImGuiCol_ResizeGrip, IM_COL32(0, 0, 0, 0));
-  ImGui::PushStyleColor(ImGuiCol_ResizeGripHovered, IM_COL32(0, 0, 0, 0));
-  ImGui::PushStyleColor(ImGuiCol_ResizeGripActive, IM_COL32(0, 0, 0, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, docked || out ? 0.0f : 6.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-  ImGuiWindowFlags fl = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
-                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
-  bool open = ImGui::Begin(name, nullptr, fl);
+  ImGuiWindowFlags fl = ImGuiWindowFlags_NoCollapse | extra;
+  if (out) fl |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking;  // the window manager's title bar
+  bool visible = ImGui::Begin((title + ti.window).c_str(), open, fl);
   ImGui::PopStyleVar(3);
-  ImGui::PopStyleColor(5);
-  // The size after a drag at the border in this frame, as a part of the work area.
-  ImVec2 size = ImGui::GetWindowSize();
-  float f = (vertical ? size.y : size.x) / total;
-  if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && std::fabs(f - *frac) > 0.0005f) {
-    *frac = f;
-    panel_dragged_ = true;
+  ImGui::PopStyleColor(2);
+  if (ImGui::IsWindowDocked()) {
+    ImGuiID id = ImGui::GetWindowDockID();
+    if (in_dockspace(ImGui::DockBuilderGetNode(id))) last_dock_[i] = id;
   }
-  return open;
+  // Right click on the tab or the title bar: where the tile goes.
+  if (ImGui::BeginPopupContextItem("##tile_menu")) {
+    tile_menu_items(t);
+    ImGui::EndPopup();
+  }
+  return visible;
+}
+
+void Ui::tile_menu_items(Tile t) {
+  TileMode mode = tile_mode(t);
+  if (ImGui::MenuItem(with_icon(Icon::Dock, tr("Dock as a tile")).c_str(), nullptr, mode == TileMode::Docked)) set_tile_mode(t, TileMode::Docked);
+  if (ImGui::MenuItem(with_icon(Icon::Float, tr("Float inside the window")).c_str(), nullptr, mode == TileMode::Floating)) {
+    set_tile_mode(t, TileMode::Floating);
+  }
+  if (ImGui::MenuItem(with_icon(Icon::PopOut, tr("Separate window")).c_str(), nullptr, mode == TileMode::Window, viewports::enabled())) {
+    set_tile_mode(t, TileMode::Window);
+  }
+  if (!viewports::enabled() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("%s", tr("Windows of the desktop are off (KARKAS_GUI_WINDOWS=0 or the platform has none)"));
+  }
+  ImGui::Separator();
+  ImGui::TextDisabled("%s", tr("Drag a tab to any edge to dock it there"));
+}
+
+void Ui::tile_button(Tile t) {
+  TileMode mode = tile_mode(t);
+  Icon ic = mode == TileMode::Docked ? Icon::Dock : mode == TileMode::Floating ? Icon::Float : Icon::PopOut;
+  std::string id = std::string("tile_btn_") + info(t).key;
+  if (ui::icon_button(id.c_str(), ic, tr("Where this panel lives: a tile of the layout, floating, or a window of its own"))) {
+    ImGui::OpenPopup((id + "_menu").c_str());
+  }
+  if (ImGui::BeginPopup((id + "_menu").c_str())) {
+    tile_menu_items(t);
+    ImGui::EndPopup();
+  }
 }
 
 bool Ui::begin_editor_window() {
   ImGui::SetNextWindowPos(work_.min, ImGuiCond_Always);
   ImGui::SetNextWindowSize(ImVec2(work_.w(), work_.h()), ImGuiCond_Always);
+  ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
   ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::col(theme::kEditorBg));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -224,9 +394,9 @@ bool Ui::begin_editor_window() {
 }
 
 void Ui::order_windows() {
-  // Back to front: the schema, the side bar, the inspector, the bottom panel; the chat, the
-  // settings and dialogs stay above them whichever was clicked last.
-  for (const char* name : {"###panel", "###Inspector", "###side", "###editor"}) {
+  // Back to front: the schema, the dockspace with its tiles; floating tiles, the settings and
+  // dialogs stay above them whichever was clicked last.
+  for (const char* name : {"###dockhost", "###editor"}) {
     if (ImGuiWindow* w = ImGui::FindWindowByName(name)) ImGui::BringWindowToDisplayBack(w);
   }
 }
@@ -254,6 +424,33 @@ void Ui::draw_windows_menu() {
     chat_focus_ = show_chat_;
   }
   if (ImGui::MenuItem(with_icon(Icon::Agent, tr("Live: agents step by step")).c_str())) open_live("");
+  ImGui::Separator();
+  // Where each panel lives (ADR 0032): a tile of the layout, floating, or a window of the desktop.
+  if (ImGui::BeginMenu(with_icon(Icon::Dock, tr("Tiles and windows")).c_str())) {
+    const std::array<std::pair<Tile, const char*>, 8> tiles = {{{Tile::Side, "Side bar (explorer, search, changes)"},
+                                                                {Tile::Inspector, "Inspector"},
+                                                                {Tile::Chat, "Orchestrator chat"},
+                                                                {Tile::Tickets, "Tickets"},
+                                                                {Tile::Agents, "Agents"},
+                                                                {Tile::Build, "Build & tests"},
+                                                                {Tile::Costs, "Costs"},
+                                                                {Tile::Drift, "Drift"}}};
+    for (const auto& [t, label] : tiles) {
+      if (ImGui::BeginMenu(tr(label))) {
+        tile_menu_items(t);
+        ImGui::EndMenu();
+      }
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem(with_icon(Icon::Undo, tr("Reset the layout of the tiles")).c_str())) {
+      settings_.os_windows.clear();
+      settings_.show_side = settings_.show_inspector = settings_.show_bottom = true;
+      settings_.hidden_tabs.clear();
+      reset_layout_ = true;
+      settings_changed();
+    }
+    ImGui::EndMenu();
+  }
   ImGui::Separator();
   if (ImGui::MenuItem(with_icon(Icon::Schema, tr("Only the schema (hide every panel)")).c_str())) {
     settings_.show_side = settings_.show_inspector = settings_.show_bottom = false;
@@ -541,26 +738,32 @@ void Ui::draw_status_bar(const Model* m) {
 
 void Ui::draw_side_bar(const Model* m) {
   tree_hover_.clear();
-  if (!begin_panel("Side###side", side_area_, 'R', theme::kSideBg, ImVec2(8, 8), &settings_.side_frac)) {
+  if (!settings_.show_side) return;
+  const std::array<const char*, 4> titles = {"EXPLORER", "SEARCH", "SCHEMA CHANGES", "SETTINGS"};
+  const std::array<const char*, 4> tabs = {"Explorer", "Search", "Schema changes", "Settings"};
+  auto view = static_cast<std::size_t>(side_);
+  bool open = true;
+  bool visible = begin_tile(Tile::Side, tr(tabs[view]), &open, theme::kSideBg, ImVec2(8, 8));
+  if (!open) {
+    settings_.show_side = false;  // closed by its tab (the activity bar or the Windows menu shows it again)
+    settings_changed();
+  }
+  if (!visible) {
     ImGui::End();
     return;
   }
-  const char* titles[] = {"EXPLORER", "SEARCH", "SCHEMA CHANGES", "SETTINGS"};
-  ui::panel_title(tr(titles[static_cast<int>(side_)]));
-  float hide_w = ImGui::GetFrameHeight() * 1.1f;
+  ui::panel_title(tr(titles[view]));
+  float btn_w = ImGui::GetFrameHeight() * 1.1f;
   if (side_ == SideView::Explorer) {
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight() * 2.2f - hide_w);
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - btn_w * 3);
     if (ui::icon_button("ex_open", Icon::FolderOpen, tr("Open project..."))) show_picker();
     ImGui::SameLine(0, 2);
     if (ui::icon_button("ex_folder", Icon::Folder, tr("Show project folder"))) w_.open_folder("");
     ImGui::SameLine(0, 2);
   } else {
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - hide_w);
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - btn_w);
   }
-  if (ui::icon_button("side_hide", Icon::Close, tr("Hide this panel (Windows menu shows it again)"))) {
-    settings_.show_side = false;
-    settings_changed();
-  }
+  tile_button(Tile::Side);  // closed by its tab, its title bar or its window
   ImGui::Spacing();
   if (m == nullptr) {
     ui::muted("%s", tr("indexing..."));
@@ -1282,16 +1485,19 @@ void Ui::draw_file_body(const Model& m, const std::string& file) {
 // --- inspector ------------------------------------------------------------------------------------
 
 void Ui::draw_inspector(const Model& m) {
-  if (!begin_panel("Inspector###Inspector", insp_area_, 'L', theme::kSideBg, ImVec2(10, 8), &settings_.inspector_frac)) {
+  bool open = true;
+  bool visible = begin_tile(Tile::Inspector, tr("Inspector"), &open, theme::kSideBg, ImVec2(10, 8));
+  if (!open) {
+    settings_.show_inspector = false;
+    settings_changed();
+  }
+  if (!visible) {
     ImGui::End();
     return;
   }
   ui::panel_title(tr("INSPECTOR"));
   ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight() * 1.1f);
-  if (ui::icon_button("insp_hide", Icon::Close, tr("Hide this panel (Windows menu shows it again)"))) {
-    settings_.show_inspector = false;
-    settings_changed();
-  }
+  tile_button(Tile::Inspector);
   ImGui::Spacing();
   const auto* b = req_.selected.empty() ? nullptr : m.snap->block(req_.selected);
   if (b == nullptr) {

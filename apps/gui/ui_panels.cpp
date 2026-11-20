@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <csignal>
 #include <map>
 #include <set>
@@ -100,58 +101,45 @@ void Ui::panel_actions(const char* key, int shown, int hidden, const std::functi
 }
 
 void Ui::draw_bottom(const Model& m) {
-  if (!begin_panel("Panel###panel", bottom_area_, 'T', theme::kSideBg, ImVec2(10, 4), &settings_.bottom_frac)) {
-    ImGui::End();
-    return;
-  }
+  // Every tab of the bottom panel is a tile of its own (ADR 0032): docked together under the
+  // schema by default, dragged by its tab anywhere, floating or a window of the desktop.
+  if (!settings_.show_bottom) return;
   int errors = 0;
   int warnings = 0;
   for (const auto& d : m.snap->drift) (d.severity == "E" ? errors : warnings)++;
   std::size_t tickets = 0;
   for (const auto& t : m.snap->tickets) tickets += cleared_.hides(t) ? 0 : 1;
-  auto tab = [&](const char* key, Icon ic, const std::string& text) {
-    ImGuiTabItemFlags f = bottom_select_ == key ? ImGuiTabItemFlags_SetSelected : 0;
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 5));
-    bool r = ImGui::BeginTabItem((with_icon(ic, text) + "###" + key).c_str(), nullptr, f);
-    ImGui::PopStyleVar();
-    return r;
+  std::string drift_label = m.snap->drift.empty() ? std::string(tr("Drift")) : fmt::format("{} {}·{}", tr("Drift"), errors, warnings);
+  struct Tab {
+    Tile tile;
+    const char* key;
+    Icon ic;
+    std::string label;
+    void (Ui::*body)(const Model&);
   };
-  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 5));
-  bool tabs = ImGui::BeginTabBar("##panel_tabs");
-  ImGui::PopStyleVar();
-  if (tabs) {
-    if (tab_visible("tickets") && tab("tickets", Icon::Ticket, fmt::format("{} {}", tr("Tickets"), tickets))) {
-      bottom_tickets(m);
-      ImGui::EndTabItem();
+  const std::array<Tab, 5> tabs = {{
+      {Tile::Tickets, "tickets", Icon::Ticket, fmt::format("{} {}", tr("Tickets"), tickets), &Ui::bottom_tickets},
+      {Tile::Agents, "agents", Icon::Agent, m.active.empty() ? std::string(tr("Agents")) : fmt::format("{} {}", tr("Agents"), m.active.size()),
+       &Ui::bottom_agents},
+      {Tile::Build, "build", Icon::Hammer, tr("Build & tests"), &Ui::bottom_tests},
+      {Tile::Costs, "costs", Icon::Coins, tr("Costs"), &Ui::bottom_costs},
+      {Tile::Drift, "drift", Icon::Wave, drift_label, &Ui::bottom_drift},
+  }};
+  if (!bottom_select_.empty() && !tab_visible(bottom_select_.c_str())) set_tab_visible(bottom_select_.c_str(), true);
+  for (const auto& tab : tabs) {
+    if (!tab_visible(tab.key)) continue;
+    if (bottom_select_ == tab.key) ImGui::SetNextWindowFocus();  // brings its tab forward
+    bool open = true;
+    bool visible = begin_tile(tab.tile, with_icon(tab.ic, tab.label), &open, theme::kSideBg, ImVec2(10, 6));
+    if (visible) {
+      ImGui::PushID(tab.key);
+      (this->*tab.body)(m);
+      ImGui::PopID();
     }
-    if (tab_visible("agents") &&
-        tab("agents", Icon::Agent, m.active.empty() ? std::string(tr("Agents")) : fmt::format("{} {}", tr("Agents"), m.active.size()))) {
-      bottom_agents(m);
-      ImGui::EndTabItem();
-    }
-    if (tab_visible("build") && tab("build", Icon::Hammer, tr("Build & tests"))) {
-      bottom_tests(m);
-      ImGui::EndTabItem();
-    }
-    if (tab_visible("costs") && tab("costs", Icon::Coins, tr("Costs"))) {
-      bottom_costs(m);
-      ImGui::EndTabItem();
-    }
-    std::string drift_label = m.snap->drift.empty() ? std::string(tr("Drift")) : fmt::format("{} {}·{}", tr("Drift"), errors, warnings);
-    if (tab_visible("drift") && tab("drift", Icon::Wave, drift_label)) {
-      bottom_drift(m);
-      ImGui::EndTabItem();
-    }
-    // Hide the whole panel (the Windows menu shows it again).
-    if (ImGui::TabItemButton((std::string(icon(Icon::Close)) + "###panel_hide").c_str(), ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip)) {
-      settings_.show_bottom = false;
-      settings_changed();
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Hide this panel (Windows menu shows it again)"));
-    ImGui::EndTabBar();
+    ImGui::End();
+    if (!open) set_tab_visible(tab.key, false);  // closed by its tab: the Windows menu shows it again
   }
   bottom_select_.clear();
-  ImGui::End();
 }
 
 // --- tickets ---------------------------------------------------------------------------------

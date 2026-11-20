@@ -3,6 +3,7 @@
 // schema changes, settings), editor with tabs (the schema of the current level and opened
 // code files), inspector, bottom panel (tickets, agents, build & tests, costs, drift) and a
 // status bar; plus the edit dialogs (14.6). ui_shell.cpp holds the shell, ui.cpp the schema.
+#include <array>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -81,29 +82,47 @@ class Ui {
   void side_changes(const Model& m);
   void draw_settings_window(const Model* m);
   void draw_windows_menu();
-  // Panels over the schema (ADR 0021): the schema keeps the whole work area; the side bar, the
-  // inspector and the bottom panel lie on its edges and are resized at their inner border, so
-  // showing, hiding or resizing one never changes the schema's size.
+  // Tiles over the schema (ADR 0021, 0032): the schema keeps the whole work area behind a
+  // dockspace whose central part is empty and lets the mouse through; the side bar, the
+  // inspector, the bottom tabs and the chat are tiles — docked in the dockspace (dragged by
+  // their tab to any edge, tabbed together), floating inside the main window, or windows of
+  // the desktop. Showing, hiding or resizing a tile never changes the schema's size.
   struct Area {
     ImVec2 min{0, 0}, max{0, 0};
     [[nodiscard]] float w() const { return max.x - min.x; }
     [[nodiscard]] float h() const { return max.y - min.y; }
   };
-  void layout_panels();
-  // A panel window fixed to `r`; `edge` ('R', 'L', 'T') is its inner border, where it is
-  // resized; the new size is kept in `frac` (a part of the work area).
-  bool begin_panel(const char* name, const Area& r, char edge, ImU32 bg, ImVec2 padding, float* frac);
+ public:
+  enum class Tile { Side, Inspector, Tickets, Agents, Build, Costs, Drift, Chat, Count };
+  enum class TileMode { Docked, Floating, Window };
+  // Where a tile is now (a hidden tile: where it was last).
+  [[nodiscard]] TileMode tile_mode(Tile t) const;
+  // Moves a tile: into the layout (its last place, or its default edge), floating inside the
+  // main window, or out into a window of the desktop. Applied when the tile is drawn next.
+  void set_tile_mode(Tile t, TileMode mode);
+  void reset_layout() { reset_layout_ = true; }
+ private:
+  void dock_space();  // the dockspace host over the work area; free_area_ = its central part
+  void build_default_layout();
+  void apply_dock_requests();
+  // Begins the window of a tile (End() always follows); false when it is collapsed or hidden.
+  bool begin_tile(Tile t, const std::string& title, bool* open, ImU32 bg, ImVec2 padding, ImGuiWindowFlags extra = 0);
+  void tile_menu_items(Tile t);  // dock / float / own window (context menu of the tab and the header button)
+  void tile_button(Tile t);      // a header button with that menu
   bool begin_editor_window();
-  void order_windows();  // the schema at the back, the panels over it, floating windows on top
+  void order_windows();  // the schema at the back, the dockspace over it, floating windows on top
   void fit_view();       // fit the blocks into the part of the schema that no panel covers
   [[nodiscard]] bool bottom_visible() const;
   [[nodiscard]] bool tab_visible(const char* key) const;
   void set_tab_visible(const char* key, bool on);
-  Area work_, side_area_, insp_area_, bottom_area_, free_area_;
+  Area work_, free_area_;
+  std::uint32_t dock_id_ = 0;
+  bool reset_layout_ = false;
+  std::array<std::uint32_t, static_cast<std::size_t>(Tile::Count)> last_dock_{};  // node a tile was docked in
+  std::array<int, static_cast<std::size_t>(Tile::Count)> tile_request_{};         // 0 none, 1 dock, 2 float, 3 window
   float chrome_h_ = 0.0f;  // the editor's tab bar and toolbar over the schema (last frame)
   ImVec2 canvas_min_{0, 0}, canvas_max_{0, 0};
   std::string editor_tab_ = "#schema";  // "#schema" or the open file shown
-  bool panel_dragged_ = false;
   // models and APIs per level / block (ui_models.cpp, ADR 0011)
   void settings_models(const Model* m);
   void reload_models();

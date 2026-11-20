@@ -20,6 +20,8 @@ std::filesystem::path settings_path() {
   return base / "karkas" / "gui.json";
 }
 
+std::filesystem::path layout_path() { return settings_path().parent_path() / "gui_layout.ini"; }
+
 GuiSettings load_settings() {
   GuiSettings s;
   s.lang = lang_from_env();
@@ -51,6 +53,11 @@ GuiSettings load_settings() {
     if (j.contains("hidden_tabs") && j["hidden_tabs"].is_array()) {
       for (const auto& t : j["hidden_tabs"]) {
         if (t.is_string()) s.hidden_tabs.push_back(t.get<std::string>());
+      }
+    }
+    if (j.contains("os_windows") && j["os_windows"].is_array()) {
+      for (const auto& t : j["os_windows"]) {
+        if (t.is_string()) s.os_windows.push_back(t.get<std::string>());
       }
     }
     if (j.contains("recent") && j["recent"].is_array()) {
@@ -88,7 +95,8 @@ bool save_settings(const GuiSettings& s) {
             {"show_status", s.show_status},
             {"side_frac", s.side_frac},
             {"inspector_frac", s.inspector_frac},
-            {"bottom_frac", s.bottom_frac}};
+            {"bottom_frac", s.bottom_frac},
+            {"os_windows", s.os_windows}};
   return core::write_file(settings_path(), j.dump(2) + "\n").has_value();
 }
 

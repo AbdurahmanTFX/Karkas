@@ -1,0 +1,10 @@
+// English → Russian, added with ADR 0032 and later (tiles, editing in place, chat scope,
+// prototype). One {"en", "ru"}, per line.
+{"Dock as a tile", "Закрепить плиткой"},
+{"Drag a tab to any edge to dock it there", "Перетащите вкладку к любому краю, чтобы закрепить её там"},
+{"Float inside the window", "Плавающее окно внутри программы"},
+{"Reset the layout of the tiles", "Сбросить расположение плиток"},
+{"Separate window", "Отдельное окно"},
+{"Tiles and windows", "Плитки и окна"},
+{"Where this panel lives: a tile of the layout, floating, or a window of its own", "Где живёт эта панель: плитка раскладки, плавающее окно или отдельное окно"},
+{"Windows of the desktop are off (KARKAS_GUI_WINDOWS=0 or the platform has none)", "Отдельные окна выключены (KARKAS_GUI_WINDOWS=0 или платформа их не поддерживает)"},

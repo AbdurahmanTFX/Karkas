@@ -282,6 +282,32 @@ const std::array<Sdf, static_cast<std::size_t>(Icon::Count)>& shapes() {
         float gaps = U(U(box(p, {0.30f, 0.0f}, {0.40f, 1.0f}), box(p, {0.60f, 0.0f}, {0.70f, 1.0f})), box(p, {0.0f, 0.45f}, {1.0f, 0.55f}));
         return S(outline, gaps);
       },
+      // Float (a window over another one: a floating tile)
+      [](V p) {
+        float back = S(box(p, {0.06f, 0.10f}, {0.62f, 0.58f}, 0.06f), box(p, {0.06f + 2 * T, 0.24f}, {0.62f - 2 * T, 0.58f - 2 * T}, 0.02f));
+        float front = S(box(p, {0.34f, 0.40f}, {0.94f, 0.90f}, 0.06f), box(p, {0.34f + 2 * T, 0.54f}, {0.94f - 2 * T, 0.90f - 2 * T}, 0.02f));
+        return U(S(back, box(p, {0.28f, 0.34f}, {1.0f, 0.96f}, 0.06f)), front);
+      },
+      // PopOut (an arrow leaving a box: a window of its own on the desktop)
+      [](V p) {
+        float frame = S(box(p, {0.08f, 0.20f}, {0.80f, 0.92f}, 0.07f), box(p, {0.08f + 2 * T, 0.20f + 2 * T}, {0.80f - 2 * T, 0.92f - 2 * T}, 0.02f));
+        frame = S(frame, box(p, {0.40f, 0.0f}, {1.0f, 0.60f}));
+        float arrow = U(seg(p, {0.42f, 0.58f}, {0.88f, 0.12f}, T), U(seg(p, {0.56f, 0.12f}, {0.88f, 0.12f}, T), seg(p, {0.88f, 0.12f}, {0.88f, 0.44f}, T)));
+        return U(frame, arrow);
+      },
+      // Dock (a window with a filled pane at its right edge: a tile in the layout)
+      [](V p) {
+        float frame = S(box(p, {0.08f, 0.14f}, {0.92f, 0.86f}, 0.07f), box(p, {0.08f + 2 * T, 0.14f + 2 * T}, {0.92f - 2 * T, 0.86f - 2 * T}, 0.02f));
+        return U(frame, box(p, {0.58f, 0.14f}, {0.92f, 0.86f}, 0.03f));
+      },
+      // Sketch (a pencil line over dashed blocks: the prototype)
+      [](V p) {
+        float a = S(box(p, {0.06f, 0.10f}, {0.42f, 0.38f}, 0.06f), box(p, {0.06f + 2 * T, 0.10f + 2 * T}, {0.42f - 2 * T, 0.38f - 2 * T}, 0.02f));
+        float b = S(box(p, {0.56f, 0.60f}, {0.94f, 0.90f}, 0.06f), box(p, {0.56f + 2 * T, 0.60f + 2 * T}, {0.94f - 2 * T, 0.90f - 2 * T}, 0.02f));
+        float gaps = U(box(p, {0.20f, 0.0f}, {0.28f, 1.0f}), box(p, {0.71f, 0.0f}, {0.79f, 1.0f}));
+        float line = seg(p, {0.30f, 0.38f}, {0.62f, 0.60f}, 0.04f);
+        return U(S(U(a, b), gaps), line);
+      },
   };
   return s;
 }

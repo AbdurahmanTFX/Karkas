@@ -19,6 +19,14 @@ const std::unordered_map<std::string_view, const char*>& ru_more() {
   return m;
 }
 
+// Texts added with ADR 0032 and later.
+const std::unordered_map<std::string_view, const char*>& ru_tiles() {
+  static const std::unordered_map<std::string_view, const char*> m = {
+#include "i18n_tiles.inc"
+  };
+  return m;
+}
+
 const std::unordered_map<std::string_view, const char*>& ru() {
   static const std::unordered_map<std::string_view, const char*> m = {
       // windows and menus
@@ -447,8 +455,9 @@ const char* tr(const char* en) {
   if (lang() == Lang::En) return en;
   auto it = ru().find(en);
   if (it != ru().end()) return it->second;
-  auto jt = ru_more().find(en);
-  return jt == ru_more().end() ? en : jt->second;
+  if (auto jt = ru_more().find(en); jt != ru_more().end()) return jt->second;
+  auto kt = ru_tiles().find(en);
+  return kt == ru_tiles().end() ? en : kt->second;
 }
 
 std::string title(const char* en) { return std::string(tr(en)) + "###" + en; }

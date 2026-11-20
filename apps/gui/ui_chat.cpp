@@ -549,17 +549,11 @@ void Ui::draw_chat_window(const Model* m) {
     ImGui::SetNextWindowFocus();
     chat_window_focus_ = false;
   }
-  ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::col(theme::kSideBg));
-  ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(80, 80, 86, 255));
   ImGui::PushStyleColor(ImGuiCol_TitleBg, IM_COL32(44, 44, 48, 255));
   ImGui::PushStyleColor(ImGuiCol_TitleBgActive, IM_COL32(52, 52, 58, 255));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
-  // A floating window over everything else: it never docks into the layout (ADR 0021).
-  bool open = ImGui::Begin((with_icon(Icon::Chat, tr("Orchestrator")) + "###chat_window").c_str(), &show_chat_,
-                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking);
-  ImGui::PopStyleVar(2);
-  ImGui::PopStyleColor(4);
+  // A tile like the panels (ADR 0032): floating by default, docked as a tile, or a window of the desktop.
+  bool open = begin_tile(Tile::Chat, with_icon(Icon::Chat, tr("Orchestrator")), &show_chat_, theme::kSideBg, ImGui::GetStyle().WindowPadding);
+  ImGui::PopStyleColor(2);
   if (!open) {
     ImGui::End();
     return;
@@ -588,10 +582,18 @@ void Ui::draw_chat_window(const Model* m) {
                     "([agents] auto_approve in karkas.toml)"))) {
     set_auto(autop);
   }
-  ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight() * 1.3f);
+  // Clear and the tile's place at the right end; on the next line when the tile is narrow.
+  {
+    float right = ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight() * 2.4f;
+    float used = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + 8;
+    if (used > right) ImGui::NewLine();
+    ImGui::SameLine(right);
+  }
   ImGui::BeginDisabled(chat_cache_.empty());
   if (ui::icon_button("chat_clear", Icon::Trash, tr("Clear the conversation (tickets and logs stay)"))) chat_->clear();
   ImGui::EndDisabled();
+  ImGui::SameLine(0, 2);
+  tile_button(Tile::Chat);
   if (busy) {
     float a = static_cast<float>(0.6 + 0.4 * std::sin(pulse_ * 5.0));
     std::string t = chat_->current_ticket();

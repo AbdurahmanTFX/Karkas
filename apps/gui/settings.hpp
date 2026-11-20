@@ -25,9 +25,15 @@ struct GuiSettings {
   bool chat_steps = true;       // the chat shows every step of the agents
   bool show_activity = true;    // the activity bar on the left
   bool show_status = true;      // the status bar at the bottom
-  // Sizes of the docked panels as parts of the window (kept while a panel is hidden).
+  // Sizes of the docked panels as parts of the window: the default layout (ADR 0032).
   float side_frac = 0.19f, inspector_frac = 0.26f, bottom_frac = 0.28f;
+  // Tiles that are windows of the desktop (side, inspector, tickets, agents, build, costs,
+  // drift, chat); where the others are docked or float is kept in gui_layout.ini.
+  std::vector<std::string> os_windows;
 };
+
+// The dock layout of the tiles (ImGui's ini text), next to gui.json.
+std::filesystem::path layout_path();
 
 // Puts a project root first in the recent list (at most 8).
 void add_recent(GuiSettings& s, const std::filesystem::path& root);

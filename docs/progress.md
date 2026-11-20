@@ -599,3 +599,19 @@
   real cost on four runs (was 0.2-0.3); `karkas cost` prices 1-hour cache writes at 2x; Sonnet's cache read $0.10.
 - A worker's done with no file of its block changed goes to the orchestrator (bugs.txt 14); a planned block's
   not_here/needs_info too, not up the tree (bugs.txt 13); a session reads only its own part of the run log.
+
+## GUI addition — tiles, floating tiles, tiles as windows of the desktop (docs/adr/0032)
+
+- The panels are tiles of an ImGui dockspace over the schema (its empty central part lets the mouse
+  through; the schema keeps the whole work area): side bar, inspector, each bottom tab and the chat.
+  A tile is docked (dragged by its tab to any edge, tabbed with others), floating inside the window,
+  or a window of the desktop with the window manager's decoration and a task bar entry; chosen by
+  drag, the tab's context menu, the header button or Windows → Tiles and windows (also Reset).
+  The chat docks as its own tile under the inspector.
+- Wayland (the user's Hyprland): virtual positions for the windows of the desktop, one monitor per
+  window (popups stay inside their window), floating windows kept inside the main window
+  (viewports.cpp). X11 keeps ImGui's behaviour. App id "karkas" for desktop rules.
+- Layout kept in ~/.config/karkas/gui_layout.ini, tiles sent out in gui.json; `--layout FILE` for
+  checks; `KARKAS_GUI_LIST_WINDOWS=1`, `KARKAS_GUI_VIRTUAL_WINDOWS=1`, `KARKAS_GUI_WINDOWS=0`.
+- Checked under Xvfb (`env -u WAYLAND_DISPLAY`): default layout, chat docked, chat as a window of the
+  desktop (its screen captured), drag clamp, layout restored after a restart. Tests 341.

@@ -8,6 +8,20 @@
 
 namespace kk::gui {
 
+namespace {
+
+// Script positions are in the main window; with windows of the desktop on, ImGui's mouse is
+// in desktop coordinates.
+void mouse_at(ImGuiIO& io, float x, float y) {
+  bool windows = (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
+  ImVec2 o = windows ? ImGui::GetMainViewport()->Pos : ImVec2(0, 0);
+  io.AddMousePosEvent(o.x + x, o.y + y);
+  // The hidden window of a headless run is under no real cursor: say the mouse is over it.
+  if (windows) io.AddMouseViewportEvent(ImGui::GetMainViewport()->ID);
+}
+
+}  // namespace
+
 std::optional<InputScript> InputScript::parse(std::string_view text, std::string* error) {
   InputScript s;
   auto fail = [&](const std::string& what) -> std::optional<InputScript> {
@@ -26,10 +40,10 @@ std::optional<InputScript> InputScript::parse(std::string_view text, std::string
     };
     if (cmd == "move" && w.size() == 3) {
       float x = num(w[1]), y = num(w[2]);
-      f.emplace_back([x, y](ImGuiIO& io) { io.AddMousePosEvent(x, y); });
+      f.emplace_back([x, y](ImGuiIO& io) { mouse_at(io, x, y); });
     } else if ((cmd == "click" || cmd == "dclick") && w.size() >= 3) {
       float x = num(w[1]), y = num(w[2]);
-      f.emplace_back([x, y](ImGuiIO& io) { io.AddMousePosEvent(x, y); });
+      f.emplace_back([x, y](ImGuiIO& io) { mouse_at(io, x, y); });
       key_shift(true);
       for (int i = 0; i < (cmd == "dclick" ? 2 : 1); ++i) {
         f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(0, true); });
@@ -38,29 +52,29 @@ std::optional<InputScript> InputScript::parse(std::string_view text, std::string
       key_shift(false);
     } else if (cmd == "rclick" && w.size() == 3) {
       float x = num(w[1]), y = num(w[2]);
-      f.emplace_back([x, y](ImGuiIO& io) { io.AddMousePosEvent(x, y); });
+      f.emplace_back([x, y](ImGuiIO& io) { mouse_at(io, x, y); });
       f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(1, true); });
       f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(1, false); });
     } else if (cmd == "drag" && w.size() == 5) {
       float x1 = num(w[1]), y1 = num(w[2]), x2 = num(w[3]), y2 = num(w[4]);
-      f.emplace_back([x1, y1](ImGuiIO& io) { io.AddMousePosEvent(x1, y1); });
+      f.emplace_back([x1, y1](ImGuiIO& io) { mouse_at(io, x1, y1); });
       f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(0, true); });
       for (int i = 1; i <= 10; ++i) {
         float t = static_cast<float>(i) / 10.0f;
-        f.emplace_back([=](ImGuiIO& io) { io.AddMousePosEvent(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t); });
+        f.emplace_back([=](ImGuiIO& io) { mouse_at(io, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t); });
       }
       f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(0, false); });
     } else if (cmd == "wheel" && w.size() == 4) {
       float x = num(w[1]), y = num(w[2]), d = num(w[3]);
-      f.emplace_back([x, y](ImGuiIO& io) { io.AddMousePosEvent(x, y); });
+      f.emplace_back([x, y](ImGuiIO& io) { mouse_at(io, x, y); });
       f.emplace_back([d](ImGuiIO& io) { io.AddMouseWheelEvent(0, d); });
     } else if (cmd == "rdrag" && w.size() == 5) {
       float x1 = num(w[1]), y1 = num(w[2]), x2 = num(w[3]), y2 = num(w[4]);
-      f.emplace_back([x1, y1](ImGuiIO& io) { io.AddMousePosEvent(x1, y1); });
+      f.emplace_back([x1, y1](ImGuiIO& io) { mouse_at(io, x1, y1); });
       f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(1, true); });
       for (int i = 1; i <= 10; ++i) {
         float t = static_cast<float>(i) / 10.0f;
-        f.emplace_back([=](ImGuiIO& io) { io.AddMousePosEvent(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t); });
+        f.emplace_back([=](ImGuiIO& io) { mouse_at(io, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t); });
       }
       f.emplace_back([](ImGuiIO& io) { io.AddMouseButtonEvent(1, false); });
     } else if (cmd == "wait" && w.size() == 2) {
