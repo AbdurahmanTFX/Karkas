@@ -119,6 +119,11 @@ bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
     }
   }
   if (req_.change.empty()) ghost_shown_.clear();
+  // The selected block is gone (removed, renamed): the block of the level shown is selected, at the
+  // top the project. Only on a model made for this selection, never on one that lags behind it.
+  if (!req_.selected.empty() && m->req.selected == req_.selected && m->snap->block(req_.selected) == nullptr) {
+    select(m->snap->block(req_.scope) != nullptr ? req_.scope : "");
+  }
   update_chat_scope(*m);
   draw_editor(*m);
   draw_side_bar(m);

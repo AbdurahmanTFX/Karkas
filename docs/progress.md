@@ -677,3 +677,10 @@
 - The generated CMake writes kk_doctest_main.cpp with file(CONFIGURE): an unchanged wavkit no longer
   relinks every test program at each build (8 s → 0.7 s); wavkit fixture regenerated.
 - Checked under Xvfb (wavkit, a project with its own build, input to a program, an older layout); tests 375.
+
+## GUI addition — nothing selected is the block you are in (docs/adr/0034, amendment)
+
+- A click on the empty place of the schema selects the block it lies in: an opened-in-place group around
+  it, else the group of the level shown, at the top the project (the inspector's overview, the chat's
+  "whole project"). Entering a level selects its group; a vanished selection falls back to it.
+- Fixed: a block selected on the canvas took the selection back from a click in the tree.

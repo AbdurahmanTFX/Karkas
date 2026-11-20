@@ -138,6 +138,9 @@ void Ui::enter(const std::string& scope) {
   pinned_.clear();
   req_.expanded.clear();
   req_.all_levels = false;
+  // Nothing chosen on the new level yet: the selection is the block the level shows, at the top the
+  // whole project (callers that open a level to show a block select it after this).
+  select(req_.scope);
 }
 
 void Ui::select(const std::string& id) { req_.selected = id; }
@@ -549,6 +552,7 @@ void Ui::draw_graph(const Model& m) {
   // when blocks are moved); the top edge is a path bar, a click on a part closes that group.
   std::string header_hit;    // group to close if the mouse is pressed now
   std::string header_frame;  // frame whose path bar is under the mouse
+  std::string frame_under;   // the innermost opened group around the mouse (a click on the empty place selects it)
   if (nested) {
     constexpr float kPad = static_cast<float>(layout::kFramePad) - 2.0f;
     constexpr float kHead = static_cast<float>(layout::kFrameTitle) - kPad;
@@ -584,6 +588,13 @@ void Ui::draw_graph(const Model& m) {
     auto* dl = ImGui::GetWindowDrawList();
     ImVec2 mouse = ImGui::GetMousePos();  // canvas space inside the editor
     auto inside = [&](ImVec2 a, ImVec2 b) { return mouse.x >= a.x && mouse.x < b.x && mouse.y >= a.y && mouse.y < b.y; };
+    for (const auto* f : frames) {  // the deepest first
+      auto rit = rects.find(f->id);
+      if (rit != rects.end() && inside(rit->second.Min, rit->second.Max)) {
+        frame_under = f->id;
+        break;
+      }
+    }
     for (auto it = frames.rbegin(); it != frames.rend(); ++it) {  // outer frames first
       const auto* f = *it;
       auto rit = rects.find(f->id);
@@ -1856,11 +1867,26 @@ void Ui::draw_graph(const Model& m) {
       req_.open_file.clear();
     }
   }
+  // A selection made elsewhere (the tree, the search, a level entered, a click on the empty place)
+  // becomes the canvas's too: the block still selected on the canvas would take it back otherwise.
+  if (req_.selected != canvas_selected_) {
+    ed::ClearSelection();
+    for (const auto& [nid, id] : node_of) {
+      if (id == req_.selected) {
+        ed::SelectNode(ed::NodeId(nid));
+        break;
+      }
+    }
+    canvas_selected_ = req_.selected;
+  }
   std::vector<ed::NodeId> sel(8);
   int nsel = ed::GetSelectedNodes(sel.data(), static_cast<int>(sel.size()));
   if (nsel == 1 && node_of.contains(sel[0].Get())) {
     auto id = node_of[sel[0].Get()];
-    if (req_.selected != id && !ImGui::IsMouseDragging(0)) select(id);
+    if (req_.selected != id && !ImGui::IsMouseDragging(0)) {
+      select(id);
+      canvas_selected_ = id;
+    }
   }
   ed::Suspend();
   bool menu_open = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
@@ -2037,7 +2063,12 @@ void Ui::draw_graph(const Model& m) {
   {
     const auto& io = ImGui::GetIO();
     bool plain = io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < io.MouseDragThreshold * io.MouseDragThreshold;
-    if (ed::GetBackgroundClickButtonIndex() == ImGuiMouseButton_Left && plain && !shift && header_hit.empty()) pinned_.clear();
+    if (ed::GetBackgroundClickButtonIndex() == ImGuiMouseButton_Left && plain && !shift && header_hit.empty()) {
+      pinned_.clear();
+      // A click on the empty place selects the block it lies in: an opened group around it, else
+      // the group whose level this is, at the top the whole project.
+      select(frame_under.empty() ? scope : frame_under);
+    }
   }
   ed::SetCurrentEditor(nullptr);
   // Shift+click keeps a block's links lit (again: off); Shift+double-click opens a group in place.

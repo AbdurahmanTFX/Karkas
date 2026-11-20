@@ -48,3 +48,23 @@ anything new to it.
   a human fact and reruns a closed ticket (a closed ticket without one still needs --force); chat
   commands of each mode. GUI checked under Xvfb (block selected → block mode, ticket selected →
   ticket mode).
+
+## Amendment (2026-11-21): nothing selected is the block you are in
+
+The user asked that when no block is selected, or the empty place of the schema is clicked, the block
+the place lies in is selected, and at the top level the whole project.
+
+- A click on the empty place of the schema selects the innermost group opened in place around it
+  (Shift+double-click, "All levels"), else the group whose level is shown, at the top level nothing —
+  the project (the inspector shows the project's overview).
+- Entering a level (double click, the address bar, Up, the tree's Open, the Go menu) selects that
+  level's group, the top level the project; opening a level to show a block still selects the block.
+  karkas-gui started with `--scope` and no `--select` does the same.
+- A selected block that disappears (removed, renamed) gives way to the level's group (the project).
+- The chat follows: the project selected → "whole project", as a block or a ticket selected sets its
+  mode.
+- The canvas shows the selection made elsewhere: before, the block still selected on the canvas took
+  the selection back at the next frame, so a click on another block in the tree did nothing while one
+  was selected on the canvas (reproduced on the old build). Checked under Xvfb on wavkit: block → empty
+  place → project; inside `stream` → its group, a child, the empty place → `stream`; an opened frame →
+  its group, outside it → the project; the tree after a canvas selection; the chat's request mode.

@@ -364,6 +364,7 @@ class Ui {
   std::string bend_drag_label_;  // the handle pressed (the same id keeps it pressed)
   void load_bends();
   void save_bends();
+  std::string canvas_selected_;   // the selection the canvas shows (its own, or set from req_.selected)
   std::string hover_unit_;        // block under the mouse on the schema (last frame)
   std::string tree_hover_;        // block under the mouse in the tree (this frame)
   std::string hover_frame_;       // opened group whose path bar is under the mouse

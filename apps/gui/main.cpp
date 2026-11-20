@@ -304,8 +304,9 @@ int main(int argc, char** argv) {
       if (first_project) {
         if (open_settings) ui.open_settings();
         if (open_chat) ui.open_chat();
-        ui.request().scope = scope;
-        ui.request().selected = select;
+        ui.request().scope = scope == "root" ? "" : scope;
+        // Nothing selected: the block of the level shown (the project at the top).
+        ui.request().selected = select.empty() ? ui.request().scope : select;
         ui.request().all_levels = all_levels;
         if (open_proto) ui.open_prototype();
       }

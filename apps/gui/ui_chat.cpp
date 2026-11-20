@@ -175,10 +175,11 @@ void Ui::change_buttons(const Model* m, const std::string& c) {
 // --- scope of a message (ADR 0034) -------------------------------------------------------------
 
 void Ui::update_chat_scope(const Model& m) {
-  // The last block or ticket the user selected is what a message is about.
+  // The last block or ticket the user selected is what a message is about; the whole project when
+  // the project itself is selected (an empty place of the top level, the top level entered).
   if (req_.selected != scope_seen_block_) {
     scope_seen_block_ = req_.selected;
-    if (!req_.selected.empty()) chat_scope_ = {ChatScope::Kind::Block, req_.selected};
+    chat_scope_ = req_.selected.empty() ? ChatScope{} : ChatScope{ChatScope::Kind::Block, req_.selected};
   }
   if (req_.ticket != scope_seen_ticket_) {
     scope_seen_ticket_ = req_.ticket;
