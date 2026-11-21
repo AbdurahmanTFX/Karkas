@@ -1537,6 +1537,8 @@ void Ui::draw_schema_toolbar(const Model& m) {
   ImGui::SameLine(0, 4);
   if (ui::icon_button("tb_fit", Icon::Fit, tr("Fit to view"))) navigate_ = 1;
   ImGui::SameLine(0, 4);
+  arrange_buttons(m);
+  ImGui::SameLine(0, 4);
   if (ui::icon_button("tb_up", Icon::ArrowUp, tr("Up one level"), false) && !req_.scope.empty()) enter(core::parent_id(req_.scope));
   ImGui::SameLine(0, 4);
   // Prototype mode (ADR 0035): sketch ghost blocks and dependencies, then give them to the architect.
@@ -1561,6 +1563,44 @@ void Ui::draw_schema_toolbar(const Model& m) {
     ImGui::TextColored(rgb(241, 76, 76), "%s", path_error_.c_str());
   }
   draw_prototype_bar(m);
+}
+
+void Ui::arrange_buttons(const Model& m) {
+  const std::string view = m.req.scope.empty() ? "root" : m.req.scope;
+  if (arrange_undo_ && arrange_undo_->view != view) arrange_undo_.reset();  // another level: no way back
+  const bool nested = !m.nested.empty() || !req_.expanded.empty() || req_.all_levels;
+  ImGui::BeginDisabled(nested || m.graph.nodes.empty());
+  if (ui::icon_button("tb_arrange", Icon::Schema,
+                      nested ? tr("Close the groups opened in place first: arranging works on one level")
+                             : tr("Arrange this level: blocks in ranks along the lines, few crossings, and every line routed "
+                                  "between the blocks instead of over them (can be undone)"),
+                      false, tr("Arrange"))) {
+    arrange_request_ = true;
+  }
+  ImGui::EndDisabled();
+  if (arrange_undo_) {
+    ImGui::SameLine(0, 2);
+    if (ui::icon_button("tb_arrange_undo", Icon::Undo, tr("Put the blocks and lines back where they were before arranging"))) {
+      for (const auto& [key, pts] : arrange_undo_->bends) {
+        if (pts.empty()) {
+          bends_.erase(key);
+        } else {
+          bends_[key] = pts;
+        }
+        if (arrange_undo_->ortho.contains(key)) {
+          ortho_.insert(key);
+        } else {
+          ortho_.erase(key);
+        }
+      }
+      ++bends_version_;
+      save_bends();
+      w_.save_positions(view, arrange_undo_->manual);
+      relayout_ = true;
+      relayout_serial_ = m.serial;
+      arrange_undo_.reset();
+    }
+  }
 }
 
 void Ui::draw_file_header(const Model& m, const std::string& file) {

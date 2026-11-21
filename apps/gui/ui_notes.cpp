@@ -337,6 +337,8 @@ void Ui::notes_toolbar(const Model& m) {
   ImGui::SameLine(0, 4);
   if (ui::icon_button("tb_fit", Icon::Fit, tr("Fit to view"))) navigate_ = 1;
   ImGui::SameLine(0, 4);
+  arrange_buttons(m);
+  ImGui::SameLine(0, 4);
   if (ui::icon_button("tb_up", Icon::ArrowUp, tr("Up one level"), false) && !req_.scope.empty()) enter(core::parent_id(req_.scope));
   if (!path_error_.empty()) {
     ImGui::SameLine(0, 12);

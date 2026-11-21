@@ -239,3 +239,8 @@
 {"no image in the clipboard", "в буфере обмена нет картинки"},
 {"the file is not there", "файла нет"},
 {"drop files on a Markdown note: its open tab or the note selected", "перетаскивайте файлы на Markdown-заметку: её открытую вкладку или выделенную заметку"},
+{"Close the groups opened in place first: arranging works on one level", "Сначала закройте группы, открытые на месте: упорядочивание работает на одном уровне"},
+{"Arrange this level: blocks in ranks along the lines, few crossings, and every line routed between the blocks instead of over them (can be undone)", "Упорядочить уровень: блоки по слоям вдоль связей, минимум пересечений, каждая линия проложена между блоками, а не поверх них (можно вернуть как было)"},
+{"Arrange", "Упорядочить"},
+{"Put the blocks and lines back where they were before arranging", "Вернуть блоки и линии туда, где они были до упорядочивания"},
+{"Arrange blocks and lines", "Упорядочить блоки и линии"},

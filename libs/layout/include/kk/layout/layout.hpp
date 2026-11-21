@@ -19,6 +19,7 @@ struct Node {
   std::string id;
   double w = 160;  // size in pixels (computed from the text width by the caller)
   double h = 48;
+  double anchor = -1;  // where its lines attach, from its top (-1: the middle); lines are kept level there
 };
 
 struct Edge {
@@ -41,9 +42,10 @@ struct Point {
   double x = 0, y = 0;
 };
 
-// The path of a line between its two blocks (docs/adr/0042): the points it passes through, in the
-// layout's coordinates — across the column of every rank it passes over, between the blocks there.
-// Empty: the line joins neighbor ranks, a plain curve will do.
+// The path of a line between its two blocks (docs/adr/0042): the corners of an orthogonal path in the
+// layout's coordinates. It leaves its block level at the block's anchor, turns at its own track in each
+// gap between ranks, and crosses the column of every rank it passes over between the blocks there; the
+// first and the last corner are at the anchors' heights (a drawing moves them to its real attach points).
 struct Route {
   std::string from, to, kind;
   std::vector<Point> points;

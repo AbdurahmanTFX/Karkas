@@ -425,6 +425,7 @@ class Ui {
   // its ends, by the line's key; kept in .karkas/bends.json.
   std::map<std::string, std::vector<ImVec2>> bends_;
   std::uint64_t bends_version_ = 0;  // bumped on every change: the plan of lines is made again
+  std::set<std::string> ortho_;      // lines routed by "Arrange": drawn with right angles (ADR 0042)
   std::string bend_drag_key_;    // the line whose bend is dragged
   int bend_drag_index_ = -1;     // that bend
   std::string bend_drag_label_;  // the handle pressed (the same id keeps it pressed)
@@ -447,6 +448,17 @@ class Ui {
   std::uintptr_t hover_pin_ = 0;  // connection point under the mouse (last frame)
   bool relayout_ = false;  // "auto layout": re-apply positions from the next model
   std::uint64_t relayout_serial_ = 0;
+  // "Arrange" (ADR 0042): blocks laid out in ranks, every line routed between the blocks (its bends);
+  // one step back to how the level was.
+  bool arrange_request_ = false;
+  struct ArrangeUndo {
+    std::string view;
+    std::map<std::string, layout::Pos> manual;           // the level's positions before
+    std::map<std::string, std::vector<ImVec2>> bends;    // its lines' bends before (empty: straight)
+    std::set<std::string> ortho;                         // which of them were drawn with right angles
+  };
+  std::optional<ArrangeUndo> arrange_undo_;
+  void arrange_buttons(const Model& m);  // the toolbar's "Arrange" and its way back
   // dialogs
   std::string dialog_;  // "add_block", "add_port", "rename", "merge", "split"
   std::string target_;

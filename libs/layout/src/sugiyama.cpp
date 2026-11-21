@@ -193,26 +193,55 @@ Part layout_part(const Graph& g, const std::vector<int>& nodes, const std::vecto
     int lowest = *std::min_element(rank.begin(), rank.end());
     for (auto& r : rank) r -= lowest;
   }
-  // --- 3. Vertices: the blocks, and a dummy on every rank a line passes over.
+  // --- 3. Vertices: the blocks, and dummies where lines pass over ranks. Long lines are concentrated:
+  //        those of one block share a trunk of dummies (one way out of a block with many of them, one
+  //        way into a block that many of them reach), and leave it at their own rank.
   std::vector<Vertex> vs;
   for (int i = 0; i < k; ++i) {
     const auto& n = g.nodes[static_cast<std::size_t>(nodes[static_cast<std::size_t>(i)])];
     vs.push_back({nodes[static_cast<std::size_t>(i)], n.w, n.h, rank[static_cast<std::size_t>(i)], 0});
   }
-  Edges ledges;                                   // between adjacent ranks
-  std::vector<std::pair<int, std::vector<int>>> chains;  // structural edge → its dummies, from its DAG tail
+  Edges ledges;  // between adjacent ranks, each once
+  std::set<std::pair<int, int>> ledge_set;
+  struct Chain {
+    int e;                  // structural edge
+    std::vector<int> path;  // its vertices from its DAG tail to its head
+  };
+  std::vector<Chain> chains;
+  std::vector<int> long_out(static_cast<std::size_t>(k), 0), long_in(static_cast<std::size_t>(k), 0);
   for (const auto& d : dag) {
-    std::vector<int> chain;
-    int prev = d.u;
-    for (int r = rank[static_cast<std::size_t>(d.u)] + 1; r < rank[static_cast<std::size_t>(d.v)]; ++r) {
-      vs.push_back({-1, 0, 0, r, 0});
-      int id = static_cast<int>(vs.size()) - 1;
-      ledges.emplace_back(prev, id);
-      chain.push_back(id);
-      prev = id;
+    if (rank[static_cast<std::size_t>(d.v)] - rank[static_cast<std::size_t>(d.u)] < 2) continue;
+    ++long_out[static_cast<std::size_t>(d.u)];
+    ++long_in[static_cast<std::size_t>(d.v)];
+  }
+  std::map<int, std::map<int, int>> out_trunk, in_trunk;  // block → rank → dummy
+  std::vector<std::vector<int>> trunks;                   // the dummies of each trunk (straightened together)
+  std::map<std::pair<int, bool>, std::size_t> trunk_of;
+  for (const auto& d : dag) {
+    std::vector<int> path{d.u};
+    int ru = rank[static_cast<std::size_t>(d.u)];
+    int rv = rank[static_cast<std::size_t>(d.v)];
+    if (rv - ru >= 2) {
+      bool by_tail = long_out[static_cast<std::size_t>(d.u)] >= long_in[static_cast<std::size_t>(d.v)];
+      int owner = by_tail ? d.u : d.v;
+      auto& trunk = by_tail ? out_trunk[d.u] : in_trunk[d.v];
+      auto [ti, made] = trunk_of.try_emplace({owner, by_tail}, trunks.size());
+      if (made) trunks.emplace_back();
+      for (int r = ru + 1; r < rv; ++r) {
+        auto it = trunk.find(r);
+        if (it == trunk.end()) {
+          vs.push_back({-1, 0, 0, r, 0});
+          it = trunk.emplace(r, static_cast<int>(vs.size()) - 1).first;
+          trunks[ti->second].push_back(it->second);
+        }
+        path.push_back(it->second);
+      }
     }
-    ledges.emplace_back(prev, d.v);
-    chains.emplace_back(d.e, std::move(chain));
+    path.push_back(d.v);
+    for (std::size_t i = 0; i + 1 < path.size(); ++i) {
+      if (ledge_set.insert({path[i], path[i + 1]}).second) ledges.emplace_back(path[i], path[i + 1]);
+    }
+    chains.push_back({d.e, std::move(path)});
   }
   const auto nv = vs.size();
   int ranks = 0;
@@ -324,17 +353,16 @@ Part layout_part(const Graph& g, const std::vector<int>& nodes, const std::vecto
   }
   layer = best;
   renumber();
-  // --- 5. Coordinates. Ranks are columns (a gap that many lines cross is wider); inside a rank each
-  //        vertex wants the weighted mean of its neighbors (lines between dummies weigh most, so long
-  //        lines run straight), and the order with its gaps is kept: an isotonic regression per rank.
-  std::vector<double> rank_w(static_cast<std::size_t>(ranks), 10.0), rank_x(static_cast<std::size_t>(ranks), 0.0);
-  for (const auto& v : vs) rank_w[static_cast<std::size_t>(v.rank)] = std::max(rank_w[static_cast<std::size_t>(v.rank)], v.w);
-  for (int r = 1; r < ranks; ++r) {
-    std::size_t lines = 0;
-    for (int v : layer[static_cast<std::size_t>(r - 1)]) lines += down[static_cast<std::size_t>(v)].size();
-    double gap = g.rank_sep + std::min(90.0, 4.0 * static_cast<double>(lines > 4 ? lines - 4 : 0));
-    rank_x[static_cast<std::size_t>(r)] = rank_x[static_cast<std::size_t>(r - 1)] + rank_w[static_cast<std::size_t>(r - 1)] + gap;
+  // --- 5. Heights. Inside a rank each vertex wants the weighted mean of its neighbors' line points
+  //        (a block's lines attach at its anchor; lines between dummies weigh most, so long lines run
+  //        straight), and the order with its gaps is kept: an isotonic regression per rank.
+  std::vector<double> anchor(nv, 0.0);  // from a vertex's center to where its lines attach
+  for (std::size_t i = 0; i < nv; ++i) {
+    if (vs[i].node < 0) continue;
+    double a = g.nodes[static_cast<std::size_t>(vs[i].node)].anchor;
+    anchor[i] = (a >= 0 && a <= vs[i].h ? a : vs[i].h / 2) - vs[i].h / 2;
   }
+  auto port = [&](int v) { return vs[static_cast<std::size_t>(v)].y + anchor[static_cast<std::size_t>(v)]; };
   auto sep = [&](int a, int b) {
     bool da = vs[static_cast<std::size_t>(a)].node < 0;
     bool db = vs[static_cast<std::size_t>(b)].node < 0;
@@ -373,7 +401,7 @@ Part layout_part(const Graph& g, const std::vector<int>& nodes, const std::vecto
         for (int u : nb) {
           double ew = weight(v, u);
           sw += ew;
-          swy += ew * vs[static_cast<std::size_t>(u)].y;
+          swy += ew * (port(u) - anchor[static_cast<std::size_t>(v)]);
         }
       };
       if (use_up) add(up[static_cast<std::size_t>(v)]);
@@ -399,14 +427,82 @@ Part layout_part(const Graph& g, const std::vector<int>& nodes, const std::vecto
   // Long lines straight: the dummies of a line at one height (their mean), the blocks placed again
   // around them.
   for (int round = 0; round < 3; ++round) {
-    for (const auto& [e, chain] : chains) {
-      if (chain.empty()) continue;
+    for (const auto& t : trunks) {
+      if (t.empty()) continue;
       double mean = 0;
-      for (int id : chain) mean += vs[static_cast<std::size_t>(id)].y;
-      mean /= static_cast<double>(chain.size());
-      for (int id : chain) fixed[static_cast<std::size_t>(id)] = mean;
+      for (int id : t) mean += vs[static_cast<std::size_t>(id)].y;
+      mean /= static_cast<double>(t.size());
+      for (int id : t) fixed[static_cast<std::size_t>(id)] = mean;
     }
     for (int r = 0; r < ranks; ++r) place(r, true, true);
+  }
+  // --- 6. Orthogonal routes. Every piece between two ranks that changes height turns at its own track
+  //        in the gap (pieces a trunk shares turn once); tracks are ordered pair by pair to cross least,
+  //        a track is shared by pieces whose turns do not overlap, and a gap is as wide as its tracks need.
+  struct Turn {
+    std::size_t ledge;
+    double from, to;  // heights on the left and on the right of the gap
+    int track = -1;   // -1: level, no turn
+  };
+  std::vector<std::vector<Turn>> gaps(static_cast<std::size_t>(std::max(ranks - 1, 0)));
+  std::map<std::pair<int, int>, std::pair<std::size_t, std::size_t>> turn_of;  // ledge → gap, index
+  for (std::size_t li = 0; li < ledges.size(); ++li) {
+    auto [a, b] = ledges[li];
+    auto gi = static_cast<std::size_t>(vs[static_cast<std::size_t>(a)].rank);
+    turn_of[{a, b}] = {gi, gaps[gi].size()};
+    gaps[gi].push_back({li, port(a), port(b), -1});
+  }
+  constexpr double kTrack = 10;    // between tracks
+  constexpr double kMarginX = 26;  // from a column to its first track
+  std::vector<int> tracks(gaps.size(), 0);
+  for (std::size_t gi = 0; gi < gaps.size(); ++gi) {
+    auto& turns = gaps[gi];
+    std::vector<std::size_t> bent;
+    for (std::size_t i = 0; i < turns.size(); ++i) {
+      if (std::fabs(turns[i].from - turns[i].to) > 0.5) bent.push_back(i);
+    }
+    auto inside = [](double y, double a, double b) { return y > std::min(a, b) + 0.5 && y < std::max(a, b) - 0.5; };
+    // Crossings when turn a lies left of turn b: b's way in passes a's turn, a's way out passes b's.
+    auto cost = [&](const Turn& a, const Turn& b) { return (inside(b.from, a.from, a.to) ? 1 : 0) + (inside(a.to, b.from, b.to) ? 1 : 0); };
+    std::vector<int> before(bent.size(), 0);  // how many turns want to be left of this one
+    for (std::size_t i = 0; i < bent.size(); ++i) {
+      for (std::size_t j = i + 1; j < bent.size(); ++j) {
+        const auto& a = turns[bent[i]];
+        const auto& b = turns[bent[j]];
+        int ab = cost(a, b);
+        int ba = cost(b, a);
+        if (ab < ba) {
+          ++before[j];
+        } else if (ba < ab) {
+          ++before[i];
+        } else if (std::min(a.from, a.to) > std::min(b.from, b.to)) {  // a tie: the lower one later
+          ++before[i];
+        } else {
+          ++before[j];
+        }
+      }
+    }
+    std::vector<std::size_t> order(bent.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return before[a] < before[b]; });
+    for (std::size_t oi = 0; oi < order.size(); ++oi) {
+      auto& t = turns[bent[order[oi]]];
+      int track = 0;
+      for (std::size_t oj = 0; oj < oi; ++oj) {
+        const auto& u = turns[bent[order[oj]]];
+        bool overlap = std::min(t.from, t.to) < std::max(u.from, u.to) + 8 && std::min(u.from, u.to) < std::max(t.from, t.to) + 8;
+        if (overlap) track = std::max(track, u.track + 1);
+      }
+      t.track = track;
+      tracks[gi] = std::max(tracks[gi], track + 1);
+    }
+  }
+  std::vector<double> rank_w(static_cast<std::size_t>(ranks), 10.0), rank_x(static_cast<std::size_t>(ranks), 0.0);
+  std::vector<double> gap_w(gaps.size(), g.rank_sep);
+  for (const auto& v : vs) rank_w[static_cast<std::size_t>(v.rank)] = std::max(rank_w[static_cast<std::size_t>(v.rank)], v.w);
+  for (std::size_t gi = 0; gi < gaps.size(); ++gi) {
+    gap_w[gi] = std::max(g.rank_sep, 2 * kMarginX + std::max(0, tracks[gi] - 1) * kTrack);
+    rank_x[gi + 1] = rank_x[gi] + rank_w[gi] + gap_w[gi];
   }
   double top = 1e18;
   for (const auto& v : vs) top = std::min(top, v.y - v.h / 2);
@@ -418,17 +514,26 @@ Part layout_part(const Graph& g, const std::vector<int>& nodes, const std::vecto
     out.width = std::max(out.width, x + v.w);
     out.height = std::max(out.height, y + v.h);
   }
-  // --- 6. Routes: a line crosses the column of every rank it passes over between the blocks there.
-  for (const auto& [e, chain] : chains) {
+  auto turn_x = [&](std::size_t gi, const Turn& t) {
+    double gap_left = rank_x[gi] + rank_w[gi];
+    double span = std::max(0, tracks[gi] - 1) * kTrack;
+    return t.track < 0 ? gap_left + gap_w[gi] / 2 : gap_left + (gap_w[gi] - span) / 2 + t.track * kTrack;
+  };
+  for (const auto& c : chains) {
     std::vector<Point> pts;
-    for (int id : chain) {
-      const auto& v = vs[static_cast<std::size_t>(id)];
-      double y = v.y - top;
-      pts.push_back({rank_x[static_cast<std::size_t>(v.rank)], y});
-      pts.push_back({rank_x[static_cast<std::size_t>(v.rank)] + rank_w[static_cast<std::size_t>(v.rank)], y});
-      out.height = std::max(out.height, y);
+    auto add = [&](Point pt) {
+      if (!pts.empty() && std::fabs(pts.back().x - pt.x) < 0.01 && std::fabs(pts.back().y - pt.y) < 0.01) return;
+      pts.push_back(pt);
+      out.height = std::max(out.height, pt.y);
+    };
+    for (std::size_t i = 0; i + 1 < c.path.size(); ++i) {
+      auto [gi, ti] = turn_of[{c.path[i], c.path[i + 1]}];
+      const auto& t = gaps[gi][ti];
+      double x = turn_x(gi, t);
+      add({x, t.from - top});
+      add({x, t.to - top});
     }
-    out.chains[e] = std::move(pts);
+    out.chains[c.e] = std::move(pts);
   }
   return out;
 }
@@ -442,15 +547,14 @@ kk::Result<Layout> SugiyamaEngine::layout(const Graph& g) {
   if (n == 0) return out;
   std::map<std::string, int> idx;
   for (int i = 0; i < n; ++i) idx.emplace(g.nodes[static_cast<std::size_t>(i)].id, i);
-  // The lines, and one structural edge per pair of blocks: a pair linked both ways is one edge, from
-  // the block with more lines (a hub goes first).
+  // The lines, and one structural edge per pair of blocks: a pair linked both ways is one edge in the
+  // order of the blocks (notes that link back and forth read in their own order).
   struct Line {
     int u, v;
     std::string kind;
   };
   std::vector<Line> lines;
   std::map<std::pair<int, int>, std::pair<bool, bool>> pairs;  // (lo, hi) → lo→hi, hi→lo
-  std::vector<int> degree(static_cast<std::size_t>(n), 0);
   {
     std::set<std::tuple<int, int, std::string>> seen;
     for (const auto& e : g.edges) {
@@ -462,11 +566,7 @@ kk::Result<Layout> SugiyamaEngine::layout(const Graph& g) {
       auto key = std::minmax(a->second, b->second);
       auto& dir = pairs[{key.first, key.second}];
       bool forward = a->second < b->second;
-      if (!(forward ? dir.first : dir.second)) {
-        (forward ? dir.first : dir.second) = true;
-        ++degree[static_cast<std::size_t>(a->second)];
-        ++degree[static_cast<std::size_t>(b->second)];
-      }
+      (forward ? dir.first : dir.second) = true;
     }
   }
   std::vector<std::pair<int, int>> sedges;
@@ -475,7 +575,7 @@ kk::Result<Layout> SugiyamaEngine::layout(const Graph& g) {
     auto [lo, hi] = p;
     std::pair<int, int> e;
     if (dir.first && dir.second) {
-      e = degree[static_cast<std::size_t>(hi)] > degree[static_cast<std::size_t>(lo)] ? std::pair{hi, lo} : std::pair{lo, hi};
+      e = {lo, hi};
     } else {
       e = dir.first ? std::pair{lo, hi} : std::pair{hi, lo};
     }
@@ -571,8 +671,8 @@ kk::Result<Layout> SugiyamaEngine::layout(const Graph& g) {
       r.from = g.nodes[static_cast<std::size_t>(line.u)].id;
       r.to = g.nodes[static_cast<std::size_t>(line.v)].id;
       r.kind = line.kind;
-      double shift = (static_cast<double>(m) - static_cast<double>(members.size() - 1) / 2.0) * 6.0;
-      for (const auto& pt : chain) r.points.push_back({pt.x + offset[part].x, pt.y + offset[part].y + shift});
+      double shift = (static_cast<double>(m) - static_cast<double>(members.size() - 1) / 2.0) * 5.0;
+      for (const auto& pt : chain) r.points.push_back({pt.x + offset[part].x + shift, pt.y + offset[part].y + shift});
       if (line.u != dag_tail) std::reverse(r.points.begin(), r.points.end());
     }
   }

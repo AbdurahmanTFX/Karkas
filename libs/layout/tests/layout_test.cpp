@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <map>
 
 #include "kk/layout/layout.hpp"
@@ -134,22 +135,46 @@ bool inside(const layout::Point& p, const layout::Pos& at, const layout::Node& n
   return p.x > at.x + 1 && p.x < at.x + n.w - 1 && p.y > at.y + 1 && p.y < at.y + n.h - 1;
 }
 
-// Every route point lies outside every block, and a route's horizontal piece across a column
-// passes no block either.
+// A route is orthogonal (each piece level or upright), and none of its corners or pieces passes over a
+// block (the pieces to and from its own blocks attach at their sides).
 void check_routes_clear(const layout::Graph& g, layout::Layout& l) {
   for (const auto& r : l.routes) {
     for (std::size_t i = 0; i < r.points.size(); ++i) {
+      const auto& p = r.points[i];
+      if (i + 1 < r.points.size()) {
+        const auto& q = r.points[i + 1];
+        CHECK_MESSAGE((std::fabs(p.x - q.x) < 0.01 || std::fabs(p.y - q.y) < 0.01), r.from << "->" << r.to << " has a slanted piece");
+      }
       for (const auto& n : g.nodes) {
         const auto& at = l.pos[n.id];
-        CHECK_FALSE(inside(r.points[i], at, n));
-        if (i + 1 < r.points.size() && r.points[i].y == r.points[i + 1].y) {
-          double x0 = std::min(r.points[i].x, r.points[i + 1].x);
-          double x1 = std::max(r.points[i].x, r.points[i + 1].x);
-          bool through = r.points[i].y > at.y && r.points[i].y < at.y + n.h && x0 < at.x + n.w && at.x < x1;
-          CHECK_MESSAGE(!through, r.from << "->" << r.to << " passes over " << n.id);
-        }
+        CHECK_FALSE(inside(p, at, n));
+        if (i + 1 >= r.points.size()) continue;
+        const auto& q = r.points[i + 1];
+        double x0 = std::min(p.x, q.x);
+        double x1 = std::max(p.x, q.x);
+        double y0 = std::min(p.y, q.y);
+        double y1 = std::max(p.y, q.y);
+        bool through = x0 < at.x + n.w - 1 && at.x + 1 < x1 + 0.01 && y0 < at.y + n.h - 1 && at.y + 1 < y1 + 0.01 &&
+                       (x1 - x0 > 0.01 ? (y0 > at.y && y0 < at.y + n.h) : (x0 > at.x && x0 < at.x + n.w));
+        CHECK_MESSAGE(!through, r.from << "->" << r.to << " passes over " << n.id);
       }
     }
+  }
+}
+
+// A route between neighbor ranks turns only in the gap between its two blocks.
+void check_in_gap(layout::Layout& l, const layout::Graph& g, const layout::Route& r) {
+  auto width = [&](const std::string& id) {
+    for (const auto& n : g.nodes) {
+      if (n.id == id) return n.w;
+    }
+    return 0.0;
+  };
+  double left = std::min(l.pos[r.from].x + width(r.from), l.pos[r.to].x + width(r.to));
+  double right = std::max(l.pos[r.from].x, l.pos[r.to].x);
+  for (const auto& p : r.points) {
+    CHECK(p.x > left);
+    CHECK(p.x < right);
   }
 }
 
@@ -165,12 +190,17 @@ TEST_CASE("layout: a long line is routed straight between the blocks of the rank
   const layout::Route* ad = nullptr;
   for (const auto& r : l->routes) {
     if (r.from == "a" && r.to == "d") ad = &r;
-    if (r.from == "a" && r.to == "b") CHECK(r.points.empty());  // neighbor ranks: a plain curve
+    if (r.from == "a" && r.to == "b") {
+      CHECK(r.points.size() <= 2);  // neighbor ranks: at most one turn, in the gap between them
+      check_in_gap(*l, g, r);
+    }
   }
   REQUIRE(ad != nullptr);
-  REQUIRE(ad->points.size() == 4);  // across the columns of b and c
+  REQUIRE(ad->points.size() >= 3);  // across the columns of b and c
   CHECK(ad->points.front().x < ad->points.back().x);
-  CHECK(ad->points.front().y == doctest::Approx(ad->points.back().y));  // straight
+  for (std::size_t i = 1; i + 1 < ad->points.size(); ++i) {
+    CHECK(ad->points[i].y == doctest::Approx(ad->points[1].y));  // straight across the columns it passes
+  }
   check_routes_clear(g, *l);
   auto again = layout::SugiyamaEngine().layout(g);
   REQUIRE(again);
@@ -190,7 +220,7 @@ TEST_CASE("layout: the order inside ranks removes crossings that a plain order h
   CHECK(above("s", "r") == above("u", "t"));
 }
 
-TEST_CASE("layout: a hub linked both ways goes first, a pair both ways is one edge, no loops") {
+TEST_CASE("layout: a pair linked both ways is one edge in the order of the blocks, no loops") {
   layout::Graph g;
   g.nodes.push_back({"hub", 160, 48});
   g.nodes.push_back({"glossary", 160, 48});
@@ -208,7 +238,11 @@ TEST_CASE("layout: a hub linked both ways goes first, a pair both ways is one ed
     CHECK(l->pos["hub"].x < l->pos[id].x);
     CHECK(l->pos[id].x < l->pos["glossary"].x);
   }
-  for (const auto& r : l->routes) CHECK(r.points.empty());  // every line joins neighbor ranks
+  for (const auto& r : l->routes) {  // every line joins neighbor ranks: it turns in the gap between them
+    CHECK(r.points.size() <= 2);
+    check_in_gap(*l, g, r);
+  }
+  check_routes_clear(g, *l);
   for (std::size_t i = 0; i < g.nodes.size(); ++i) {
     for (std::size_t j = i + 1; j < g.nodes.size(); ++j) {
       CHECK_FALSE(overlap(l->pos[g.nodes[i].id], g.nodes[i], l->pos[g.nodes[j].id], g.nodes[j]));
@@ -228,7 +262,7 @@ TEST_CASE("layout: a line against the flow is routed back between the blocks, si
     if (r.from == "d") back = &r;
   }
   REQUIRE(back != nullptr);
-  REQUIRE(back->points.size() == 4);
+  REQUIRE(back->points.size() >= 2);
   CHECK(back->points.front().x > back->points.back().x);  // from d on the right back to a on the left
   check_routes_clear(g, *l);
   double lone_top = 1e9;
@@ -245,4 +279,54 @@ TEST_CASE("layout: a line against the flow is routed back between the blocks, si
       CHECK_FALSE(overlap(l->pos[g.nodes[i].id], g.nodes[i], l->pos[g.nodes[j].id], g.nodes[j]));
     }
   }
+}
+
+TEST_CASE("layout: a fan of lines turns on tracks of its own and the lines do not cross each other") {
+  layout::Graph g;
+  g.nodes.push_back({"src", 140, 200, 20});  // tall, lines attach near its top
+  for (const char* id : {"t1", "t2", "t3", "t4"}) g.nodes.push_back({id, 120, 60});
+  for (const char* id : {"t1", "t2", "t3", "t4"}) g.edges.push_back({"src", id, "call"});
+  auto l = layout::SugiyamaEngine().layout(g);
+  REQUIRE(l);
+  check_routes_clear(g, *l);
+  // Upright pieces: on different tracks where their heights overlap.
+  struct Up {
+    double x, y0, y1;
+    std::string to;
+  };
+  std::vector<Up> ups;
+  for (const auto& r : l->routes) {
+    for (std::size_t i = 0; i + 1 < r.points.size(); ++i) {
+      const auto& p = r.points[i];
+      const auto& q = r.points[i + 1];
+      if (std::fabs(p.x - q.x) < 0.01 && std::fabs(p.y - q.y) > 0.5) ups.push_back({p.x, std::min(p.y, q.y), std::max(p.y, q.y), r.to});
+    }
+  }
+  for (std::size_t i = 0; i < ups.size(); ++i) {
+    for (std::size_t j = i + 1; j < ups.size(); ++j) {
+      bool overlap = ups[i].y0 < ups[j].y1 && ups[j].y0 < ups[i].y1;
+      if (overlap) CHECK(std::fabs(ups[i].x - ups[j].x) > 5);
+    }
+  }
+  // No line's level piece crosses another line's upright piece (the fan shares only its start).
+  int crossings = 0;
+  for (const auto& a : l->routes) {
+    for (const auto& b : l->routes) {
+      if (&a == &b) continue;
+      for (std::size_t i = 0; i + 1 < a.points.size(); ++i) {
+        const auto& p = a.points[i];
+        const auto& q = a.points[i + 1];
+        if (std::fabs(p.y - q.y) > 0.01) continue;  // level pieces of a
+        for (std::size_t j = 0; j + 1 < b.points.size(); ++j) {
+          const auto& s = b.points[j];
+          const auto& t = b.points[j + 1];
+          if (std::fabs(s.x - t.x) > 0.01) continue;  // upright pieces of b
+          bool hx = s.x > std::min(p.x, q.x) + 0.5 && s.x < std::max(p.x, q.x) - 0.5;
+          bool hy = p.y > std::min(s.y, t.y) + 0.5 && p.y < std::max(s.y, t.y) - 0.5;
+          if (hx && hy) ++crossings;
+        }
+      }
+    }
+  }
+  CHECK(crossings == 0);
 }

@@ -1539,13 +1539,82 @@ void Ui::draw_graph(const Model& m) {
       out.push_back({p0, c1, c2, p3});
     }
   };
+  // A line routed by "Arrange" (ADR 0042): level and upright pieces with rounded corners, its first and
+  // last piece level at its sockets. False when its corners are no longer at right angles (a block was
+  // moved alone): it is then drawn as a smooth curve through them.
+  auto ortho_path = [&](const std::vector<ImVec2>& q, std::vector<Seg>& out) {
+    out.clear();
+    if (q.size() < 3) return false;
+    const ImVec2 a = q.front();
+    const ImVec2 b = q.back();
+    std::vector<ImVec2> c(q.begin() + 1, q.end() - 1);
+    if (c.size() == 1) {
+      c = {ImVec2(c[0].x, a.y), ImVec2(c[0].x, b.y)};
+    } else {
+      c.front().y = a.y;
+      c.back().y = b.y;
+    }
+    std::vector<ImVec2> pts{a};
+    for (const auto& p : c) pts.push_back(p);
+    pts.push_back(b);
+    const float tol = 0.75f;
+    for (std::size_t i = 1; i + 2 < pts.size(); ++i) {
+      if (std::fabs(pts[i].x - pts[i + 1].x) > tol && std::fabs(pts[i].y - pts[i + 1].y) > tol) return false;
+    }
+    std::vector<ImVec2> clean;  // no repeated points, no corner on a straight piece
+    for (const auto& p : pts) {
+      if (!clean.empty() && std::fabs(clean.back().x - p.x) < 0.01f && std::fabs(clean.back().y - p.y) < 0.01f) continue;
+      if (clean.size() >= 2) {
+        ImVec2 u = clean[clean.size() - 2];
+        ImVec2 v = clean.back();
+        if ((std::fabs(u.x - v.x) < 0.01f && std::fabs(v.x - p.x) < 0.01f) || (std::fabs(u.y - v.y) < 0.01f && std::fabs(v.y - p.y) < 0.01f)) {
+          clean.back() = p;
+          continue;
+        }
+      }
+      clean.push_back(p);
+    }
+    auto line = [&](ImVec2 s, ImVec2 e) {
+      float len = std::hypot(e.x - s.x, e.y - s.y);
+      int n = std::max(1, static_cast<int>(std::ceil(len / 60.0f)));  // pieces of about equal length (for the flow arrows)
+      for (int k = 0; k < n; ++k) {
+        float t0 = static_cast<float>(k) / static_cast<float>(n);
+        float t1 = static_cast<float>(k + 1) / static_cast<float>(n);
+        ImVec2 p0(s.x + (e.x - s.x) * t0, s.y + (e.y - s.y) * t0);
+        ImVec2 p3(s.x + (e.x - s.x) * t1, s.y + (e.y - s.y) * t1);
+        out.push_back({p0, ImVec2(p0.x + (p3.x - p0.x) / 3, p0.y + (p3.y - p0.y) / 3), ImVec2(p0.x + (p3.x - p0.x) * 2 / 3, p0.y + (p3.y - p0.y) * 2 / 3), p3});
+      }
+    };
+    ImVec2 cur = clean.front();
+    for (std::size_t i = 1; i + 1 < clean.size(); ++i) {
+      ImVec2 p = clean[i];
+      ImVec2 din(p.x - clean[i - 1].x, p.y - clean[i - 1].y);
+      ImVec2 dout(clean[i + 1].x - p.x, clean[i + 1].y - p.y);
+      float lin = std::hypot(din.x, din.y);
+      float lout = std::hypot(dout.x, dout.y);
+      if (lin < 0.01f || lout < 0.01f) continue;
+      din = ImVec2(din.x / lin, din.y / lin);
+      dout = ImVec2(dout.x / lout, dout.y / lout);
+      float r = std::min({10.0f, lin / 2, lout / 2});
+      ImVec2 s0(p.x - din.x * r, p.y - din.y * r);
+      ImVec2 s1(p.x + dout.x * r, p.y + dout.y * r);
+      line(cur, s0);
+      constexpr float kKappa = 0.5523f;  // a quarter circle as a cubic
+      out.push_back({s0, ImVec2(s0.x + din.x * r * kKappa, s0.y + din.y * r * kKappa), ImVec2(s1.x - dout.x * r * kKappa, s1.y - dout.y * r * kKappa), s1});
+      cur = s1;
+    }
+    line(cur, clean.back());
+    return true;
+  };
   std::vector<std::vector<Seg>> geo(drawn.size());
   {
     std::vector<ImVec2> q;
     ImVec2 da;
     ImVec2 db;
     for (std::size_t i = 0; i < drawn.size(); ++i) {
-      if (line_points(drawn[i], q, da, db)) spline(q, da, db, geo[i]);
+      if (!line_points(drawn[i], q, da, db)) continue;
+      bool square = drawn[i].bent && ortho_.contains(planned[drawn[i].pi].key) && ortho_path(q, geo[i]);
+      if (!square) spline(q, da, db, geo[i]);
     }
   }
   // The line under the mouse (~7 px on screen) — or the one whose bend is dragged.
@@ -1685,6 +1754,7 @@ void Ui::draw_graph(const Model& m) {
               handle_tip = tr("Drag to move the bend; a double click removes it");
             }
             if (ImGui::IsItemActivated()) {
+              if (ortho_.erase(key) > 0) ++bends_version_;  // moved by hand: a free line from now on
               if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                 remove = static_cast<int>(k);
               } else {
@@ -1702,7 +1772,7 @@ void Ui::draw_graph(const Model& m) {
           if (pts.empty()) bends_.erase(key);
           ++bends_version_;
           save_bends();
-        } else {
+        } else if (!ortho_.contains(key)) {  // a routed line: its corners are its handles
           const auto& segs = geo[static_cast<std::size_t>(hover_line)];
           for (std::size_t j = 0; j < segs.size(); ++j) {
             ImVec2 c = at(segs[j].data(), 0.5f);
@@ -2007,6 +2077,7 @@ void Ui::draw_graph(const Model& m) {
       ImGui::Separator();
       if (bends_.contains(menu_line_key_) && ImGui::MenuItem(with_icon(Icon::Undo, tr("Straighten the line")).c_str())) {
         bends_.erase(menu_line_key_);
+        ortho_.erase(menu_line_key_);
         ++bends_version_;
         save_bends();
       }
@@ -2113,11 +2184,15 @@ void Ui::draw_graph(const Model& m) {
       target_ = scope;
     }
     if (ImGui::MenuItem(with_icon(Icon::Fit, tr("Fit to view")).c_str())) navigate_ = 1;
+    if (!nested && ImGui::MenuItem(with_icon(Icon::Schema, tr("Arrange blocks and lines")).c_str())) arrange_request_ = true;
     if (ImGui::MenuItem(with_icon(Icon::Schema, tr("Auto layout (reset positions and sizes)")).c_str())) auto_layout = true;
     if (std::any_of(drawn.begin(), drawn.end(), [](const Drawn& d) { return d.bent; }) &&
         ImGui::MenuItem(with_icon(Icon::Undo, tr("Straighten every line of this level")).c_str())) {
       for (const auto& d : drawn) {
-        if (d.bent) bends_.erase(planned[d.pi].key);
+        if (d.bent) {
+          bends_.erase(planned[d.pi].key);
+          ortho_.erase(planned[d.pi].key);
+        }
       }
       ++bends_version_;
       save_bends();
@@ -2219,6 +2294,69 @@ void Ui::draw_graph(const Model& m) {
   }
   if (moved || resize_done) save_view(m);
   if (reset_one) save_view(m, false, target_);
+  // "Arrange" (ADR 0042): the built-in layered layout with routes; the blocks get its positions (their
+  // sizes stay), every line of the level the bends of its route (straight when it joins neighbor ranks).
+  if (arrange_request_) {
+    arrange_request_ = false;
+    if (!nested && !m.graph.nodes.empty()) {
+      layout::Graph g = m.graph;
+      const double title_line = kPadY + ImGui::GetTextLineHeight() * 0.5;  // block points sit on the title line
+      for (auto& n : g.nodes) {  // the sizes the blocks have now
+        if (auto it = boxes.find(n.id); it != boxes.end()) {
+          n.w = it->second.b.x - it->second.a.x;
+          n.h = it->second.b.y - it->second.a.y;
+        }
+        n.anchor = std::min(title_line, n.h / 2);
+      }
+      g.node_sep = std::max(g.node_sep, 40.0);
+      g.rank_sep = std::max(g.rank_sep, 120.0);
+      if (auto l = layout::SugiyamaEngine().layout(g)) {
+        ArrangeUndo undo{view, m.manual, {}};
+        for (const auto& p : planned) {
+          if (p.key.empty()) continue;
+          auto it = bends_.find(p.key);
+          undo.bends[p.key] = it == bends_.end() ? std::vector<ImVec2>{} : it->second;
+          if (ortho_.contains(p.key)) undo.ortho.insert(p.key);
+        }
+        std::map<std::string, layout::Pos> pos;
+        std::map<std::string, ImVec2> center;
+        for (const auto& n : g.nodes) {
+          auto spot = l->pos[n.id];
+          layout::Pos mp{spot.x, spot.y};
+          if (auto mt = m.manual.find(n.id); mt != m.manual.end()) {
+            mp.w = mt->second.w;
+            mp.h = mt->second.h;
+          }
+          pos[n.id] = mp;
+          center[n.id] = ImVec2(static_cast<float>(spot.x + n.w / 2), static_cast<float>(spot.y + n.h / 2));
+        }
+        std::map<std::tuple<std::string, std::string, std::string>, const layout::Route*> route_of;
+        for (const auto& r : l->routes) route_of[{r.from, r.to, r.kind}] = &r;
+        for (const auto& p : planned) {
+          if (p.key.empty() || p.ghost_link != nullptr) continue;
+          auto it = route_of.find({p.a, p.b, p.kind});
+          if (it == route_of.end() || it->second->points.empty() || !center.contains(p.a) || !center.contains(p.b)) {
+            bends_.erase(p.key);
+            ortho_.erase(p.key);
+            continue;
+          }
+          ortho_.insert(p.key);
+          std::vector<ImVec2> rel;
+          for (const auto& pt : it->second->points) {
+            rel.push_back(bend_rel(center[p.a], center[p.b], ImVec2(static_cast<float>(pt.x), static_cast<float>(pt.y))));
+          }
+          bends_[p.key] = std::move(rel);
+        }
+        ++bends_version_;
+        save_bends();
+        arrange_undo_ = std::move(undo);
+        w_.save_positions(view, pos);
+        relayout_ = true;
+        relayout_serial_ = m.serial;
+        navigate_ = 4;
+      }
+    }
+  }
   if (auto_layout) {
     for (const auto& n : m.graph.nodes) sizes_[n.id] = {0, 0};
     sizes_serial_ = m.serial;
@@ -2241,8 +2379,14 @@ void Ui::load_bends() {
   if (!in) return;
   auto j = nlohmann::json::parse(in, nullptr, false);
   if (!j.is_object()) return;
+  ortho_.clear();
+  if (auto o = j.find("#ortho"); o != j.end() && o->is_array()) {  // lines routed by "Arrange" (ADR 0042)
+    for (const auto& k : *o) {
+      if (k.is_string()) ortho_.insert(k.get<std::string>());
+    }
+  }
   for (const auto& [key, v] : j.items()) {
-    if (!v.is_array()) continue;
+    if (!v.is_array() || key == "#ortho") continue;
     std::vector<ImVec2> pts;
     for (const auto& p : v) {
       if (p.is_array() && p.size() == 2 && p[0].is_number() && p[1].is_number()) pts.emplace_back(p[0].get<float>(), p[1].get<float>());
@@ -2261,6 +2405,11 @@ void Ui::save_bends() {
     }
     j[key] = std::move(a);
   }
+  auto routed = nlohmann::json::array();
+  for (const auto& key : ortho_) {
+    if (bends_.contains(key)) routed.push_back(key);
+  }
+  if (!routed.empty()) j["#ortho"] = std::move(routed);
   std::error_code ec;
   auto dir = root_ / ".karkas";
   std::filesystem::create_directories(dir, ec);
