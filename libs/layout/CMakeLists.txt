@@ -1,5 +1,5 @@
 kk_add_library(layout
-  SOURCES src/sugiyama.cpp src/graphviz.cpp src/layout.cpp
+  SOURCES src/sugiyama.cpp src/graphviz.cpp src/layout.cpp src/route.cpp
   PUBLIC_DEPS kk_core kk_index
   PRIVATE_DEPS nlohmann_json::nlohmann_json)
 if(GRAPHVIZ_FOUND)

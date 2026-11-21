@@ -811,10 +811,10 @@ void Ui::draw_graph(const Model& m) {
     if (kind == "data" || kind == "event") {
       Planned p{kind, a, b, sp, dp, leaf_a, leaf_b, 'R', 'L', {}, gl, {}, {}, {}, {}, {}, 0, {}};
       if (row != nullptr) p.rows.push_back(row);
-      auto [sa, sb] = side_pair(a, b, false);
+      auto [sa, sb] = side_pair(a, b, nested);  // nested: sockets on the sides, where the gaps between ranks are
       ImVec2 first;
       ImVec2 last;
-      bool bent = row != nullptr &&
+      bool bent = row != nullptr && !nested &&  // the nested view is a picture of its own: no bends of a level there
                   bend_ends(kind + "|" + a + "|" + b + "|" + row->src_block + ":" + row->src_port + ">" + row->dst_block + ":" + row->dst_port, a,
                             b, &first, &last);
       if (bent) {
@@ -837,17 +837,17 @@ void Ui::draw_graph(const Model& m) {
       return;
     }
     if (gl != nullptr) {
-      auto [sa, sb] = side_pair(a, b, false);
+      auto [sa, sb] = side_pair(a, b, nested);  // nested: sockets on the sides, where the gaps between ranks are
       planned.push_back(Planned{kind, a, b, "", "", false, false, sa, sb, {}, gl, {}, {}, {}, {}, {}, 0, {}});
       return;
     }
     auto key = std::make_tuple(a, b, kind);
     auto it = bundle_at.find(key);
     if (it == bundle_at.end()) {
-      auto [sa, sb] = side_pair(a, b, false);
+      auto [sa, sb] = side_pair(a, b, nested);  // nested: sockets on the sides, where the gaps between ranks are
       ImVec2 first;
       ImVec2 last;
-      if (bend_ends(kind + "|" + a + "|" + b, a, b, &first, &last)) {
+      if (!nested && bend_ends(kind + "|" + a + "|" + b, a, b, &first, &last)) {
         sa = side_toward(a, first, false);
         sb = side_toward(b, last, false);
       }
@@ -1484,8 +1484,8 @@ void Ui::draw_graph(const Model& m) {
         }
       }
     }
-    bool bent = bends_.contains(p.key);
-    bool own = bent || settings_.square_lines;
+    bool bent = !nested && bends_.contains(p.key);
+    bool own = bent || settings_.square_lines || nested;  // nested: routed around the blocks (ADR 0044)
     if (!own) ed::Link(lid, from, to, c, t);
     drawn.push_back({from, to, c, t, dimming && lit_pair(p.a, p.b), pi, bent, own});
   }
@@ -1679,6 +1679,51 @@ void Ui::draw_graph(const Model& m) {
     rounded(pts, out);
     return !out.empty();
   };
+  // "All levels" and groups opened in place (ADR 0044): no layered route exists in that picture, so every
+  // line is routed around the blocks, between its real sockets; again when the picture changes (not while
+  // the mouse holds something).
+  if (nested) {
+    std::size_t rsig = 0x51ed;
+    auto mixf = [&](float v) {
+      rsig ^= std::hash<long long>{}(std::llround(static_cast<double>(v) * 4.0)) + 0x9e3779b97f4a7c15ULL + (rsig << 6) + (rsig >> 2);
+    };
+    for (const auto& d : drawn) {
+      auto fa = sockets.find(d.from);
+      auto tb = sockets.find(d.to);
+      if (fa == sockets.end() || tb == sockets.end()) continue;
+      for (float v : {fa->second.c.x, fa->second.c.y, fa->second.dir.x, fa->second.dir.y, tb->second.c.x, tb->second.c.y, tb->second.dir.x, tb->second.dir.y}) mixf(v);
+    }
+    for (const auto& [id, bx] : boxes) {
+      for (float v : {bx.a.x, bx.a.y, bx.b.x, bx.b.y}) mixf(v);
+    }
+    if (rsig != nested_routes_sig_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      nested_routes_sig_ = rsig;
+      nested_routes_.clear();
+      std::vector<layout::Rect> blocks;
+      for (const auto& [id, bx] : boxes) blocks.push_back({bx.a.x, bx.a.y, bx.b.x, bx.b.y});
+      std::vector<layout::Rect> frames;
+      for (const auto& nb : m.nested) {
+        if (nb.group) frames.push_back({nb.x, nb.y, nb.x + nb.w, nb.y + nb.h});
+      }
+      auto side_of = [](ImVec2 d) { return std::fabs(d.x) >= std::fabs(d.y) ? (d.x > 0 ? 'R' : 'L') : (d.y > 0 ? 'B' : 'T'); };
+      std::vector<layout::Wire> wires;
+      std::vector<std::string> keys;
+      for (const auto& d : drawn) {
+        auto fa = sockets.find(d.from);
+        auto tb = sockets.find(d.to);
+        if (fa == sockets.end() || tb == sockets.end()) continue;
+        wires.push_back({{{fa->second.c.x, fa->second.c.y}, side_of(fa->second.dir)}, {{tb->second.c.x, tb->second.c.y}, side_of(tb->second.dir)}});
+        keys.push_back(planned[d.pi].key);
+      }
+      auto routes = layout::route_around(blocks, frames, wires);
+      for (std::size_t i = 0; i < routes.size(); ++i) {
+        if (routes[i].empty()) continue;
+        std::vector<ImVec2> pts;
+        for (const auto& pt : routes[i]) pts.emplace_back(static_cast<float>(pt.x), static_cast<float>(pt.y));
+        nested_routes_[keys[i]] = std::move(pts);
+      }
+    }
+  }
   std::vector<std::vector<Seg>> geo(drawn.size());
   std::vector<Mids> mids(drawn.size());  // the "+" handles of each line
   {
@@ -1687,6 +1732,16 @@ void Ui::draw_graph(const Model& m) {
     ImVec2 db;
     for (std::size_t i = 0; i < drawn.size(); ++i) {
       if (!line_points(drawn[i], q, da, db)) continue;
+      if (nested) {  // its route, when it still starts and ends at the sockets
+        auto it = nested_routes_.find(planned[drawn[i].pi].key);
+        if (it != nested_routes_.end() && std::hypot(it->second.front().x - q.front().x, it->second.front().y - q.front().y) < 1.0f &&
+            std::hypot(it->second.back().x - q.back().x, it->second.back().y - q.back().y) < 1.0f) {
+          rounded(it->second, geo[i]);
+          if (!geo[i].empty()) continue;
+        }
+        Mids none;  // no way around found (yet): right angles all the same
+        if (square_path(q, da, db, geo[i], none)) continue;
+      }
       bool routed = drawn[i].bent && ortho_.contains(planned[drawn[i].pi].key) && ortho_path(q, geo[i]);
       if (routed) continue;  // its corners are its handles
       if (settings_.square_lines && square_path(q, da, db, geo[i], mids[i])) continue;
@@ -1778,7 +1833,7 @@ void Ui::draw_graph(const Model& m) {
   // each piece (drag bends the line there). A pressed handle holds the mouse: the editor neither
   // pans nor selects meanwhile; the same id each frame keeps the dragged one pressed.
   std::string handle_tip;
-  if (hover_line >= 0) {
+  if (hover_line >= 0 && !nested) {  // the nested view is temporary: its lines are not bent by hand
     const auto& d = drawn[static_cast<std::size_t>(hover_line)];
     const std::string& key = planned[d.pi].key;
     std::vector<ImVec2> q;

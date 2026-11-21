@@ -69,6 +69,63 @@ void add_edges(const index::Snapshot& snap, const std::string& scope, bool show_
   }
 }
 
+// A layered picture much wider than high (a long chain of ranks) wrapped like text: its columns cut into
+// rows stacked one under the other, so the whole is near `target` (width / height). Only for pictures
+// whose lines are routed afterwards around the blocks (the nested view, docs/adr/0044).
+void wrap_wide(Layout& l, const Graph& g, double target) {
+  if (g.nodes.size() < 3 || l.width <= 0 || l.height <= 0 || l.width / l.height <= target * 1.8) return;
+  struct Col {
+    double x0, x1;
+    std::vector<std::size_t> nodes;
+  };
+  std::vector<std::size_t> order(g.nodes.size());
+  for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+  std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return l.pos[g.nodes[a].id].x < l.pos[g.nodes[b].id].x; });
+  std::vector<Col> cols;  // nodes whose x ranges overlap are one column (a rank)
+  for (auto i : order) {
+    double x0 = l.pos[g.nodes[i].id].x;
+    double x1 = x0 + g.nodes[i].w;
+    if (!cols.empty() && x0 < cols.back().x1) {
+      cols.back().x1 = std::max(cols.back().x1, x1);
+      cols.back().nodes.push_back(i);
+    } else {
+      cols.push_back({x0, x1, {i}});
+    }
+  }
+  if (cols.size() < 2) return;
+  int rows = std::clamp(static_cast<int>(std::lround(std::sqrt(l.width / l.height / target))), 2, static_cast<int>(cols.size()));
+  const double left = cols.front().x0;
+  const double band = (cols.back().x1 - left) / rows;
+  double y_off = 20;
+  double width = 0;
+  std::size_t c = 0;
+  for (int r = 0; r < rows && c < cols.size(); ++r) {
+    std::size_t first = c;
+    double start = cols[first].x0;
+    while (c < cols.size() && (c == first || cols[c].x1 - start <= band * 1.15 || r == rows - 1)) ++c;
+    double top = 1e18;
+    double bottom = -1e18;
+    for (std::size_t k = first; k < c; ++k) {
+      for (auto i : cols[k].nodes) {
+        top = std::min(top, l.pos[g.nodes[i].id].y);
+        bottom = std::max(bottom, l.pos[g.nodes[i].id].y + g.nodes[i].h);
+      }
+    }
+    for (std::size_t k = first; k < c; ++k) {
+      for (auto i : cols[k].nodes) {
+        auto& p = l.pos[g.nodes[i].id];
+        p.x = p.x - start + 20;
+        p.y = p.y - top + y_off;
+        width = std::max(width, p.x + g.nodes[i].w + 20);
+      }
+    }
+    y_off += bottom - top + g.rank_sep;
+  }
+  l.width = width;
+  l.height = y_off - g.rank_sep + 20;
+  l.routes.clear();  // the layered routes no longer fit
+}
+
 }  // namespace
 
 Graph level_graph(const index::Snapshot& snap, const std::string& scope_in, bool show_use, const Measure& measure) {
@@ -107,6 +164,7 @@ std::vector<Box> layout_nested(const index::Snapshot& snap, const std::string& s
     add_edges(snap, scope, show_use, ids, g);
     auto l = engine.layout(g);
     if (!l) l = SugiyamaEngine().layout(g);
+    wrap_wide(*l, g, 1.6);  // its lines are routed around the blocks afterwards (docs/adr/0044)
     std::vector<Box> out;
     for (const auto& n : g.nodes) {
       auto p = l->pos[n.id];

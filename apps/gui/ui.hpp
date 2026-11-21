@@ -426,6 +426,8 @@ class Ui {
   std::map<std::string, std::vector<ImVec2>> bends_;
   std::uint64_t bends_version_ = 0;  // bumped on every change: the plan of lines is made again
   std::set<std::string> ortho_;      // lines routed by "Arrange": drawn with right angles (ADR 0042)
+  std::map<std::string, std::vector<ImVec2>> nested_routes_;  // the nested view's lines around its blocks (ADR 0044)
+  std::size_t nested_routes_sig_ = 0;                          // of the picture they were made for
   std::string bend_drag_key_;    // the line whose bend is dragged
   int bend_drag_index_ = -1;     // that bend
   std::string bend_drag_label_;  // the handle pressed (the same id keeps it pressed)

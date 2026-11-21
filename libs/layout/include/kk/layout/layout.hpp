@@ -76,6 +76,31 @@ class SugiyamaEngine final : public ILayoutEngine {
   [[nodiscard]] std::string name() const override { return "sugiyama"; }
 };
 
+// Orthogonal lines around blocks in a fixed picture (docs/adr/0044) — the "all levels" view. A line goes
+// from a socket on a block's side to another; it keeps `margin` from every block, prefers few turns and
+// the middle of gaps, pays for crossing a frame's border and for pieces other lines took; pieces of
+// several lines on one line are spread `spacing` apart where the blocks leave room.
+struct Rect {
+  double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+struct Port {
+  Point at;
+  char side = 'R';  // the side of its block it leaves from: L, R, T, B
+};
+struct Wire {
+  Port from, to;
+};
+struct RouteOptions {
+  double margin = 16;
+  double spacing = 10;
+  double bend = 40;    // a turn costs as much as this many pixels of length
+  double frame = 120;  // crossing a frame's border
+  double shared = 0.6; // per line that took a piece already, times its length
+};
+// The polyline of each wire from its socket to the other (both included); empty when no way was found.
+std::vector<std::vector<Point>> route_around(const std::vector<Rect>& blocks, const std::vector<Rect>& frames, const std::vector<Wire>& wires,
+                                            const RouteOptions& opt = {});
+
 // Graphviz dot through cgraph/gvc; nullptr when Karkas was built without Graphviz.
 std::unique_ptr<ILayoutEngine> make_graphviz_engine();
 // Graphviz if available, else Sugiyama.
