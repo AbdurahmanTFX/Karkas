@@ -62,6 +62,7 @@ if(NOT WIN32)
 endif()
 foreach(c gui cli)
   install(FILES "${PROJECT_SOURCE_DIR}/packaging/README-${c}.txt" DESTINATION . RENAME README.txt COMPONENT ${c} EXCLUDE_FROM_ALL)
+  install(FILES "${PROJECT_SOURCE_DIR}/LICENSE" DESTINATION . COMPONENT ${c} EXCLUDE_FROM_ALL)  # GNU AGPL-3.0
 endforeach()
 
 # `packages`: each component installed into a folder named like its archive, then archived

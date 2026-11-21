@@ -9,3 +9,5 @@ Linux
 
 Windows
   karkas.exe --help (from a terminal).
+
+https://github.com/AbdurahmanTFX/Karkas · License: GNU AGPL-3.0 (LICENSE)

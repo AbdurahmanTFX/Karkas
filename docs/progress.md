@@ -790,3 +790,11 @@
 - kk/core/platform.hpp and kk/core/win_process.hpp; Windows branches for child processes (chat, Run tab, launcher,
   MCP engines, karkas run/gui), the file watcher (ReadDirectoryChangesW per folder), clipboard images, folders.
 - Tests: Linux 428; under wine core, layout, llm, metrics, mcp, runner, gui all pass (see the ADR for the rest).
+
+## GitHub: README, media, release v0.1.0
+
+- README.md (English) and README.ru.md, screenshots and a demo (docs/media), .gitignore; LICENSE (AGPL-3.0, from
+  the repository on GitHub) in both packages.
+- karkas-gui for recorded demos: `--show` (the check's window shown, the scripted pointer drawn), `--record out|-`
+  (every frame of the script as raw RGB, the interface's clock 1/25 s per frame, for ffmpeg), `--max-seconds`,
+  and `glide X Y N` in scripts (the pointer moves there over N frames).

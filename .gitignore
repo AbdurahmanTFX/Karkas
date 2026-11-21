@@ -1,13 +1,34 @@
+# --- builds ---------------------------------------------------------------------------------------
+# every preset builds into build/<preset> (dev, release, package-linux, windows, package-windows...)
 /build/
+/build-*/
+/out/
+/Testing/
 /compile_commands.json
+CMakeUserPresets.json
 /.cache/
-*.swp
-*~
+
+# --- editors and systems --------------------------------------------------------------------------
 .idea/
 .vscode/
+*.swp
+*~
+*.orig
+*.rej
+.DS_Store
+Thumbs.db
+desktop.ini
+__pycache__/
+imgui.ini
+
+# --- Karkas state -----------------------------------------------------------------------------------
+# derived data of a project (index, runs, probes, logs) is listed in each project's .karkas/.gitignore;
+# the reference projects of the tests get theirs copied fresh
+/tests/fixtures/**/.karkas/
+
+# --- local files of the author -----------------------------------------------------------------------
 # local copy of the spec (the tracked one is docs/SPEC.txt)
 /karkas_spec.txt
-/tests/fixtures/**/.karkas/
 # local notes and benchmark output
 /bugs.txt
 /deepseek_changes.txt

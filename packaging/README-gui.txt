@@ -14,3 +14,5 @@ Windows
   Run karkas-gui.exe. Keep karkas.exe next to it.
 
 Agents need Claude Code (the "claude" command) or an API key in the settings.
+
+https://github.com/AbdurahmanTFX/Karkas · License: GNU AGPL-3.0 (LICENSE)
