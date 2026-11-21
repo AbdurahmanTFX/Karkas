@@ -805,3 +805,8 @@
   (`-DKARKAS_DOCTEST_DIR=/home/tfx/...`) to every configure, so `karkas test`, testers and `implement` failed
   elsewhere. Now the build tree's folder only in developer builds when it exists, else the embedded copy written
   to `<data_home>/karkas/doctest-2.4.12`; the generated CMake ignores a folder without doctest.h.
+- Import left E03 at once (leveldb: `db.builder` called, its card never loaded): every walker took any folder
+  whose name starts with "build" for a build tree, so blocks/db/builder was skipped. One rule now,
+  `core::is_build_dir_name` / `is_build_dir` (build, build-*, build_*, build.*, build64, buildRelease; not builder;
+  never a folder with a block.ksl), in the loader, import, the analyzer, init, notes, the watcher, bench and brief.
+  leveldb: 101 blocks, 0 errors.

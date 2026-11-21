@@ -96,7 +96,7 @@ namespace {
 
 // Folders that hold no files of the user's notes: hidden ones, build trees, downloaded sources.
 bool skipped_folder(const std::string& name) {
-  return name.starts_with(".") || name.starts_with("build") || name == "node_modules" || name == "third_party" || name == "_deps";
+  return name.starts_with(".") || is_build_dir_name(name) || name == "node_modules" || name == "third_party" || name == "_deps";
 }
 
 }  // namespace

@@ -45,7 +45,7 @@ void copy_project(const fs::path& from, const fs::path& to) {
   fs::create_directories(to);
   for (const auto& e : fs::directory_iterator(from)) {
     auto name = e.path().filename().string();
-    if (name.starts_with("build") || name == ".karkas") continue;
+    if ((e.is_directory() && core::is_build_dir(e.path())) || name == ".karkas") continue;
     fs::copy(e.path(), to / name, fs::copy_options::recursive | fs::copy_options::copy_symlinks);
   }
 }

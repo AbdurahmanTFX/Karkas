@@ -211,7 +211,7 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
         while (x.ends_with('/')) x.pop_back();
         return rel == x || rel.starts_with(x + "/");
       });
-      bool skip = name.starts_with(".") || name.starts_with("build") || rel == "cmake" || rel == blocks_rel ||
+      bool skip = name.starts_with(".") || core::is_build_dir(p) || rel == "cmake" || rel == blocks_rel ||
                   fs::exists(p / "project.ksl") || user_excluded;
       if (!skip && is_foreign_dir(name)) {
         skip = true;

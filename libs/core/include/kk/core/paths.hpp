@@ -25,6 +25,13 @@ std::string target_name(std::string_view block_id);
 
 bool is_code_file(const fs::path& p);  // .cpp .cc .cxx .c .hpp .hh .h .hxx .ipp .inl
 
+// A build tree by its folder name: build, build-debug, build_linux, build.x, build64, buildRelease — not
+// builder or buildings ("build" then a lowercase letter is a word of its own: leveldb's db/builder).
+bool is_build_dir_name(std::string_view name);
+// A folder to pass over as a build tree: such a name and no block.ksl in it (a block may be called
+// build_steps). Does not check that `dir` is a folder.
+bool is_build_dir(const fs::path& dir);
+
 // The running executable. After a rebuild replaced it, /proc/self/exe reads "<path> (deleted)":
 // the new file at <path> is taken then (bugs.txt 9). "" when it cannot be found.
 fs::path self_executable();

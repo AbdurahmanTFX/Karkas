@@ -110,6 +110,40 @@ TEST_CASE("import: the imported schema passes the checks and indexes as implemen
   CHECK(again->blocks.empty());
 }
 
+TEST_CASE("import: modules called builder or build_steps are cards like any other, build trees are not code") {
+  // leveldb's db/builder.cc: its card was written to blocks/db/builder and never loaded (a folder starting
+  // with "build" was taken for a build tree), so the import's own check reported E03 at once.
+  test::TempDir d{"builder"};
+  test::write(d / "project.ksl", "@project lv\nlang cpp\nbuild cmake-ninja\nstd c++20\ntest doctest\n");
+  test::write(d / "db/builder.h", "#pragma once\nnamespace lv {\n// Writes a table.\nint BuildTable(int n);\n}\n");
+  test::write(d / "db/builder.cc", "#include \"db/builder.h\"\nnamespace lv {\nint BuildTable(int n) { return n; }\n}\n");
+  test::write(d / "db/build_steps.h", "#pragma once\nnamespace lv {\nint Steps();\n}\n");
+  test::write(d / "db/build_steps.cc", "#include \"db/build_steps.h\"\nnamespace lv {\nint Steps() { return 2; }\n}\n");
+  test::write(d / "db/db_impl.h", "#pragma once\nnamespace lv {\nint Open();\n}\n");
+  test::write(d / "db/db_impl.cc",
+              "#include \"db/db_impl.h\"\n#include \"db/builder.h\"\n#include \"db/build_steps.h\"\n"
+              "namespace lv {\nint Open() { return BuildTable(1) + Steps(); }\n}\n");
+  test::write(d / "main.cc", "#include \"db/db_impl.h\"\nint main() { return lv::Open(); }\n");
+  test::write(d / "build-release/CMakeFiles/gen.cc", "int generated() { return 0; }\n");
+  auto plan = code::plan_import(d.path());
+  REQUIRE_MESSAGE(plan, (plan ? "" : plan.error().str()));
+  REQUIRE(find(*plan, "db.builder") != nullptr);
+  REQUIRE(find(*plan, "db.build_steps") != nullptr);
+  CHECK(std::none_of(plan->files.begin(), plan->files.end(), [](const std::string& f) { return f.starts_with("build-release/"); }));
+  write_cards(d.path(), *plan);
+  auto s = core::load_schema(d.path());
+  REQUIRE(s);
+  CHECK(s->blocks.size() == plan->blocks.size());
+  CHECK(s->find("db.builder") != nullptr);
+  CHECK(s->find("db.build_steps") != nullptr);
+  auto issues = core::check_schema(*s);
+  for (const auto& i : issues) MESSAGE(i.str());
+  CHECK(std::none_of(issues.begin(), issues.end(), [](const core::Issue& i) { return i.severity == 'E'; }));
+  auto drift = code::check_drift(*s);
+  for (const auto& i : drift) MESSAGE(i.str());
+  CHECK(std::none_of(drift.begin(), drift.end(), [](const core::Issue& i) { return i.code == "D06"; }));
+}
+
 TEST_CASE("import: a library without main() gets an empty entry, --exclude skips folders") {
   test::TempDir dir("imp");
   test::write(dir / "project.ksl", "@project lib\nidea    a library\n");

@@ -36,7 +36,7 @@ bool repo_file(const fs::path& p) {
 
 // Folders that hold no notes of the user: hidden ones (.git, .karkas), build trees, Karkas's cards.
 bool skipped_dir(const std::string& name, const std::string& blocks) {
-  return name.starts_with(".") || name.starts_with("build") || name == blocks || name == "third_party" || name == "_deps" ||
+  return name.starts_with(".") || core::is_build_dir_name(name) || name == blocks || name == "third_party" || name == "_deps" ||
          name == "node_modules";
 }
 

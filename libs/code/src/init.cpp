@@ -35,7 +35,7 @@ bool has_code(const fs::path& dir) {
   for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec);
        !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
     auto n = it->path().filename().string();
-    if (it->is_directory(ec) && (n.starts_with(".") || n.starts_with("build") || n == "third_party" || n == "_deps")) {
+    if (it->is_directory(ec) && (n.starts_with(".") || core::is_build_dir(it->path()) || n == "third_party" || n == "_deps")) {
       it.disable_recursion_pending();
       continue;
     }

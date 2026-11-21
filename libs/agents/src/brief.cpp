@@ -187,7 +187,9 @@ kk::Result<std::string> make_review(const fs::path& root, const core::Schema& sc
       auto path = std::string(core::trim(l.substr(sp)));
       if (auto arrow = path.find(" -> "); arrow != std::string::npos) path = path.substr(arrow + 4);
       if (!prefix.empty() && path.starts_with(prefix)) path = path.substr(prefix.size());
-      if (path.starts_with("build") || path.starts_with(".karkas/") || path.ends_with(".tmp")) continue;
+      auto slash = path.find('/');
+      bool in_build = slash != std::string::npos && core::is_build_dir(root / path.substr(0, slash));
+      if (in_build || path.starts_with(".karkas/") || path.ends_with(".tmp")) continue;
       bool own = mine.contains(path) || (!b->external() && path.starts_with(b->dir + "/"));
       changed.push_back(fmt::format("{:<2} {}", code, path));
       if (!own) outside.push_back(path);

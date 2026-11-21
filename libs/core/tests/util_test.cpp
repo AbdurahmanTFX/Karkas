@@ -97,6 +97,20 @@ TEST_CASE("paths: atomic write and target names") {
   CHECK_FALSE(is_code_file("x/block.ksl"));
 }
 
+TEST_CASE("paths: build trees are told by name (build, build-debug, build_linux) but builder is code") {
+  for (const char* n : {"build", "build-debug", "build_linux", "build.x", "build64", "buildRelease"}) {
+    CHECK_MESSAGE(is_build_dir_name(n), n);
+  }
+  for (const char* n : {"builder", "buildings", "builds", "rebuild", "src", ""}) CHECK_FALSE_MESSAGE(is_build_dir_name(n), n);
+  // A block may be called build_steps: a folder with a card is never a build tree.
+  kk::test::TempDir d{"build"};
+  kk::test::write(d / "blocks/build_steps/block.ksl", "@block build_steps\n");
+  kk::test::write(d / "build_linux/CMakeCache.txt", "");
+  CHECK_FALSE(is_build_dir(d / "blocks/build_steps"));
+  CHECK(is_build_dir(d / "build_linux"));
+  CHECK_FALSE(is_build_dir(d / "blocks/builder"));
+}
+
 TEST_CASE("config: appendix E example parses") {
   Config cfg;
   auto r = apply_config_text(cfg, R"([project]

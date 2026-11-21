@@ -16,6 +16,8 @@
 #include <mutex>
 #include <string>
 
+#include "kk/core/paths.hpp"
+
 namespace kk::index {
 
 namespace {
@@ -24,7 +26,7 @@ std::map<int, std::filesystem::path> g_dirs;  // watch descriptor → directory 
 
 bool skip(const std::filesystem::path& p) {
   auto n = p.filename().string();
-  return n.starts_with("build") || n == ".git" || n == "_deps" || n == "node_modules" || n == "cache";
+  return core::is_build_dir(p) || n == ".git" || n == "_deps" || n == "node_modules" || n == "cache";
 }
 }  // namespace
 

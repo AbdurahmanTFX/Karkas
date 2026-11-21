@@ -311,8 +311,8 @@ Issue issue_from_error(const Error& e, std::string block) {
 
 bool skip_dir(const std::string& name, const Dirs& dirs) {
   if (name.empty() || name[0] == '.') return true;
-  return name == dirs.api || name == dirs.impl || name == dirs.tests || name == dirs.mocks ||
-         name.starts_with("build") || name == "_deps" || name == "node_modules";
+  return name == dirs.api || name == dirs.impl || name == dirs.tests || name == dirs.mocks || name == "_deps" ||
+         name == "node_modules";
 }
 
 std::vector<std::filesystem::path> sorted_subdirs(const std::filesystem::path& dir) {
@@ -328,7 +328,7 @@ std::vector<std::filesystem::path> sorted_subdirs(const std::filesystem::path& d
 void walk(Schema& s, const std::filesystem::path& dir, const std::string& prefix, int depth) {
   for (const auto& sub : sorted_subdirs(dir)) {
     std::string name = sub.filename().string();
-    if (skip_dir(name, s.project.dirs)) continue;
+    if (skip_dir(name, s.project.dirs) || is_build_dir(sub)) continue;
     auto card = sub / "block.ksl";
     std::string rel_dir = rel_str(s.root, sub);
     if (!std::filesystem::exists(card)) {

@@ -684,7 +684,7 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
       if (it->is_directory(ec)) {
         auto rel = core::rel_str(root, p);
         bool other_project = p != root && fs::exists(p / "project.ksl");
-        if (name.starts_with(".") || name.starts_with("build") || name == "_deps" || name == "third_party" ||
+        if (name.starts_with(".") || core::is_build_dir(p) || name == "_deps" || name == "third_party" ||
             name == "external" || name == "node_modules" || rel == "cmake" || rel == "tests/integration" || other_project) {
           it.disable_recursion_pending();
           continue;

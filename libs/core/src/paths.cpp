@@ -110,6 +110,16 @@ bool is_code_file(const fs::path& p) {
   return std::find(kExt.begin(), kExt.end(), ext) != kExt.end();
 }
 
+bool is_build_dir_name(std::string_view name) {
+  if (!name.starts_with("build")) return false;
+  return name.size() == 5 || !(name[5] >= 'a' && name[5] <= 'z');
+}
+
+bool is_build_dir(const fs::path& dir) {
+  std::error_code ec;
+  return is_build_dir_name(dir.filename().string()) && !fs::exists(dir / "block.ksl", ec);
+}
+
 Result<fs::path> find_project_root(const fs::path& start) {
   auto p = normalize(start);
   while (true) {
