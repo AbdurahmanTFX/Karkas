@@ -725,3 +725,17 @@
   note's first lines without marks. Fixed: a saved note no longer grows a blank last line.
 - Not done: text selection in the rendered view, images, anchors, the inner lines of a fenced block colored.
 - Tests 411; checked under Xvfb (inspector, the three views, a link followed, double click to edit, new note.md).
+
+## Addition — images in Markdown notes: shown, dropped, pasted (docs/adr/0041)
+
+- kk_core: `![alt|300](src)` sizes, Obsidian `![[file.png|300]]` embeds of images (not links), `md::images`;
+  `MediaFinder` (relative to the note, from the root, embeds also by name nearest to the note); the loader's
+  `Block::media` and W09 for an image whose file is not there. URLs are never fetched.
+- New dependency: stb_image (public domain, pinned; PNG, JPEG, GIF, BMP only), system header first.
+- karkas-gui: images drawn in the inspector and the note's views (own size or `|300`, never wider than the
+  text; placeholder while decoding; a warning sign for a missing or unsupported file; a click opens it),
+  decoded on a thread, seen again when the file changes; files dropped on the window go into the open note
+  (copied into images/ or files/ next to it when they come from outside); Ctrl+V with an image saves
+  images/paste-<time>.png (wl-paste or xclip) and links it.
+- Not done: undo of an inserted link, drops on desktop-window tiles, animated GIF, WebP/SVG.
+- Tests 417; checked under Xvfb (PNG/JPEG/embed, warnings, a file dropped, an image pasted from the clipboard).
