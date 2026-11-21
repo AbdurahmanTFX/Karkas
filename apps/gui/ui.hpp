@@ -17,6 +17,7 @@
 
 #include "chat.hpp"
 #include "feed.hpp"
+#include "images.hpp"
 #include "cleared.hpp"
 #include "kk/agents/prototype.hpp"
 #include "kk/core/config.hpp"
@@ -233,6 +234,15 @@ class Ui {
   [[nodiscard]] MdLinkKind note_link_kind(const Model& m, const std::string& from_file) const;
   // A link clicked: a note is selected (and opened in a tab when `in_tab`), the rest goes to its program.
   void follow_note_link(const Model& m, const std::string& from_file, const MdClick& c, bool in_tab);
+  // Images of Markdown notes (ADR 0041): decoded in the background, drawn in the views; files dropped on
+  // the window and images pasted (Ctrl+V) become links at the editor's cursor.
+  ImageCache images_;
+  [[nodiscard]] MdImageFn note_image_fn(const std::string& note_file);
+  void note_files_frame(const Model& m);  // each frame: dropped files, links the worker made
+  std::uint64_t note_insert_seen_ = 0;
+  std::map<std::string, std::vector<std::string>> note_pending_insert_;  // note file → links to insert
+  std::string note_window_focused_;  // the note whose tab had the keyboard this frame
+  std::string note_focus_prev_;      // ... and the frame before (Ctrl+V asks it)
   mutable std::map<std::string, std::string> link_cache_;  // "<from>\n<href>\n<wiki>" → the note it names
   mutable const void* link_cache_key_[2] = {nullptr, nullptr};  // the snapshot and note texts it was made of
   std::unique_ptr<RunSession> run_;

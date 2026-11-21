@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 
+#include "drop.hpp"
 #include "kk/core/text.hpp"
 
 namespace kk::gui {
@@ -102,6 +103,20 @@ std::optional<InputScript> InputScript::parse(std::string_view text, std::string
                                        : ImGuiKey_Backspace;
       f.emplace_back([k](ImGuiIO& io) { io.AddKeyEvent(k, true); });
       f.emplace_back([k](ImGuiIO& io) { io.AddKeyEvent(k, false); });
+    } else if (cmd == "key" && w.size() == 2 && w[1] == "ctrl+v") {
+      f.emplace_back([](ImGuiIO& io) {
+        io.AddKeyEvent(ImGuiMod_Ctrl, true);
+        io.AddKeyEvent(ImGuiKey_LeftCtrl, true);
+      });
+      f.emplace_back([](ImGuiIO& io) { io.AddKeyEvent(ImGuiKey_V, true); });
+      f.emplace_back([](ImGuiIO& io) { io.AddKeyEvent(ImGuiKey_V, false); });
+      f.emplace_back([](ImGuiIO& io) {
+        io.AddKeyEvent(ImGuiKey_LeftCtrl, false);
+        io.AddKeyEvent(ImGuiMod_Ctrl, false);
+      });
+    } else if (cmd == "drop" && w.size() >= 2) {  // a file dropped on the window (ADR 0041)
+      std::string path(core::trim(std::string_view(raw).substr(raw.find("drop") + 4)));
+      f.emplace_back([path](ImGuiIO&) { push_dropped({path}); });
     } else if (cmd == "type" && w.size() >= 2) {
       std::string typed(core::trim(std::string_view(raw).substr(raw.find("type") + 4)));
       f.emplace_back([typed](ImGuiIO& io) { io.AddInputCharactersUTF8(typed.c_str()); });

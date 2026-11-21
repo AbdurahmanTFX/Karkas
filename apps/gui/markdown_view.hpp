@@ -1,13 +1,15 @@
 #pragma once
 // A note's Markdown drawn in karkas-gui (ADR 0040): headings, paragraphs, lists with task boxes, quotes,
-// code, rules, tables and front matter, with links to click. The text is laid out on the draw list (word
-// wrap, mixed fonts); one invisible item under it takes the mouse.
+// code, rules, tables and front matter, with links to click and images (docs/adr/0041). The text is laid
+// out on the draw list (word wrap, mixed fonts); one invisible item under it takes the mouse.
 #include <cstddef>
 #include <functional>
 #include <limits>
 #include <optional>
 #include <string>
 #include <vector>
+
+#include <imgui.h>
 
 #include "kk/core/markdown.hpp"
 
@@ -20,7 +22,19 @@ struct MdClick {
   bool image = false;
   bool dbl = false;  // a double click on the text (not on a link)
   int line = 0;      // the source line of the block under the mouse
+  std::string file;  // an image clicked: the file it shows, from the project root ("" when unknown)
 };
+
+// An image as the view can draw it (docs/adr/0041).
+struct MdImage {
+  enum class State { None, Loading, Ready, Missing, Failed };
+  State state = State::None;  // None: no images here — drawn as a link
+  ImTextureID tex = 0;
+  float w = 0, h = 0;  // its own size in pixels
+  std::string file;    // from the project root
+  std::string error;   // Failed: why
+};
+using MdImageFn = std::function<MdImage(const core::md::Run&)>;
 
 // Where a link leads, for its look: kMdNowhere (dimmed), kMdNote (a note), kMdOut (a URL or a file).
 inline constexpr int kMdNowhere = 0;
@@ -31,6 +45,7 @@ using MdLinkKind = std::function<int(const std::string& href, bool wiki)>;
 // Draws `doc` at the cursor, as wide as the space left (at most `max_width` when it is set), and returns
 // what was clicked. A text longer than `max_blocks` blocks is cut with "…" (the inspector).
 std::optional<MdClick> markdown_view(const char* id, const std::vector<core::md::Block>& doc, const MdLinkKind& kind = {},
-                                     std::size_t max_blocks = std::numeric_limits<std::size_t>::max(), float max_width = 0.0f);
+                                     std::size_t max_blocks = std::numeric_limits<std::size_t>::max(), float max_width = 0.0f,
+                                     const MdImageFn& image = {});
 
 }  // namespace kk::gui

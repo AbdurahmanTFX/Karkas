@@ -76,6 +76,9 @@ float status_item_width(const std::string& text) { return ImGui::CalcTextSize(te
 bool Ui::draw(const std::shared_ptr<const Model>& mp, bool first_frame) {
   pulse_ = ImGui::GetTime();
   const Model* m = mp && mp->snap ? mp.get() : nullptr;
+  images_.upload();  // images decoded since the last frame (ADR 0041)
+  note_focus_prev_ = std::exchange(note_window_focused_, std::string());
+  if (m != nullptr) note_files_frame(*m);
   if (m != nullptr) {
     if (m->serial > sizes_serial_ && resizing_.empty()) sizes_.clear();  // the model has them now
     active_blocks_.clear();
@@ -484,6 +487,8 @@ void Ui::draw_windows_menu() {
 void Ui::set_project_root(std::filesystem::path root) {
   reset_canvas_caches();
   root_ = std::move(root);
+  images_.set_root(root_);
+  images_.set_wake(wake_);
   // What the project is (ADR 0038): the mode, its words and panels follow.
   notes_ = is_notes_project_dir(root_);
   set_notes_kinds(notes_);
@@ -1633,8 +1638,29 @@ void Ui::draw_file_body(const Model& m, const std::string& file) {
   }
   NoteView view = md ? note_view_of(file) : NoteView::Edit;
   if (view == NoteView::Preview && note_focus_file_ == file) view = NoteView::Split;  // a new note: type at once
+  // Links of images dropped or pasted (ADR 0041): at the cursor, on lines of their own (at the end when
+  // only the view is shown).
+  if (auto pit = note_pending_insert_.find(file);
+      md && pit != note_pending_insert_.end() && m.req.open_file == file && (editor_loaded_[file] == m.code_text || note_dirty(file))) {
+    if (view == NoteView::Preview) {
+      ed->MoveBottom();
+      ed->MoveEnd();
+    }
+    std::string text = core::join(pit->second, "\n") + "\n";
+    if (ed->GetCursorPosition().mColumn > 0) text = "\n" + text;
+    ed->InsertText(text);
+    note_edited_at_[file] = ImGui::GetTime();
+    note_preview_[file].stale = true;
+    note_pending_insert_.erase(pit);
+  }
+  // Ctrl+V with an image in the clipboard and no text: the image is saved next to the note and linked.
+  if (md && note_focus_prev_ == file && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_V)) {
+    const char* clip = ImGui::GetClipboardText();
+    if (clip == nullptr || *clip == '\0') w_.paste_image(file);
+  }
   if (view == NoteView::Preview) {
     note_preview(m, file, *ed, ImVec2(0, 0));
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) note_window_focused_ = file;
     return;
   }
   const float split_w = view == NoteView::Split ? std::floor(ImGui::GetContentRegionAvail().x * 0.5f) : 0.0f;
@@ -1660,6 +1686,7 @@ void Ui::draw_file_body(const Model& m, const std::string& file) {
     ImGui::SameLine(0, 4);
     note_preview(m, file, *ed, ImVec2(0, 0));
   }
+  if (md && ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) note_window_focused_ = file;
 }
 
 // --- inspector ------------------------------------------------------------------------------------

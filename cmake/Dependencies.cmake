@@ -172,4 +172,16 @@ if(KARKAS_GUI)
   FetchContent_MakeAvailable(imgui)
   FetchContent_MakeAvailable(imgui_node_editor)
   FetchContent_MakeAvailable(imgui_color_text_edit)
+
+  # Images of Markdown notes (docs/adr/0041): stb_image, one public-domain header. The system's
+  # (Arch: stb) when it is there, else a pinned commit.
+  find_path(KK_STB_INCLUDE_DIR stb_image.h PATH_SUFFIXES stb)
+  if(NOT KK_STB_INCLUDE_DIR)
+    FetchContent_Declare(stb
+      URL https://github.com/nothings/stb/archive/1da9ade1e66195252114f5da497f244704a6c58d.tar.gz
+      URL_HASH SHA256=a7a4ea23658cf7ea7b2e7f7f499cb01bbd39d36b17eb4c08f988131405e5032a
+      SOURCE_SUBDIR kk-populate-only)
+    FetchContent_MakeAvailable(stb)
+    set(KK_STB_INCLUDE_DIR "${stb_SOURCE_DIR}" CACHE PATH "stb headers" FORCE)
+  endif()
 endif()

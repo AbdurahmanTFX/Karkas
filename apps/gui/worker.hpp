@@ -74,6 +74,12 @@ struct NoteText {
   std::shared_ptr<const std::vector<core::md::Block>> doc;
 };
 
+// A link for a note's editor to insert at its cursor (ADR 0041): images dropped on the window or pasted.
+struct NoteInsert {
+  std::uint64_t id = 0;  // increasing: the UI inserts each one once
+  std::string note_file, text;
+};
+
 struct Request {
   std::string scope;      // "" = root
   std::string selected;   // block
@@ -118,6 +124,7 @@ struct Model {
   std::vector<agents::NotesProposal> proposals;
   std::string proposal_preview;
   std::vector<code::Mention> mentions;
+  std::vector<NoteInsert> note_inserts;  // the last links made for notes' editors, oldest first (ADR 0041)
   std::string message;
   std::string engine;
   double index_ms = 0;
@@ -164,6 +171,14 @@ class Worker {
   // A link of a note that leads out of the notes (ADR 0040): a web or mail address in the browser, a file
   // (relative to the note `from_file`) in its program; xdg-open, without a shell.
   void open_link(const std::string& from_file, const std::string& href);
+  // Files for a note (ADR 0041): one inside the project is linked where it is, one from outside is copied
+  // into images/ (an image) or files/ next to the note; an image becomes ![name](path), another file
+  // [name](path). The links come back as a NoteInsert.
+  void attach_files(const std::string& note_file, std::vector<std::string> paths);
+  // The clipboard's image (wl-paste on Wayland, xclip on X11) saved as images/paste-<time>.<ext> next to the
+  // note, its link as a NoteInsert; a message when the clipboard holds no image.
+  void paste_image(const std::string& note_file);
+  void say(std::string message);  // a message for the status bar
   void link_notes(const std::string& src, const std::string& dst);
   void unlink_notes(const std::string& src, const std::string& dst);
   void retitle_note(const std::string& id, const std::string& title);
@@ -205,6 +220,9 @@ class Worker {
   void load_notes();  // notes_ and note_texts_ from the project as it is on disk
   std::vector<code::Mention> mentions_;
   std::string mentions_for_;  // the note they are of
+  std::vector<NoteInsert> inserts_;
+  std::uint64_t insert_id_ = 0;
+  void push_insert(const std::string& note_file, std::string text);
   std::uint64_t serial_ = 0;
 };
 

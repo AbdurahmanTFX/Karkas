@@ -44,6 +44,7 @@ struct View {
   float clip_top = 0, clip_bottom = 0;
   const void* hot = nullptr;  // the link under the mouse in the last frame
   const MdLinkKind* kind = nullptr;
+  const MdImageFn* image = nullptr;
   ImU32 text = 0;
   std::vector<Hit> hits;
   struct Span {
@@ -81,7 +82,7 @@ Look look_of(const View& v, const md::Run& r, ImFont* base, ImU32 base_color, bo
   }
   l.color = r.code ? kCodeFg : base_color;
   if (l.link) {
-    int k = r.image ? kMdOut : (v.kind != nullptr && *v.kind) ? (*v.kind)(r.href, r.wiki) : kMdOut;
+    int k = r.image ? (v.image != nullptr && *v.image ? kMdNowhere : kMdOut) : (v.kind != nullptr && *v.kind) ? (*v.kind)(r.href, r.wiki) : kMdOut;
     l.color = k == kMdNote ? kLinkNote : k == kMdOut ? kLinkOut : kLinkNowhere;
   }
   if (r.strike && !l.link) l.color = kDim;
@@ -115,6 +116,7 @@ Flow flow(View& v, const std::vector<md::Run>& runs, ImFont* base, ImU32 color, 
   out.right = x0;
   float x = x0;
   bool line_empty = true;
+  bool after_image = false;  // the last thing laid out was an image on lines of its own
   auto new_line = [&] {
     x = x0;
     y += lh;
@@ -123,11 +125,46 @@ Flow flow(View& v, const std::vector<md::Run>& runs, ImFont* base, ImU32 color, 
   };
   for (const auto& r : runs) {
     if (r.text == "\n") {
-      new_line();
+      if (!after_image) new_line();  // the break after an image is the image's own
+      after_image = false;
       continue;
     }
+    // An image that can be drawn takes lines of its own: as wide as asked ("|300") or as its file, never
+    // wider than the text (docs/adr/0041).
+    bool broken = false;  // an image whose file is missing or unreadable: its text with a warning sign
+    if (r.image && v.image != nullptr && *v.image) {
+      MdImage im = (*v.image)(r);
+      broken = im.state == MdImage::State::Missing || im.state == MdImage::State::Failed;
+      if (im.state == MdImage::State::Ready || im.state == MdImage::State::Loading) {
+        if (!line_empty) new_line();
+        bool ready = im.state == MdImage::State::Ready && im.w > 0 && im.h > 0;
+        float want = r.width > 0 ? static_cast<float>(r.width) * v.scale : ready ? im.w * v.scale : std::min(w, 320.0f * v.scale);
+        float dw = std::max(8.0f, std::min(want, w));
+        float dh = ready ? dw * im.h / im.w : std::min(dw * 0.5f, 160.0f * v.scale);
+        float top = y + lh * 0.15f;
+        if (draw) {
+          if (v.visible(top, top + dh)) {
+            if (ready) {
+              v.dl->AddImageRounded(im.tex, ImVec2(x0, top), ImVec2(x0 + dw, top + dh), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 3.0f);
+            } else {
+              v.dl->AddRectFilled(ImVec2(x0, top), ImVec2(x0 + dw, top + dh), kCodeBg, 3.0f);
+              v.dl->AddText(theme::ui_font(), v.size(theme::ui_font()), ImVec2(x0 + 8, top + 6), kDim, "…");
+            }
+          }
+          v.hits.push_back({ImVec2(x0, top), ImVec2(x0 + dw, top + dh), &r});
+        }
+        out.right = std::max(out.right, x0 + dw);
+        y = top + dh + lh * 0.15f;
+        x = x0;
+        line_empty = true;
+        after_image = true;
+        ++out.lines;
+        continue;
+      }
+    }
+    after_image = false;
     Look lk = look_of(v, r, base, color, heading);
-    std::string shown = r.image ? std::string(icon(Icon::File)) + " " + (r.text.empty() ? r.href : r.text) : r.text;
+    std::string shown = r.image ? std::string(icon(broken ? Icon::Warning : Icon::File)) + " " + (r.text.empty() ? r.href : r.text) : r.text;
     const char* s = shown.data();
     const char* end = s + shown.size();
     while (s < end) {
@@ -168,7 +205,7 @@ Flow flow(View& v, const std::vector<md::Run>& runs, ImFont* base, ImU32 color, 
       s = se;
     }
   }
-  out.bottom = y + lh;
+  out.bottom = after_image && line_empty ? y : y + lh;
   return out;
 }
 
@@ -289,7 +326,7 @@ void task_box(View& v, float x, float y, float s, bool done) {
 }  // namespace
 
 std::optional<MdClick> markdown_view(const char* id, const std::vector<md::Block>& doc, const MdLinkKind& kind, std::size_t max_blocks,
-                                     float max_width) {
+                                     float max_width, const MdImageFn& image) {
   ImGui::PushID(id);
   ImGuiStorage* store = ImGui::GetStateStorage();
   const ImGuiID hot_key = ImGui::GetID("##hot");
@@ -300,6 +337,7 @@ std::optional<MdClick> markdown_view(const char* id, const std::vector<md::Block
   v.clip_bottom = ImGui::GetCurrentWindow()->ClipRect.Max.y;
   v.hot = store->GetVoidPtr(hot_key);
   v.kind = &kind;
+  v.image = &image;
   v.text = ImGui::GetColorU32(ImGuiCol_Text);
   const ImVec2 origin = ImGui::GetCursorScreenPos();
   float avail = ImGui::GetContentRegionAvail().x;
@@ -403,12 +441,23 @@ std::optional<MdClick> markdown_view(const char* id, const std::vector<md::Block
   std::optional<MdClick> out;
   if (hot != nullptr) {
     ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("%s", hot->href.c_str());
+    MdImage im;
+    if (hot->image && image) im = image(*hot);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      if (!hot->image || im.state == MdImage::State::None) {
+        ImGui::SetTooltip("%s", hot->href.c_str());
+      } else {
+        std::string tip = im.file.empty() ? hot->href : im.file;
+        if (im.state == MdImage::State::Ready) tip += "  " + std::to_string(static_cast<int>(im.w)) + "×" + std::to_string(static_cast<int>(im.h));
+        if (!im.error.empty()) tip += "\n" + im.error;
+        ImGui::SetTooltip("%s", tip.c_str());
+      }
+    }
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-      out = MdClick{.href = hot->href, .wiki = hot->wiki, .image = hot->image, .dbl = false, .line = line_at(mouse.y)};
+      out = MdClick{.href = hot->href, .wiki = hot->wiki, .image = hot->image, .dbl = false, .line = line_at(mouse.y), .file = im.file};
     }
   } else if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-    out = MdClick{.href = {}, .wiki = false, .image = false, .dbl = true, .line = line_at(mouse.y)};
+    out = MdClick{.href = {}, .wiki = false, .image = false, .dbl = true, .line = line_at(mouse.y), .file = {}};
   }
   ImGui::PopID();
   return out;

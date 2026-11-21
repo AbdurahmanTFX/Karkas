@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <limits>
 
+#include "drop.hpp"
 #include "i18n.hpp"
 #include "icons.hpp"
 #include "kk/agents/edit.hpp"
@@ -183,7 +184,8 @@ void Ui::note_preview(const Model& m, const std::string& file, TextEditor& ed, I
     if (avail > column) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - column) * 0.5f);
     if (pv.doc.empty()) {
       ui::muted("%s", tr("(empty: Text writes it)"));
-    } else if (auto click = markdown_view("note_md", pv.doc, note_link_kind(m, file), std::numeric_limits<std::size_t>::max(), column)) {
+    } else if (auto click = markdown_view("note_md", pv.doc, note_link_kind(m, file), std::numeric_limits<std::size_t>::max(), column,
+                                          note_image_fn(file))) {
       if (click->dbl) {
         note_jump_file_ = file;
         note_jump_line_ = click->line;
@@ -236,6 +238,14 @@ MdLinkKind Ui::note_link_kind(const Model& m, const std::string& from_file) cons
 
 void Ui::follow_note_link(const Model& m, const std::string& from_file, const MdClick& c, bool in_tab) {
   if (c.href.empty()) return;
+  if (c.image) {  // an image opens in its program; a web image in the browser (it is never fetched here)
+    if (!c.file.empty()) {
+      w_.open_link("", "/" + c.file);
+    } else if (!c.wiki && core::md::is_url(c.href)) {
+      w_.open_link(from_file, c.href);
+    }
+    return;
+  }
   if (auto id = c.image ? std::string() : note_link_target(m, from_file, c.href, c.wiki); !id.empty()) {
     const auto* b = m.snap->block(id);
     if (!in_tab || b == nullptr || b->kind == "group") {
@@ -249,6 +259,51 @@ void Ui::follow_note_link(const Model& m, const std::string& from_file, const Md
   }
   if (c.wiki || c.href.starts_with('#') || core::note_link_file(from_file, c.href)) return;  // no such note
   w_.open_link(from_file, c.href);
+}
+
+// --- images (ADR 0041) -------------------------------------------------------------------------------
+
+MdImageFn Ui::note_image_fn(const std::string& note_file) {
+  return [this, note_file](const core::md::Run& r) {
+    MdImage out;
+    if (!r.wiki && core::md::is_url(r.href)) return out;  // a web image: a link, never fetched
+    auto im = images_.get(note_file, r.href, r.wiki);
+    using S = NoteImage::State;
+    out.state = im.state == S::Ready     ? MdImage::State::Ready
+                : im.state == S::Missing ? MdImage::State::Missing
+                : im.state == S::Failed  ? MdImage::State::Failed
+                                         : MdImage::State::Loading;
+    out.tex = im.tex;
+    out.w = static_cast<float>(im.w);
+    out.h = static_cast<float>(im.h);
+    out.file = im.file;
+    out.error = im.state == S::Missing ? std::string(tr("the file is not there")) : im.error;
+    return out;
+  };
+}
+
+void Ui::note_files_frame(const Model& m) {
+  // Files dropped on the window go into the Markdown note whose tab is open, else the note selected.
+  if (auto dropped = take_dropped(); !dropped.empty()) {
+    std::string target;
+    if (notes_ && editor_tab_ != "#schema" && core::md::is_markdown_file(editor_tab_) && !note_id_of_file(m, editor_tab_).empty()) {
+      target = editor_tab_;
+    } else if (const auto* n = notes_ ? note_of(m, req_.selected) : nullptr; n != nullptr && n->markdown) {
+      target = n->file;
+    }
+    if (target.empty()) {
+      w_.say(tr("drop files on a Markdown note: its open tab or the note selected"));
+    } else {
+      w_.attach_files(target, std::move(dropped));
+    }
+  }
+  // Links the worker made (dropped files, a pasted image): into the note's editor, its tab opened if needed.
+  for (const auto& ins : m.note_inserts) {
+    if (ins.id <= note_insert_seen_) continue;
+    note_insert_seen_ = ins.id;
+    note_pending_insert_[ins.note_file].push_back(ins.text);
+    if (auto id = note_id_of_file(m, ins.note_file); !id.empty() && editor_tab_ != ins.note_file) open_note(m, id);
+  }
 }
 
 // --- toolbar and dialogs ------------------------------------------------------------------------------
@@ -537,7 +592,7 @@ void Ui::inspector_note(const Model& m, const index::BlockRow& b) {
     } else if (n->markdown && n->doc) {
       // Markdown rendered (ADR 0040): links go to their notes, a double click edits that place.
       constexpr std::size_t kShownBlocks = 80;
-      if (auto click = markdown_view("nt_md", *n->doc, note_link_kind(m, n->file), kShownBlocks)) {
+      if (auto click = markdown_view("nt_md", *n->doc, note_link_kind(m, n->file), kShownBlocks, 0.0f, note_image_fn(n->file))) {
         if (click->dbl) {
           open_note(m, b.id);
           note_jump_file_ = n->file;

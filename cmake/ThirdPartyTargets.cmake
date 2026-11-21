@@ -34,4 +34,9 @@ if(KARKAS_GUI)
   target_include_directories(kk_imgui_text_edit SYSTEM PUBLIC "${_cte}")
   target_link_libraries(kk_imgui_text_edit PUBLIC kk_imgui)
   target_compile_options(kk_imgui_text_edit PRIVATE -w)
+
+  # stb_image (docs/adr/0041): PNG, JPEG, GIF and BMP from memory.
+  add_library(kk_stb_image STATIC "${CMAKE_SOURCE_DIR}/cmake/kk_stb_image.c")
+  target_include_directories(kk_stb_image SYSTEM PUBLIC "${KK_STB_INCLUDE_DIR}")
+  target_compile_options(kk_stb_image PRIVATE -w)
 endif()

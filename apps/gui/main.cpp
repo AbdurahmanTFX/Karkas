@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "drop.hpp"
 #include "cursors.hpp"
 #include "kk/core/config.hpp"
 #include "kk/core/paths.hpp"
@@ -143,6 +144,10 @@ int main(int argc, char** argv) {
     return 1;
   }
   glfwMakeContextCurrent(window);
+  // Files dropped on the window: images and files for the note being edited (ADR 0041).
+  glfwSetDropCallback(window, [](GLFWwindow*, int count, const char** paths) {
+    kk::gui::push_dropped(std::vector<std::string>(paths, paths + count));
+  });
   glfwSwapInterval(1);
 
   IMGUI_CHECKVERSION();

@@ -2,14 +2,21 @@
 
 #include "kk/core/tickets.hpp"
 
+#include <fcntl.h>
 #include <fmt/format.h>
+#include <poll.h>
 #include <spawn.h>
 #include <spdlog/spdlog.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <algorithm>
-#include <tuple>
+#include <cerrno>
 #include <chrono>
+#include <csignal>
+#include <ctime>
 #include <set>
+#include <tuple>
 
 #include "kk/agents/changes.hpp"
 #include "kk/agents/engine.hpp"
@@ -540,6 +547,181 @@ void Worker::open_block_folder(const std::string& block) {
   });
 }
 
+namespace {
+
+// What a program printed: run without a shell, stderr dropped, killed after `timeout_ms`.
+struct Captured {
+  bool started = false;  // the program was found
+  bool ok = false;       // and ended with 0 in time
+  std::string out;
+};
+Captured capture(const std::vector<std::string>& args, int timeout_ms) {
+  Captured r;
+  int fds[2];
+  if (pipe(fds) != 0) return r;
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_adddup2(&fa, fds[1], STDOUT_FILENO);
+  posix_spawn_file_actions_addclose(&fa, fds[0]);
+  posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+  std::vector<char*> argv;
+  for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+  argv.push_back(nullptr);
+  pid_t pid = 0;
+  int rc = posix_spawnp(&pid, argv[0], &fa, nullptr, argv.data(), environ);
+  posix_spawn_file_actions_destroy(&fa);
+  close(fds[1]);
+  if (rc != 0) {
+    close(fds[0]);
+    return r;
+  }
+  r.started = true;
+  constexpr std::size_t kMaxBytes = 64ull * 1024 * 1024;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  bool cut = false;
+  std::vector<char> buf(1 << 16);
+  while (true) {
+    auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+    if (left <= 0) {
+      cut = true;
+      break;
+    }
+    pollfd pfd{fds[0], POLLIN, 0};
+    int pr = poll(&pfd, 1, static_cast<int>(left));
+    if (pr < 0 && errno == EINTR) continue;
+    if (pr <= 0) {
+      cut = pr == 0;
+      break;
+    }
+    auto n = read(fds[0], buf.data(), buf.size());
+    if (n <= 0) break;
+    r.out.append(buf.data(), static_cast<std::size_t>(n));
+    if (r.out.size() > kMaxBytes) {
+      cut = true;
+      break;
+    }
+  }
+  close(fds[0]);
+  if (cut) kill(pid, SIGKILL);
+  int status = 0;
+  waitpid(pid, &status, 0);
+  r.ok = !cut && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  return r;
+}
+
+// A file name not taken in `dir`: "name.ext", else "name-2.ext", "name-3.ext" ...
+fs::path free_name(const fs::path& dir, const std::string& stem, const std::string& ext) {
+  std::error_code ec;
+  fs::path p = dir / (stem + ext);
+  for (int n = 2; fs::exists(p, ec); ++n) p = dir / (stem + "-" + std::to_string(n) + ext);
+  return p;
+}
+
+bool same_bytes(const fs::path& a, const fs::path& b) {
+  std::error_code ec;
+  if (fs::file_size(a, ec) != fs::file_size(b, ec) || ec) return false;
+  auto x = core::read_file(a);
+  auto y = core::read_file(b);
+  return x && y && *x == *y;
+}
+
+// A Markdown link to `rel` (from the note's folder): ![stem](rel) for an image, [name](rel) for another
+// file; a path with spaces or brackets goes between < and >.
+std::string md_link(const fs::path& file, const std::string& rel) {
+  bool image = core::md::is_image_file(file.filename().string());
+  std::string text = image ? file.stem().string() : file.filename().string();
+  std::erase_if(text, [](char c) { return c == '[' || c == ']' || c == '|'; });
+  bool plain = rel.find_first_of(" ()<>") == std::string::npos;
+  return std::string(image ? "!" : "") + "[" + text + "](" + (plain ? rel : "<" + rel + ">") + ")";
+}
+
+}  // namespace
+
+void Worker::push_insert(const std::string& note_file, std::string text) {
+  inserts_.push_back(NoteInsert{++insert_id_, note_file, std::move(text)});
+  if (inserts_.size() > 16) inserts_.erase(inserts_.begin());
+  files_changed_ = true;  // a new file, and the model carries the insert
+}
+
+void Worker::say(std::string message) {
+  post([this, message = std::move(message)] { message_ = message; });
+}
+
+void Worker::attach_files(const std::string& note_file, std::vector<std::string> paths) {
+  post([this, note_file, paths = std::move(paths)] {
+    const fs::path note_dir = (root_ / note_file).parent_path();
+    std::vector<std::string> links;
+    for (const auto& p : paths) {
+      std::error_code ec;
+      fs::path src = fs::path(p).lexically_normal();
+      if (!fs::is_regular_file(src, ec)) {
+        message_ = tr("not a file: ") + p;
+        continue;
+      }
+      fs::path target = src;
+      if (!core::is_within(root_, src)) {  // from outside the project: a copy next to the note
+        bool image = core::md::is_image_file(src.filename().string());
+        fs::path dir = note_dir / (image ? "images" : "files");
+        fs::create_directories(dir, ec);
+        target = dir / src.filename();
+        if (!(fs::exists(target, ec) && same_bytes(src, target))) {
+          target = free_name(dir, src.stem().string(), src.extension().string());
+          fs::copy_file(src, target, ec);
+          if (ec) {
+            message_ = tr("cannot copy: ") + p + ": " + ec.message();
+            continue;
+          }
+        }
+      }
+      links.push_back(md_link(src, fs::relative(target, note_dir, ec).generic_string()));
+    }
+    if (links.empty()) return;
+    message_ = fmt::format(fmt::runtime(tr("added to the note: {}")), links.size());
+    push_insert(note_file, core::join(links, "\n"));
+  });
+}
+
+void Worker::paste_image(const std::string& note_file) {
+  post([this, note_file] {
+    const char* wl = std::getenv("WAYLAND_DISPLAY");
+    const bool wayland = wl != nullptr && *wl != '\0';
+    auto types = capture(wayland ? std::vector<std::string>{"wl-paste", "--list-types"}
+                                 : std::vector<std::string>{"xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"},
+                         3000);
+    if (!types.started) {
+      message_ = wayland ? tr("cannot read the clipboard: wl-paste (wl-clipboard) is not installed")
+                         : tr("cannot read the clipboard: xclip is not installed");
+      return;
+    }
+    auto lines = core::split(types.out, '\n');
+    static const std::pair<const char*, const char*> kTypes[] = {{"image/png", ".png"}, {"image/jpeg", ".jpg"}, {"image/gif", ".gif"}, {"image/bmp", ".bmp"}};
+    for (const auto& [mime, ext] : kTypes) {
+      if (std::none_of(lines.begin(), lines.end(), [&](const std::string& l) { return core::trim(l) == mime; })) continue;
+      auto data = capture(wayland ? std::vector<std::string>{"wl-paste", "--no-newline", "--type", mime}
+                                  : std::vector<std::string>{"xclip", "-selection", "clipboard", "-t", mime, "-o"},
+                          5000);
+      if (!data.ok || data.out.empty()) continue;
+      std::time_t now = std::time(nullptr);
+      std::tm tm{};
+      localtime_r(&now, &tm);
+      char stamp[32];
+      std::strftime(stamp, sizeof stamp, "paste-%Y%m%d-%H%M%S", &tm);
+      const fs::path note_dir = (root_ / note_file).parent_path();
+      std::error_code ec;
+      fs::create_directories(note_dir / "images", ec);
+      auto target = free_name(note_dir / "images", stamp, ext);
+      if (auto w = core::write_file(target, data.out); !w) {
+        message_ = w.error().message;
+        return;
+      }
+      message_ = tr("image pasted: ") + core::rel_str(root_, target);
+      push_insert(note_file, md_link(target, fs::relative(target, note_dir, ec).generic_string()));
+      return;
+    }
+    message_ = tr("no image in the clipboard");
+  });
+}
+
 void Worker::open_link(const std::string& from_file, const std::string& href) {
   post([this, from_file, href] {
     std::string target;
@@ -622,6 +804,7 @@ void Worker::loop() {
     m->engine = engine->name();
     m->notes = notes_;
     m->note_texts = note_texts_;
+    m->note_inserts = inserts_;
     if (notes_) {
       // The assistant's proposals; the links to suggest for the selected note, worked out again when the
       // files or the selection change.
