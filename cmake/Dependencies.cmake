@@ -82,14 +82,59 @@ endif()
 include(doctest)
 
 # --- system libraries ---------------------------------------------------------
-find_package(SQLite3 REQUIRED)
-if(TARGET SQLite3::SQLite3)
-  set(KK_SQLITE_TARGET SQLite3::SQLite3)
-else()
-  set(KK_SQLITE_TARGET SQLite::SQLite3)
-endif()
+# Windows has neither SQLite nor libcurl: both are built from pinned sources there (docs/adr/0046) —
+# SQLite's amalgamation with FTS5, libcurl static with Schannel (the TLS of Windows), HTTP(S) only.
+if(WIN32)
+  FetchContent_Declare(sqlite_amalgamation
+    URL https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip
+    URL_HASH SHA256=1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032
+    SOURCE_SUBDIR kk-populate-only)
+  FetchContent_MakeAvailable(sqlite_amalgamation)
+  add_library(kk_sqlite3 STATIC "${sqlite_amalgamation_SOURCE_DIR}/sqlite3.c")
+  target_include_directories(kk_sqlite3 SYSTEM PUBLIC "${sqlite_amalgamation_SOURCE_DIR}")
+  target_compile_definitions(kk_sqlite3 PRIVATE SQLITE_ENABLE_FTS5 SQLITE_THREADSAFE=1)
+  target_compile_options(kk_sqlite3 PRIVATE -w)
+  set(KK_SQLITE_TARGET kk_sqlite3)
 
-find_package(CURL REQUIRED)
+  set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
+  set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+  set(BUILD_LIBCURL_DOCS OFF CACHE BOOL "" FORCE)
+  set(BUILD_MISC_DOCS OFF CACHE BOOL "" FORCE)
+  set(ENABLE_CURL_MANUAL OFF CACHE BOOL "" FORCE)
+  set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+  set(CURL_USE_SCHANNEL ON CACHE BOOL "" FORCE)
+  set(CURL_USE_OPENSSL OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_LIBSSH2 OFF CACHE BOOL "" FORCE)
+  set(CURL_ZLIB OFF CACHE STRING "" FORCE)
+  set(CURL_BROTLI OFF CACHE STRING "" FORCE)
+  set(CURL_ZSTD OFF CACHE STRING "" FORCE)
+  set(USE_NGHTTP2 OFF CACHE BOOL "" FORCE)
+  set(USE_LIBIDN2 OFF CACHE BOOL "" FORCE)
+  set(USE_WIN32_IDN ON CACHE BOOL "" FORCE)
+  set(HTTP_ONLY ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_LDAP ON CACHE BOOL "" FORCE)
+  set(ENABLE_UNICODE ON CACHE BOOL "" FORCE)
+  set(CURL_WERROR OFF CACHE BOOL "" FORCE)
+  set(PICKY_COMPILER OFF CACHE BOOL "" FORCE)
+  set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(curl
+    URL https://github.com/curl/curl/releases/download/curl-8_15_0/curl-8.15.0.tar.xz
+    URL_HASH SHA256=6cd0a8a5b126ddfda61c94dc2c3fc53481ba7a35461cf7c5ab66aa9d6775b609)
+  set(_kk_shared ${BUILD_SHARED_LIBS})
+  set(BUILD_SHARED_LIBS OFF)
+  FetchContent_MakeAvailable(curl)
+  set(BUILD_SHARED_LIBS ${_kk_shared})
+else()
+  find_package(SQLite3 REQUIRED)
+  if(TARGET SQLite3::SQLite3)
+    set(KK_SQLITE_TARGET SQLite3::SQLite3)
+  else()
+    set(KK_SQLITE_TARGET SQLite::SQLite3)
+  endif()
+  find_package(CURL REQUIRED)
+endif()
 find_package(Threads REQUIRED)
 
 # xxHash (xxh3) ---------------------------------------------------------------
@@ -135,7 +180,9 @@ FetchContent_MakeAvailable(tree_sitter_cpp)
 
 # Graphviz (cgraph, gvc) via pkg-config: optional. Without it kk_layout uses
 # its built-in Sugiyama engine (see docs/adr/0002-layout-engine-fallback.md).
-pkg_check_modules(GRAPHVIZ IMPORTED_TARGET libgvc libcgraph)
+if(KARKAS_GRAPHVIZ)
+  pkg_check_modules(GRAPHVIZ IMPORTED_TARGET libgvc libcgraph)
+endif()
 if(GRAPHVIZ_FOUND)
   message(STATUS "karkas: Graphviz found (${GRAPHVIZ_VERSION}), dot layout enabled")
 else()

@@ -75,6 +75,9 @@ struct BuildResult {
 };
 
 kk::Result<BuildResult> build(const BuildOptions& opts);
+// A command line run by the system's shell: {"sh", "-c", command}; Windows: cmd.exe /d /s /c (docs/adr/0046).
+std::vector<std::string> shell_argv(const std::string& command);
+
 // A project's own build command (`[project] build_command`, ADR 0027), run by `sh -c` from `cwd`:
 // nothing is configured by Karkas.
 kk::Result<BuildResult> build_command(const std::string& command, const fs::path& cwd, std::chrono::seconds timeout,

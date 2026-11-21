@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -103,6 +104,7 @@ class RunSession {
   RunPhase phase_ = RunPhase::Idle;
   pid_t pid_ = 0;
   int master_ = -1;
+  std::shared_ptr<void> child_;  // Windows: the core::win::Child of the run (pipes, no terminal; docs/adr/0046)
   std::string program_;
   RunEnd end_;
   std::chrono::steady_clock::time_point started_at_{};

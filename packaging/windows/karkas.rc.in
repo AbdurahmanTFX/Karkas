@@ -1,0 +1,32 @@
+// Resources of @KK_RC_NAME@.exe (docs/adr/0046): the icon (GLFW_ICON is the one GLFW gives its windows; the
+// first icon is the one Explorer shows), the version, the manifest.
+#include <winver.h>
+#include <winuser.h>
+
+GLFW_ICON ICON "@KK_RC_ICON@"
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "@KK_RC_MANIFEST@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "Karkas"
+      VALUE "FileDescription", "@KK_RC_DESCRIPTION@"
+      VALUE "FileVersion", "@PROJECT_VERSION@"
+      VALUE "InternalName", "@KK_RC_NAME@"
+      VALUE "OriginalFilename", "@KK_RC_NAME@.exe"
+      VALUE "ProductName", "Karkas"
+      VALUE "ProductVersion", "@PROJECT_VERSION@"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

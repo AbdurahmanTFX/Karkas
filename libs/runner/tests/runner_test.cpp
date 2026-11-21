@@ -9,8 +9,23 @@
 using namespace kk;
 using namespace std::chrono_literals;
 
+#ifdef _WIN32
+// The same commands for cmd.exe (docs/adr/0046).
+const char* const kOutErr = "echo out& echo err 1>&2& exit 3";
+const char* const kEnv = "set";
+const char* const kSlow = "ping -n 30 127.0.0.1 >nul";
+const char* const kWarn = "echo /x/a.cpp:1:1: warning: w& exit 2";
+const char* const kTwoPieces = "echo one& ping -n 2 127.0.0.1 >nul& echo two 1>&2";
+#else
+const char* const kOutErr = "echo out; echo err 1>&2; exit 3";
+const char* const kEnv = "env";
+const char* const kSlow = "sleep 30";
+const char* const kWarn = "echo '/x/a.cpp:1:1: warning: w'; exit 2";
+const char* const kTwoPieces = "echo one; sleep 0.2; echo two 1>&2";
+#endif
+
 TEST_CASE("runner: runs a process and captures merged output") {
-  auto r = runner::run({{"sh", "-c", "echo out; echo err 1>&2; exit 3"}, {}, 10s});
+  auto r = runner::run({runner::shell_argv(kOutErr), {}, 10s});
   REQUIRE(r);
   CHECK(r->exit_code == 3);
   CHECK_FALSE(r->timed_out);
@@ -22,14 +37,14 @@ TEST_CASE("runner: secrets never reach child processes (9.5)") {
   ::setenv("ANTHROPIC_API_KEY", "sk-should-not-leak", 1);
   ::setenv("OPENAI_API_KEY", "sk-other", 1);
   ::setenv("GITHUB_TOKEN", "ghp_x", 1);
-  auto r = runner::run({{"env"}, {}, 10s, {{"KARKAS_PROBE_DIR", "/tmp/p"}, {"MY_SECRET", "x"}}});
+  auto r = runner::run({runner::shell_argv(kEnv), {}, 10s, {{"KARKAS_PROBE_DIR", "/tmp/p"}, {"MY_SECRET", "x"}}});
   REQUIRE(r);
   CHECK_FALSE(core::contains(r->output, "sk-should-not-leak"));
   CHECK_FALSE(core::contains(r->output, "ANTHROPIC_API_KEY"));
   CHECK_FALSE(core::contains(r->output, "GITHUB_TOKEN"));
   CHECK_FALSE(core::contains(r->output, "MY_SECRET"));
   CHECK(core::contains(r->output, "KARKAS_PROBE_DIR=/tmp/p"));
-  CHECK(core::contains(r->output, "PATH="));
+  CHECK(core::contains(core::to_lower(r->output), "path="));
   ::unsetenv("ANTHROPIC_API_KEY");
   ::unsetenv("OPENAI_API_KEY");
   ::unsetenv("GITHUB_TOKEN");
@@ -37,7 +52,7 @@ TEST_CASE("runner: secrets never reach child processes (9.5)") {
 
 TEST_CASE("runner: a process past its timeout is killed") {
   auto t0 = std::chrono::steady_clock::now();
-  auto r = runner::run({{"sleep", "30"}, {}, 300ms});
+  auto r = runner::run({runner::shell_argv(kSlow), {}, 300ms});
   REQUIRE(r);
   CHECK(r->timed_out);
   CHECK_FALSE(r->ok());
@@ -65,7 +80,7 @@ TEST_CASE("runner: warning compression keeps compiler warnings only, deduplicate
                     "warning: unused\n";
   auto w = runner::compress_build_warnings(log, "/p");
   CHECK(w == "source/Engine.cpp:744:9: warning: unused variable 'x' [-Wunused-variable]");
-  auto r = runner::build_command("echo '/x/a.cpp:1:1: warning: w'; exit 2", std::filesystem::temp_directory_path(),
+  auto r = runner::build_command(kWarn, std::filesystem::temp_directory_path(),
                                  std::chrono::seconds(10));
   REQUIRE(r);
   CHECK_FALSE(r->ok);
@@ -138,7 +153,7 @@ TEST_CASE("runner: an inherited environment can drop named variables") {
   ::setenv("KK_TEST_DROP", "drop-me", 1);
   ::setenv("KK_TEST_KEEP", "keep-me", 1);
   runner::RunOptions o;
-  o.argv = {"env"};
+  o.argv = runner::shell_argv(kEnv);
   o.timeout = 10s;
   o.clean_env = false;
   o.unset_env = {"KK_TEST_DROP"};
@@ -148,7 +163,7 @@ TEST_CASE("runner: an inherited environment can drop named variables") {
   CHECK_FALSE(core::contains(r->output, "drop-me"));
   CHECK(core::contains(r->output, "KK_TEST_KEEP=override"));
   CHECK_FALSE(core::contains(r->output, "keep-me"));
-  CHECK(core::contains(r->output, "PATH="));
+  CHECK(core::contains(core::to_lower(r->output), "path="));
   ::unsetenv("KK_TEST_DROP");
   ::unsetenv("KK_TEST_KEEP");
 }
@@ -156,7 +171,7 @@ TEST_CASE("runner: an inherited environment can drop named variables") {
 TEST_CASE("runner: the output reaches on_output as it comes and is kept as well (ADR 0037)") {
   std::string streamed;
   int pieces = 0;
-  runner::RunOptions ro{{"sh", "-c", "echo one; sleep 0.2; echo two 1>&2"}, {}, 10s};
+  runner::RunOptions ro{runner::shell_argv(kTwoPieces), {}, 10s};
   ro.on_output = [&](std::string_view s) {
     streamed += s;
     ++pieces;

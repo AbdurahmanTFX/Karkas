@@ -15,12 +15,14 @@ using gui::ChatMode;
 
 namespace {
 
+#ifndef _WIN32  // the fake karkas is a shell script (docs/adr/0046)
 std::filesystem::path fake_cli(const test::TempDir& d, const std::string& body) {
   auto p = d.path() / "karkas";
   REQUIRE(core::write_file(p, "#!/bin/sh\n" + body));
   ::chmod(p.c_str(), 0755);
   return p;
 }
+#endif
 
 std::vector<ChatEntry> of_kind(const std::vector<ChatEntry>& all, ChatEntry::Kind k) {
   std::vector<ChatEntry> out;
@@ -69,6 +71,7 @@ TEST_CASE("chat: a message is the karkas command a user would type (ADR 0019)") 
         std::vector<std::string>{"C-0002", "C-0003"});
 }
 
+#ifndef _WIN32
 TEST_CASE("chat: progress streams in, the result ends the command, the conversation is kept") {
   test::TempDir d{"chat"};
   auto root = d.path() / "proj";
@@ -105,7 +108,9 @@ TEST_CASE("chat: progress streams in, the result ends the command, the conversat
   CHECK(again.entries().empty());
   CHECK_FALSE(std::filesystem::exists(root / ".karkas" / "chat.jsonl"));
 }
+#endif
 
+#ifndef _WIN32
 TEST_CASE("chat: Stop is Ctrl+C for the command, Kill ends its process group") {
   test::TempDir d{"chat"};
   auto root = d.path() / "proj";
@@ -137,6 +142,7 @@ TEST_CASE("chat: Stop is Ctrl+C for the command, Kill ends its process group") {
     CHECK(chat.wait(std::chrono::seconds(5)));
   }
 }
+#endif
 
 TEST_CASE("chat: in a notes project a message is a request to the notes assistant (ADR 0039)") {
   std::string err;

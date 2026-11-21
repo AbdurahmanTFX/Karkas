@@ -1,6 +1,10 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 29, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 29,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
@@ -53,36 +57,162 @@
         "KARKAS_GUI": "OFF",
         "KARKAS_TESTS": "ON"
       }
+    },
+    {
+      "name": "package-linux",
+      "displayName": "Linux packages: release, static third-party and C++ runtime (ADR 0046)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
+        "KARKAS_TESTS": "OFF",
+        "KARKAS_GUI": "ON",
+        "KARKAS_SYSTEM_DEPS": "OFF",
+        "KARKAS_STATIC_RUNTIME": "ON",
+        "KARKAS_GRAPHVIZ": "OFF"
+      }
+    },
+    {
+      "name": "windows",
+      "displayName": "Windows x86-64 cross build (MinGW-w64), tests run under wine (ADR 0046)",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/mingw-w64-x86_64.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "KARKAS_TESTS": "ON",
+        "KARKAS_GUI": "ON",
+        "KARKAS_SYSTEM_DEPS": "OFF",
+        "KARKAS_STATIC_RUNTIME": "ON",
+        "KARKAS_GRAPHVIZ": "OFF",
+        "KARKAS_MOLD": "OFF"
+      }
+    },
+    {
+      "name": "package-windows",
+      "displayName": "Windows packages (MinGW-w64): release, one static .exe each (ADR 0046)",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/mingw-w64-x86_64.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "KARKAS_TESTS": "OFF",
+        "KARKAS_GUI": "ON",
+        "KARKAS_SYSTEM_DEPS": "OFF",
+        "KARKAS_STATIC_RUNTIME": "ON",
+        "KARKAS_GRAPHVIZ": "OFF",
+        "KARKAS_MOLD": "OFF"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "dev", "configurePreset": "dev" },
-    { "name": "release", "configurePreset": "release" },
-    { "name": "asan", "configurePreset": "asan" },
-    { "name": "headless", "configurePreset": "headless" }
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "headless",
+      "configurePreset": "headless"
+    },
+    {
+      "name": "package-linux",
+      "configurePreset": "package-linux",
+      "targets": [
+        "packages"
+      ]
+    },
+    {
+      "name": "windows",
+      "configurePreset": "windows"
+    },
+    {
+      "name": "package-windows",
+      "configurePreset": "package-windows",
+      "targets": [
+        "packages"
+      ]
+    }
   ],
   "testPresets": [
     {
       "name": "dev",
       "configurePreset": "dev",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "timeout": 600 }
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "timeout": 600
+      }
     },
     {
       "name": "dev-fast",
       "inherits": "dev",
       "description": "dev without the tests labelled slow: real builds of reference projects (ADR 0029)",
-      "filter": { "exclude": { "label": "slow" } }
+      "filter": {
+        "exclude": {
+          "label": "slow"
+        }
+      }
     },
     {
       "name": "asan",
       "configurePreset": "asan",
-      "output": { "outputOnFailure": true }
+      "output": {
+        "outputOnFailure": true
+      }
     },
     {
       "name": "headless",
       "configurePreset": "headless",
-      "output": { "outputOnFailure": true }
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows",
+      "configurePreset": "windows",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "timeout": 600
+      }
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "package-linux",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "package-linux"
+        },
+        {
+          "type": "build",
+          "name": "package-linux"
+        }
+      ]
+    },
+    {
+      "name": "package-windows",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "package-windows"
+        },
+        {
+          "type": "build",
+          "name": "package-windows"
+        }
+      ]
     }
   ]
 }

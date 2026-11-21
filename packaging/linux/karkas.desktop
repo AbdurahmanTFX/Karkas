@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Karkas
+GenericName=Schema-first IDE
+GenericName[ru]=IDE со схемой
+Comment=Design a project as a schema of blocks; agents write the code inside them
+Comment[ru]=Проектируйте программу схемой блоков, агенты пишут код внутри них
+Exec=karkas-gui
+Icon=karkas
+Terminal=false
+Categories=Development;IDE;
+Keywords=schema;blocks;agents;notes;C++;
+Keywords[ru]=схема;блоки;агенты;заметки;C++;
+StartupWMClass=karkas
+StartupNotify=true

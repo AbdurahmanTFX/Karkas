@@ -1,13 +1,15 @@
 // Mode mcp without a client session (docs/adr/0029): see launcher.hpp.
 #include "kk/agents/launcher.hpp"
 
-#include <fcntl.h>
 #include <fmt/format.h>
+#include <spdlog/spdlog.h>
+#ifndef _WIN32
+#include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
-#include <spdlog/spdlog.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <chrono>
 #include <cstdlib>
@@ -16,9 +18,14 @@
 #include <nlohmann/json.hpp>
 
 #include "kk/core/paths.hpp"
+#include "kk/core/platform.hpp"
 #include "kk/core/text.hpp"
 
+#ifdef _WIN32
+#include "kk/core/win_process.hpp"
+#else
 extern char** environ;
+#endif
 
 namespace kk::agents {
 
@@ -35,7 +42,10 @@ std::int64_t now_s() {
 // the one on PATH (an engine may run inside karkas-gui).
 std::string karkas_cli() {
   auto self = core::self_executable();
-  if (self.filename() == "karkas") return self.string();
+  if (self.stem() == "karkas") return self.string();
+#ifdef _WIN32
+  return core::find_in_path("karkas");
+#else
   if (const char* path = std::getenv("PATH")) {
     for (const auto& d : core::split(path, ':')) {
       auto p = fs::path(d) / "karkas";
@@ -44,6 +54,7 @@ std::string karkas_cli() {
     }
   }
   return "karkas";
+#endif
 }
 
 std::string system_prompt() {
@@ -107,8 +118,8 @@ std::vector<std::string> RunLauncher::command_for(const llm::McpTurn& t, const s
 
 std::vector<std::string> RunLauncher::session_environment() {
   std::vector<std::string> env;
-  for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
-    std::string_view v(*e);
+  for (const auto& kv : core::environment()) {
+    std::string_view v(kv);
     if (v.starts_with("ANTHROPIC_API_KEY=") || v.starts_with("ANTHROPIC_AUTH_TOKEN=") || v.starts_with("MCP_TIMEOUT=") ||
         v.starts_with("MCP_TOOL_TIMEOUT=")) {
       continue;
@@ -166,6 +177,11 @@ void RunLauncher::stop() {
   std::lock_guard lk(mu_);
   for (auto& [run, s] : sessions_) {
     if (!s.running) continue;
+#ifdef _WIN32
+    if (auto* c = static_cast<core::win::Child*>(s.process.get())) c->kill_tree();  // with the MCP server it started
+    s.running = false;
+    spdlog::warn("launch: the session of run {} was ended with its ticket", run);
+#else
     ::kill(-s.pid, SIGTERM);  // its own process group: the session and the MCP server it started
     for (int i = 0; i < 20 && ::waitpid(s.pid, nullptr, WNOHANG) == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     if (::waitpid(s.pid, nullptr, WNOHANG) == 0) {
@@ -174,6 +190,7 @@ void RunLauncher::stop() {
     }
     s.running = false;
     spdlog::warn("launch: the session of run {} was ended with its ticket", run);
+#endif
   }
 }
 
@@ -195,9 +212,7 @@ void RunLauncher::watch() {
         } else {
           // Claimed atomically: another launcher (the GUI's engine next to a terminal's) may serve the run.
           auto m = marker(root_, t.run);
-          int fd = ::open(m.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0644);
-          if (fd < 0) continue;
-          ::close(fd);
+          if (!core::create_exclusive(m)) continue;
         }
         launch(t);
       }
@@ -213,6 +228,37 @@ void RunLauncher::launch(const llm::McpTurn& t) {
   }();
   auto args = command_for(t, model);
   auto env = session_environment();
+#ifdef _WIN32
+  {
+    auto log = dir_ / t.run;
+    auto err = dir_ / (t.run + ".err");
+    std::error_code size_ec;
+    const auto log_size = fs::file_size(log, size_ec);
+    core::win::SpawnSpec sp;
+    sp.argv = args;
+    sp.cwd = work_;
+    sp.env = env;
+    sp.out = core::win::SpawnSpec::Io::File;
+    sp.out_file = log;
+    sp.err = core::win::SpawnSpec::Io::File;
+    sp.err_file = err;
+    auto child = core::win::Child::spawn(sp);  // in a job of its own: stop() ends it with its MCP server
+    auto& s = sessions_[t.run];
+    ++s.launches;
+    s.log_from = size_ec ? 0 : log_size;
+    if (!child) {
+      spdlog::warn("launch: cannot start {} for run {}: {}", args[0], t.run, child.error().message);
+      s.running = false;
+      return;
+    }
+    s.pid = child->pid();
+    s.process = std::make_shared<core::win::Child>(std::move(*child));
+    s.model = model;
+    s.running = true;
+    spdlog::info("launch: {} serves run {} ({} {}, {}, pid {})", args[0], t.run, t.role, t.block, model, s.pid);
+    return;
+  }
+#else
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
   argv.push_back(nullptr);
@@ -249,13 +295,22 @@ void RunLauncher::launch(const llm::McpTurn& t) {
   s.model = model;
   s.running = true;
   spdlog::info("launch: {} serves run {} ({} {}, {}, pid {})", args[0], t.run, t.role, t.block, model, pid);
+#endif
 }
 
 void RunLauncher::reap() {
   for (auto& [run, s] : sessions_) {
     if (!s.running) continue;
+#ifdef _WIN32
+    auto* child = static_cast<core::win::Child*>(s.process.get());
+    auto code = child != nullptr ? child->try_wait() : std::optional<int>(-1);
+    if (!code) continue;
+    const int exit_code = *code;
+#else
     int status = 0;
     if (::waitpid(s.pid, &status, WNOHANG) != s.pid) continue;
+    const int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
     s.running = false;
     auto line = result_line(run, s.log_from);
     if (auto limit = usage_limit(line); !limit.empty()) {
@@ -274,7 +329,7 @@ void RunLauncher::reap() {
       s.model_override = next;
       if (s.launches > 0) --s.launches;  // the try does not count
     } else {
-      spdlog::info("launch: the session of run {} ended (exit {})", run, WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+      spdlog::info("launch: the session of run {} ended (exit {})", run, exit_code);
       record_cost(run, s, line);
     }
     // A turn the session took and never answered goes back to waiting: the next session takes it.

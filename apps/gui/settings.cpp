@@ -1,6 +1,7 @@
 #include "settings.hpp"
 
 #include "kk/core/model.hpp"
+#include "kk/core/platform.hpp"
 #include "kk/core/notes.hpp"
 
 #include <algorithm>
@@ -16,11 +17,15 @@ using json = nlohmann::json;
 
 std::filesystem::path settings_path() {
   std::filesystem::path base;
+#ifdef _WIN32
+  base = core::config_home();  // %APPDATA% (docs/adr/0046)
+#else
   if (const char* x = std::getenv("XDG_CONFIG_HOME"); x != nullptr && *x != '\0') {
     base = x;
   } else if (const char* h = std::getenv("HOME"); h != nullptr) {
     base = std::filesystem::path(h) / ".config";
   }
+#endif
   return base / "karkas" / "gui.json";
 }
 

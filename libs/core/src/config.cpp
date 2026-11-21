@@ -9,6 +9,7 @@
 #include <toml++/toml.hpp>
 
 #include "kk/core/paths.hpp"
+#include "kk/core/platform.hpp"
 #include "kk/core/text.hpp"
 
 namespace kk::core {
@@ -295,11 +296,15 @@ Result<Config> load_config(const std::filesystem::path& project_root) {
   Config cfg;
   std::vector<std::filesystem::path> files;
   std::filesystem::path user_dir;
+#ifdef _WIN32
+  user_dir = config_home();  // %APPDATA% (docs/adr/0046)
+#else
   if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr && *xdg != '\0') {
     user_dir = xdg;
   } else if (const char* home = std::getenv("HOME"); home != nullptr) {
     user_dir = std::filesystem::path(home) / ".config";
   }
+#endif
   // Lower precedence first: the project file overrides the user file.
   if (!user_dir.empty()) files.push_back(user_dir / "karkas" / "config.toml");
   if (!project_root.empty()) files.push_back(project_root / "karkas.toml");

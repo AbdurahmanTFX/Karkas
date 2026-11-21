@@ -1,8 +1,18 @@
 #pragma once
 // Helpers for Karkas tests: fixtures, golden files, temporary directories.
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <string_view>
+
+#ifdef _WIN32
+// The tests set variables with POSIX setenv/unsetenv; the Windows runtime has _putenv_s (docs/adr/0046).
+inline int setenv(const char* name, const char* value, int overwrite) {
+  if (overwrite == 0 && std::getenv(name) != nullptr) return 0;
+  return _putenv_s(name, value);
+}
+inline int unsetenv(const char* name) { return _putenv_s(name, ""); }
+#endif
 
 namespace kk::test {
 

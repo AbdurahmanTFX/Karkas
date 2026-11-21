@@ -2,13 +2,17 @@
 
 #include "kk/core/tickets.hpp"
 
-#include <fcntl.h>
 #include <fmt/format.h>
+#include <spdlog/spdlog.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <fcntl.h>
 #include <poll.h>
 #include <spawn.h>
-#include <spdlog/spdlog.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -26,13 +30,20 @@
 #include "kk/core/notes.hpp"
 #include "kk/code/analyzer.hpp"
 #include "kk/core/paths.hpp"
+#include "kk/core/platform.hpp"
 #include "kk/core/text.hpp"
 #include "kk/index/watch.hpp"
+#ifdef _WIN32
+#include "kk/core/win_process.hpp"
+#include "png.hpp"
+#endif
 #include "i18n.hpp"
 #include "metrics.hpp"
 #include "settings.hpp"
 
+#ifndef _WIN32
 extern char** environ;
+#endif
 
 namespace kk::gui {
 
@@ -368,9 +379,27 @@ void Worker::save_positions(const std::string& view, std::map<std::string, layou
 void Worker::open_in_editor(const std::string& rel_file, int line) {
   post([this, rel_file, line] {
     auto abs = (root_ / rel_file).string();
+#ifdef _WIN32
+    std::string quoted = "\"" + abs + "\"";  // cmd.exe quotes (docs/adr/0046)
+#else
     std::string quoted = "'" + core::replace_all(abs, "'", "'\\''") + "'";
+#endif
     std::string cmd = core::replace_all(core::replace_all(cfg_.editor_command, "{file}", quoted), "{line}",
                                         std::to_string(std::max(line, 1)));
+#ifdef _WIN32
+    const char* comspec = std::getenv("COMSPEC");
+    core::win::SpawnSpec sp;
+    sp.argv = {comspec != nullptr ? comspec : "C:\\Windows\\System32\\cmd.exe"};
+    sp.command_line = "cmd.exe /d /s /c \"" + cmd + "\"";
+    sp.out = sp.err = core::win::SpawnSpec::Io::Null;
+    sp.own_job = false;
+    if (auto child = core::win::Child::spawn(sp)) {
+      child->detach();
+      message_ = tr("editor: ") + cmd;
+    } else {
+      message_ = tr("cannot start the editor: ") + cmd;
+    }
+#else
     // Detached: the GUI never waits for the editor (14.7).
     pid_t pid = 0;
     const char* argv[] = {"/bin/sh", "-c", cmd.c_str(), nullptr};
@@ -379,6 +408,7 @@ void Worker::open_in_editor(const std::string& rel_file, int line) {
     } else {
       message_ = tr("editor: ") + cmd;
     }
+#endif
   });
 }
 
@@ -515,21 +545,16 @@ ChangeGhost change_ghost(const fs::path& root, const core::Change& c) {
 
 namespace {
 
-// Starts a program detached (the GUI never waits for it); false when it cannot start.
-bool spawn_detached(const std::vector<std::string>& args) {
-  std::vector<char*> argv;
-  for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
-  argv.push_back(nullptr);
-  pid_t pid = 0;
-  return posix_spawnp(&pid, argv[0], nullptr, nullptr, argv.data(), environ) == 0;
-}
+// Opens a folder, a file or an address with the desktop's program, detached (the GUI never waits for it);
+// false when it cannot start (xdg-open; Windows: ShellExecute).
+bool open_detached(const std::string& target) { return core::open_with_desktop(target); }
 
 }  // namespace
 
 void Worker::open_folder(const std::string& rel_dir) {
   post([this, rel_dir] {
     auto dir = rel_dir.empty() ? root_ : root_ / rel_dir;
-    message_ = spawn_detached({"xdg-open", dir.string()}) ? tr("folder: ") + dir.string() : tr("cannot open the folder: ") + dir.string();
+    message_ = open_detached(dir.string()) ? tr("folder: ") + dir.string() : tr("cannot open the folder: ") + dir.string();
   });
 }
 
@@ -543,12 +568,13 @@ void Worker::open_block_folder(const std::string& block) {
       }
     }
     auto dir = root_ / rel;
-    message_ = spawn_detached({"xdg-open", dir.string()}) ? tr("folder: ") + dir.string() : tr("cannot open the folder: ") + dir.string();
+    message_ = open_detached(dir.string()) ? tr("folder: ") + dir.string() : tr("cannot open the folder: ") + dir.string();
   });
 }
 
 namespace {
 
+#ifndef _WIN32
 // What a program printed: run without a shell, stderr dropped, killed after `timeout_ms`.
 struct Captured {
   bool started = false;  // the program was found
@@ -608,6 +634,7 @@ Captured capture(const std::vector<std::string>& args, int timeout_ms) {
   r.ok = !cut && WIFEXITED(status) && WEXITSTATUS(status) == 0;
   return r;
 }
+#endif
 
 // A file name not taken in `dir`: "name.ext", else "name-2.ext", "name-3.ext" ...
 fs::path free_name(const fs::path& dir, const std::string& stem, const std::string& ext) {
@@ -681,8 +708,87 @@ void Worker::attach_files(const std::string& note_file, std::vector<std::string>
   });
 }
 
+#ifdef _WIN32
+namespace {
+// The image on the Windows clipboard as a file's bytes and extension: the "PNG" format browsers and screenshot
+// tools put there, else the bitmap (CF_DIB) written as PNG. Empty when there is none.
+std::pair<std::string, std::string> clipboard_image() {
+  std::pair<std::string, std::string> r;
+  if (!::OpenClipboard(nullptr)) return r;
+  if (UINT png = ::RegisterClipboardFormatW(L"PNG"); png != 0 && ::IsClipboardFormatAvailable(png)) {
+    if (HANDLE h = ::GetClipboardData(png)) {
+      if (const void* p = ::GlobalLock(h)) {
+        r = {std::string(static_cast<const char*>(p), ::GlobalSize(h)), ".png"};
+        ::GlobalUnlock(h);
+      }
+    }
+  }
+  if (r.first.empty() && ::IsClipboardFormatAvailable(CF_DIB)) {
+    if (HANDLE h = ::GetClipboardData(CF_DIB)) {
+      const auto* bi = static_cast<const BITMAPINFOHEADER*>(::GlobalLock(h));
+      if (bi != nullptr && (bi->biBitCount == 32 || bi->biBitCount == 24) &&
+          (bi->biCompression == BI_RGB || bi->biCompression == BI_BITFIELDS)) {
+        const int w = bi->biWidth;
+        const int h_abs = bi->biHeight < 0 ? -bi->biHeight : bi->biHeight;
+        const bool bottom_up = bi->biHeight > 0;
+        const int bpp = bi->biBitCount / 8;
+        const std::size_t stride = (static_cast<std::size_t>(w) * bpp + 3) & ~std::size_t{3};
+        const auto* bits = reinterpret_cast<const std::uint8_t*>(bi) + bi->biSize +
+                           (bi->biCompression == BI_BITFIELDS && bi->biSize == sizeof(BITMAPINFOHEADER) ? 12 : 0);
+        std::vector<std::uint8_t> rgba(static_cast<std::size_t>(w) * h_abs * 4);
+        bool any_alpha = false;
+        for (int y = 0; y < h_abs; ++y) {
+          const auto* row = bits + stride * static_cast<std::size_t>(bottom_up ? h_abs - 1 - y : y);
+          for (int x = 0; x < w; ++x) {
+            auto* o = &rgba[(static_cast<std::size_t>(y) * w + x) * 4];
+            o[0] = row[x * bpp + 2];
+            o[1] = row[x * bpp + 1];
+            o[2] = row[x * bpp + 0];
+            o[3] = bpp == 4 ? row[x * bpp + 3] : 255;
+            any_alpha = any_alpha || o[3] != 0;
+          }
+        }
+        if (!any_alpha) {
+          for (std::size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;  // 32-bit bitmaps without alpha
+        }
+        auto tmp = fs::temp_directory_path() / fmt::format("karkas-paste-{}.png", core::current_pid());
+        if (w > 0 && h_abs > 0 && write_png(tmp.string(), w, h_abs, rgba)) {
+          if (auto bytes = core::read_file(tmp)) r = {*bytes, ".png"};
+          std::error_code ec;
+          fs::remove(tmp, ec);
+        }
+      }
+      if (bi != nullptr) ::GlobalUnlock(h);
+    }
+  }
+  ::CloseClipboard();
+  return r;
+}
+}  // namespace
+#endif
+
 void Worker::paste_image(const std::string& note_file) {
   post([this, note_file] {
+#ifdef _WIN32
+    auto [bytes, ext] = clipboard_image();
+    if (bytes.empty()) {
+      message_ = tr("no image in the clipboard");
+      return;
+    }
+    std::tm tm = core::local_tm(std::time(nullptr));
+    char stamp[32];
+    std::strftime(stamp, sizeof stamp, "paste-%Y%m%d-%H%M%S", &tm);
+    const fs::path note_dir = (root_ / note_file).parent_path();
+    std::error_code ec;
+    fs::create_directories(note_dir / "images", ec);
+    auto target = free_name(note_dir / "images", stamp, ext);
+    if (auto w = core::write_file(target, bytes); !w) {
+      message_ = w.error().message;
+      return;
+    }
+    message_ = tr("image pasted: ") + core::rel_str(root_, target);
+    push_insert(note_file, md_link(target, fs::relative(target, note_dir, ec).generic_string()));
+#else
     const char* wl = std::getenv("WAYLAND_DISPLAY");
     const bool wayland = wl != nullptr && *wl != '\0';
     auto types = capture(wayland ? std::vector<std::string>{"wl-paste", "--list-types"}
@@ -702,8 +808,7 @@ void Worker::paste_image(const std::string& note_file) {
                           5000);
       if (!data.ok || data.out.empty()) continue;
       std::time_t now = std::time(nullptr);
-      std::tm tm{};
-      localtime_r(&now, &tm);
+      std::tm tm = core::local_tm(now);
       char stamp[32];
       std::strftime(stamp, sizeof stamp, "paste-%Y%m%d-%H%M%S", &tm);
       const fs::path note_dir = (root_ / note_file).parent_path();
@@ -719,6 +824,7 @@ void Worker::paste_image(const std::string& note_file) {
       return;
     }
     message_ = tr("no image in the clipboard");
+#endif
   });
 }
 
@@ -743,7 +849,7 @@ void Worker::open_link(const std::string& from_file, const std::string& href) {
         return;
       }
     }
-    message_ = spawn_detached({"xdg-open", target}) ? tr("opened: ") + target : tr("cannot open: ") + target;
+    message_ = open_detached(target) ? tr("opened: ") + target : tr("cannot open: ") + target;
   });
 }
 

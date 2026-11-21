@@ -1,10 +1,12 @@
 #include "chat.hpp"
 
+#ifndef _WIN32
 #include <fcntl.h>
 #include <poll.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -15,9 +17,14 @@
 #include <set>
 
 #include "kk/core/paths.hpp"
+#include "kk/core/platform.hpp"
 #include "kk/core/text.hpp"
 
+#ifdef _WIN32
+#include "kk/core/win_process.hpp"
+#else
 extern char** environ;
+#endif
 
 namespace kk::gui {
 
@@ -138,10 +145,15 @@ std::vector<std::string> changes_in(const std::string& text) {
 
 fs::path find_karkas_cli() {
   std::error_code ec;
-  auto self = fs::read_symlink("/proc/self/exe", ec);
-  if (!ec) {
-    for (const auto& cand : {self.parent_path() / "karkas", self.parent_path().parent_path() / "cli" / "karkas"}) {
-      if (fs::is_regular_file(cand, ec) && ::access(cand.c_str(), X_OK) == 0) return cand;
+  auto self = core::self_executable();
+#ifdef _WIN32
+  const char* name = "karkas.exe";
+#else
+  const char* name = "karkas";
+#endif
+  if (!self.empty()) {
+    for (const auto& cand : {self.parent_path() / name, self.parent_path().parent_path() / "cli" / name}) {
+      if (core::is_executable(cand)) return cand;
     }
   }
   return "karkas";
@@ -258,6 +270,35 @@ bool Chat::send(ChatMode mode, const std::string& text, const ChatScope& scope) 
     thread_.join();
     lk.lock();
   }
+#ifdef _WIN32
+  {
+    core::win::SpawnSpec sp;
+    sp.argv = {cli_.string(), "--project", root_.string()};
+    sp.argv.insert(sp.argv.end(), args.begin(), args.end());
+    auto child = core::win::Child::spawn(sp);  // a job of its own: Kill ends the command with its builds
+    if (!child) {
+      add_locked({ChatEntry::Kind::Error, child.error().message, "", "", 0});
+      lk.unlock();
+      if (wake_) wake_();
+      return false;
+    }
+    pid_ = child->pid();
+    child_ = std::make_shared<core::win::Child>(std::move(*child));
+    busy_ = true;
+    stop_at_.reset();
+    ticket_.clear();
+    for (const auto& a : args) {
+      if (auto t = ticket_in(a); !t.empty()) {
+        ticket_ = t;
+        break;
+      }
+    }
+    thread_ = std::thread([this, pid = pid_] { reader(-1, -1, pid); });
+    lk.unlock();
+    if (wake_) wake_();
+    return true;
+  }
+#else
   int out[2] = {-1, -1};
   int err[2] = {-1, -1};
   if (::pipe2(out, O_CLOEXEC) != 0 || ::pipe2(err, O_CLOEXEC) != 0) {
@@ -321,13 +362,19 @@ bool Chat::send(ChatMode mode, const std::string& text, const ChatScope& scope) 
   lk.unlock();
   if (wake_) wake_();
   return true;
+#endif
 }
 
 void Chat::stop() {
   {
     std::lock_guard lk(mu_);
     if (!busy_ || pid_ <= 0 || stop_at_) return;
+#ifdef _WIN32
+    // No Ctrl+C for a process without this one's console: the command ends with what it started.
+    if (auto* c = static_cast<core::win::Child*>(child_.get())) c->kill_tree(130);
+#else
     ::kill(pid_, SIGINT);
+#endif
     stop_at_ = std::chrono::steady_clock::now();
     add_locked({ChatEntry::Kind::Info, "stopping: the agents finish their journals, the ticket stays open", "", ticket_, 0});
   }
@@ -338,7 +385,11 @@ void Chat::kill() {
   {
     std::lock_guard lk(mu_);
     if (!busy_ || pid_ <= 0) return;
+#ifdef _WIN32
+    if (auto* c = static_cast<core::win::Child*>(child_.get())) c->kill_tree(137);
+#else
     ::kill(-pid_, SIGKILL);
+#endif
     add_locked({ChatEntry::Kind::Info, "killed", "", ticket_, 0});
   }
   if (wake_) wake_();
@@ -380,12 +431,82 @@ void Chat::reader(int out_fd, int err_fd, pid_t pid) {
     e.ticket = ticket_;
     add_locked(std::move(e));
   };
-  pollfd fds[2] = {{out_fd, POLLIN, 0}, {err_fd, POLLIN, 0}};
-  int open_fds = 2;
   char buf[4096];
-  int status = 0;
   bool reaped = false;
   bool quitting = false;
+  bool signaled = false;  // ended by a signal (Linux)
+  int exit_code = -1;     // when it exited
+  auto err_chunk = [&](const char* data, std::size_t n) {
+    err_buf.append(data, n);
+    bool lines = false;
+    for (auto nl = err_buf.find('\n'); nl != std::string::npos; nl = err_buf.find('\n')) {
+      stderr_line(err_buf.substr(0, nl));
+      err_buf.erase(0, nl + 1);
+      lines = true;
+    }
+    return lines;
+  };
+#ifdef _WIN32
+  (void)out_fd;
+  (void)err_fd;
+  (void)pid;
+  std::shared_ptr<core::win::Child> child;
+  {
+    std::lock_guard lk(mu_);
+    child = std::static_pointer_cast<core::win::Child>(child_);
+  }
+  bool out_open = child != nullptr, err_open = child != nullptr;
+  int open_fds = (out_open ? 1 : 0) + (err_open ? 1 : 0);
+  auto pump = [&](int timeout_ms) {
+    auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    bool got = false;
+    bool lines = false;
+    while (true) {
+      if (out_open) {
+        long r = child->read_out(buf, sizeof buf);
+        if (r < 0) {
+          out_open = false;
+          --open_fds;
+        } else if (r > 0) {
+          out.append(buf, static_cast<std::size_t>(r));
+          got = true;
+        }
+      }
+      if (err_open) {
+        long r = child->read_err(buf, sizeof buf);
+        if (r < 0) {
+          err_open = false;
+          --open_fds;
+        } else if (r > 0) {
+          lines = err_chunk(buf, static_cast<std::size_t>(r)) || lines;
+          got = true;
+        }
+      }
+      if (got || open_fds == 0 || std::chrono::steady_clock::now() >= until) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    }
+    if (lines && wake_) wake_();
+    return got;
+  };
+  auto ended = [&] {
+    if (auto code = child ? child->try_wait() : std::optional<int>(-1)) {
+      exit_code = *code;
+      return true;
+    }
+    return false;
+  };
+  auto finish = [&] {
+    if (!reaped && !quitting && child) {
+      if (auto code = child->wait()) {
+        reaped = true;
+        exit_code = *code;
+      }
+    }
+  };
+#else
+  pollfd fds[2] = {{out_fd, POLLIN, 0}, {err_fd, POLLIN, 0}};
+  int open_fds = 2;
+  int status = 0;
   // Reads what is there within `timeout_ms`; false when nothing came.
   auto pump = [&](int timeout_ms) {
     int n = ::poll(fds, 2, timeout_ms);
@@ -405,17 +526,29 @@ void Chat::reader(int out_fd, int err_fd, pid_t pid) {
       if (f.fd == out_fd) {
         out.append(buf, static_cast<std::size_t>(r));
       } else {
-        err_buf.append(buf, static_cast<std::size_t>(r));
-        for (auto nl = err_buf.find('\n'); nl != std::string::npos; nl = err_buf.find('\n')) {
-          stderr_line(err_buf.substr(0, nl));
-          err_buf.erase(0, nl + 1);
-          lines = true;
-        }
+        lines = err_chunk(buf, static_cast<std::size_t>(r)) || lines;
       }
     }
     if (lines && wake_) wake_();
     return got;
   };
+  auto ended = [&] {
+    if (::waitpid(pid, &status, WNOHANG) != pid) return false;
+    signaled = WIFSIGNALED(status);
+    exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return true;
+  };
+  auto finish = [&] {
+    for (auto& f : fds) {
+      if (f.fd >= 0) ::close(f.fd);
+    }
+    if (!reaped && !quitting && ::waitpid(pid, &status, 0) == pid) {
+      reaped = true;
+      signaled = WIFSIGNALED(status);
+      exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    }
+  };
+#endif
   while (open_fds > 0) {
     {
       std::lock_guard lk(mu_);
@@ -425,31 +558,29 @@ void Chat::reader(int out_fd, int err_fd, pid_t pid) {
     pump(200);
     // The command itself has ended: take what it wrote and stop, even if a process it left
     // behind still holds the pipes.
-    if (::waitpid(pid, &status, WNOHANG) == pid) {
+    if (ended()) {
       reaped = true;
       while (open_fds > 0 && pump(50)) {
       }
       break;
     }
   }
-  for (auto& f : fds) {
-    if (f.fd >= 0) ::close(f.fd);
-  }
+  finish();
   if (!err_buf.empty()) stderr_line(err_buf);
-  if (!reaped && !quitting) reaped = ::waitpid(pid, &status, 0) == pid;
   {
     std::lock_guard lk(mu_);
     pid_ = 0;
+    child_.reset();
     std::string ticket = ticket_;
     if (auto t = ticket_in(out); !t.empty()) ticket = t;
-    bool stopped = stop_at_.has_value() || (reaped && WIFSIGNALED(status)) || (reaped && WIFEXITED(status) && WEXITSTATUS(status) == 130);
-    bool ok = reaped && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    bool stopped = stop_at_.has_value() || (reaped && signaled) || (reaped && exit_code == 130);
+    bool ok = reaped && !signaled && exit_code == 0;
     if (!core::trim(out).empty()) add_locked({ChatEntry::Kind::Result, out, "", ticket, 0});
     std::string why = core::join(errors, "\n");
     if (stopped) {
       add_locked({ChatEntry::Kind::Info, why.empty() ? "stopped" : why, "", ticket, 0});
     } else if (!ok) {
-      if (why.empty()) why = reaped && WIFEXITED(status) ? "the command failed with exit code " + std::to_string(WEXITSTATUS(status)) : "the command failed";
+      if (why.empty()) why = reaped && !signaled && exit_code >= 0 ? "the command failed with exit code " + std::to_string(exit_code) : "the command failed";
       add_locked({ChatEntry::Kind::Error, why, "", ticket, 0});
     } else if (core::trim(out).empty()) {
       add_locked({ChatEntry::Kind::Info, "done", "", ticket, 0});

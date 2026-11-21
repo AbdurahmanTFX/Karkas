@@ -1,5 +1,6 @@
 #include "run.hpp"
 
+#ifndef _WIN32
 #include <fcntl.h>
 #include <poll.h>
 #include <spawn.h>
@@ -7,14 +8,20 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <csignal>
 #include <cstring>
 
+#include "kk/core/platform.hpp"
 #include "kk/core/text.hpp"
 
+#ifdef _WIN32
+#include "kk/core/win_process.hpp"
+#else
 extern char** environ;
+#endif
 
 namespace kk::gui {
 
@@ -94,7 +101,11 @@ RunSession::~RunSession() {
     stop();
     if (!wait(std::chrono::milliseconds(static_cast<int>(kKillAfter * 1000) + 2000))) {
       std::lock_guard lk(mu_);
+#ifdef _WIN32
+      if (auto* c = static_cast<core::win::Child*>(child_.get())) c->kill_tree();
+#else
       if (pid_ > 0) ::kill(-pid_, SIGKILL);
+#endif
     }
   }
   {
@@ -163,6 +174,33 @@ bool RunSession::start(bool build) {
   stop_at_.reset();
   killed_ = false;
   ++serial_;
+#ifdef _WIN32
+  {
+    // Windows: pipes, not a terminal (docs/adr/0046) — what is typed goes to the program's input; its
+    // output may come in blocks when it buffers a pipe.
+    core::win::SpawnSpec sp;
+    sp.argv = {cli_.string(), "--project", root_.string()};
+    for (auto& a : run_args(build)) sp.argv.push_back(std::move(a));
+    std::vector<std::string> env_s;
+    for (auto& e : core::environment()) {
+      if (!core::to_lower(e).starts_with("term=")) env_s.push_back(std::move(e));
+    }
+    env_s.emplace_back("TERM=dumb");
+    sp.env = std::move(env_s);
+    sp.in = core::win::SpawnSpec::Io::Pipe;
+    sp.err = core::win::SpawnSpec::Io::ToStdout;
+    auto child = core::win::Child::spawn(sp);  // a job of its own: Stop ends karkas, the build and the program
+    if (!child) return fail(child.error().message);
+    pid_ = child->pid();
+    child_ = std::make_shared<core::win::Child>(std::move(*child));
+    phase_ = RunPhase::Building;
+    started_at_ = Clock::now();
+    thread_ = std::thread([this, pid = pid_] { reader(-1, pid); });
+    lk.unlock();
+    if (wake_) wake_();
+    return true;
+  }
+#else
   // A terminal of its own: the program's output comes line by line (a pipe would buffer it), and
   // what is typed into the Run tab is its input.
   int master = ::posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
@@ -226,13 +264,18 @@ bool RunSession::start(bool build) {
   lk.unlock();
   if (wake_) wake_();
   return true;
+#endif
 }
 
 void RunSession::stop() {
   {
     std::lock_guard lk(mu_);
     if (phase_ == RunPhase::Idle || pid_ <= 0 || stop_at_) return;
+#ifdef _WIN32
+    if (auto* c = static_cast<core::win::Child*>(child_.get())) c->kill_tree(143);  // no SIGTERM: ended with all it started
+#else
     ::kill(-pid_, SIGTERM);
+#endif
     stop_at_ = Clock::now();
     ++serial_;
   }
@@ -241,6 +284,10 @@ void RunSession::stop() {
 
 bool RunSession::send_input(const std::string& line) {
   std::lock_guard lk(mu_);
+#ifdef _WIN32
+  auto* c = static_cast<core::win::Child*>(child_.get());
+  return phase_ != RunPhase::Idle && c != nullptr && c->write_in(line + "\n");
+#else
   if (phase_ == RunPhase::Idle || master_ < 0) return false;
   std::string data = line + "\n";
   std::size_t off = 0;
@@ -251,6 +298,7 @@ bool RunSession::send_input(const std::string& line) {
     off += static_cast<std::size_t>(n);
   }
   return true;
+#endif
 }
 
 RunPhase RunSession::phase() const {
@@ -311,6 +359,83 @@ bool RunSession::wait(std::chrono::milliseconds timeout) {
   return true;
 }
 
+#ifdef _WIN32
+void RunSession::reader(int, pid_t) {
+  char buf[8192];
+  std::shared_ptr<core::win::Child> child;
+  {
+    std::lock_guard lk(mu_);
+    child = std::static_pointer_cast<core::win::Child>(child_);
+  }
+  std::optional<int> code;
+  bool closed = child == nullptr;
+  auto last_wake = Clock::now();
+  auto pump = [&](int timeout_ms) {
+    auto until = Clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (!closed) {
+      long n = child->read_out(buf, sizeof buf);
+      if (n < 0) {
+        closed = true;
+        break;
+      }
+      if (n > 0) {
+        std::vector<std::string> done;
+        {
+          std::lock_guard lk(mu_);
+          term_.feed(std::string_view(buf, static_cast<std::size_t>(n)), done);
+          for (auto& l : done) line_locked(std::move(l));
+          ++serial_;
+        }
+        if (wake_) wake_();
+        last_wake = Clock::now();
+        return true;
+      }
+      if (Clock::now() >= until) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    }
+    return false;
+  };
+  while (child) {
+    {
+      std::lock_guard lk(mu_);
+      if (quit_) break;
+    }
+    if (closed) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    } else {
+      pump(200);
+    }
+    if ((code = child->try_wait())) {
+      while (pump(50)) {
+      }
+      break;
+    }
+    if (Clock::now() - last_wake >= std::chrono::seconds(1)) {
+      last_wake = Clock::now();
+      if (wake_) wake_();
+    }
+  }
+  {
+    std::lock_guard lk(mu_);
+    if (!code && child) {
+      child->kill_tree();
+      code = child->wait(2000);
+    }
+    if (!term_.partial().empty()) line_locked(term_.take_partial());
+    end_.ended = true;
+    end_.stopped = stop_at_.has_value();
+    end_.seconds = std::chrono::duration<double>(Clock::now() - started_at_).count();
+    if (code) end_.exit_code = *code;
+    end_.build_failed = !end_.started && !end_.stopped && !end_.nothing_to_run;
+    child_.reset();
+    pid_ = 0;
+    phase_ = RunPhase::Idle;
+    stop_at_.reset();
+    ++serial_;
+  }
+  if (wake_) wake_();
+}
+#else
 void RunSession::reader(int master, pid_t pid) {
   char buf[8192];
   int status = 0;
@@ -388,5 +513,6 @@ void RunSession::reader(int master, pid_t pid) {
   }
   if (wake_) wake_();
 }
+#endif
 
 }  // namespace kk::gui

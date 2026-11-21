@@ -8,9 +8,20 @@
 #include <random>
 #include <sstream>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace kk::core {
 
 fs::path self_executable() {
+#ifdef _WIN32
+  std::wstring buf(32768, L'\0');
+  auto n = ::GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+  if (n == 0 || n >= buf.size()) return {};
+  buf.resize(n);
+  return fs::path(buf);
+#endif
   std::error_code ec;
   auto exe = fs::read_symlink("/proc/self/exe", ec).string();
   if (ec || exe.empty()) return {};

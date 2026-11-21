@@ -1,8 +1,6 @@
 #include "kk/core/tickets.hpp"
 
-#include <fcntl.h>
 #include <fmt/format.h>
-#include <unistd.h>
 
 #include <csignal>
 
@@ -12,6 +10,7 @@
 #include <set>
 
 #include "kk/core/paths.hpp"
+#include "kk/core/platform.hpp"
 #include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
 
@@ -58,9 +57,7 @@ Result<Ticket> TicketStore::create(TicketKind kind, std::string_view origin, std
     }
     for (const auto& f : facts) t.facts.push_back(TextItem{f, {}, 0, 0});
     auto path = file(t.id);
-    int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
-    if (fd < 0) continue;
-    ::close(fd);
+    if (!create_exclusive(path)) continue;
     if (auto r = write_file(path, write_ticket(t)); !r) return std::unexpected(r.error());
     return t;
   }
@@ -213,21 +210,18 @@ Result<TicketStore::Lock> TicketStore::lock(std::string_view id, std::string_vie
   std::error_code ec;
   fs::create_directories(dir(), ec);
   auto path = dir() / (std::string(id) + ".lock");
-  int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
-  if (fd < 0) {
+  auto line = fmt::format("{} {}\n", current_pid(), owner);
+  if (!create_exclusive(path, line)) {
     auto holder = read_file(path).value_or("?");
     // A lock whose owner process is gone is stale.
     int pid = 0;
     std::from_chars(holder.data(), holder.data() + holder.size(), pid);
-    if (pid > 0 && ::kill(pid, 0) != 0) {
+    if (pid > 0 && !pid_alive(pid)) {
       fs::remove(path, ec);
       return lock(id, owner);
     }
     return fail("tickets", fmt::format("{} is locked by {}", id, trim(holder)));
   }
-  auto line = fmt::format("{} {}\n", ::getpid(), owner);
-  (void)!::write(fd, line.data(), line.size());
-  ::close(fd);
   return Lock(path);
 }
 

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -67,6 +68,7 @@ class RunLauncher {
     int launches = 0;
     bool running = false;
     std::uintmax_t log_from = 0;  // where its stream starts in the run's log: the tries of a run share one file
+    std::shared_ptr<void> process;  // Windows: the core::win::Child of the session (docs/adr/0046)
   };
   void watch();
   void launch(const llm::McpTurn& t);

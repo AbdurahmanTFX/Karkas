@@ -1,6 +1,12 @@
 #include "images.hpp"
 
+#ifdef _WIN32
+#include <windows.h>  // before GL/gl.h, which needs its macros
+#endif
 #include <GL/gl.h>
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F  // OpenGL 1.2; the gl.h of Windows is 1.1
+#endif
 
 #include <algorithm>
 #include <chrono>

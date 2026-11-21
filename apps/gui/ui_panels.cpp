@@ -6,7 +6,6 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <misc/cpp/imgui_stdlib.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -17,6 +16,7 @@
 #include "i18n.hpp"
 #include "icons.hpp"
 #include "kk/core/paths.hpp"
+#include "kk/core/platform.hpp"
 #include "theme.hpp"
 #include "ui.hpp"
 #include "widgets.hpp"
@@ -64,8 +64,8 @@ void Ui::cleared_changed() { w_.save_cleared(cleared_); }
 void Ui::interrupt_process(int pid) {
   // SIGINT to the command only (not its process group): the CLI stops its agents
   // gracefully; builds it started finish on their own.
-  if (pid <= 0 || pid == ::getpid()) return;
-  ::kill(pid, SIGINT);
+  if (pid <= 0 || pid == core::current_pid()) return;
+  core::pid_interrupt(pid);  // Windows: ends it (no Ctrl+C for another console)
   interrupted_[pid] = ImGui::GetTime();
 }
 
@@ -444,7 +444,7 @@ void Ui::bottom_agents(const Model& m) {
                                false, tr("Stop"))) {
       w_.stop_run(a.journal);
     }
-    if (a.pid > 0 && a.pid != ::getpid()) {
+    if (a.pid > 0 && a.pid != core::current_pid()) {
       ImGui::SameLine(0, 6);
       auto it = interrupted_.find(a.pid);
       if (it == interrupted_.end()) {
@@ -455,7 +455,7 @@ void Ui::bottom_agents(const Model& m) {
       } else if (ImGui::GetTime() - it->second > kKillAfterS) {
         if (ui::icon_button("kill", Icon::Error, tr("The command does not stop: end it at once (SIGKILL); its current step is lost"), false,
                             tr("Kill"))) {
-          ::kill(a.pid, SIGKILL);
+          core::pid_kill(a.pid);
         }
       } else {
         ui::muted("%s", tr("stopping the command..."));

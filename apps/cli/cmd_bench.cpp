@@ -41,7 +41,7 @@ AutoRegister reg([](CLI::App& cli, App& app) {
     o.results = results.empty() ? o.bench_dir.parent_path() / "results" : core::normalize(results);
     o.work = work;
     std::error_code ec;
-    o.karkas = fs::read_symlink("/proc/self/exe", ec);
+    o.karkas = core::self_executable();
     auto r = agents::bench_run(o, *cfg, [](const std::string& m) { std::cerr << "· " << m << "\n"; });
     if (!r) die(r.error().str());
     for (const auto& x : *r) {

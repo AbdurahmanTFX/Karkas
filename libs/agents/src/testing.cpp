@@ -1,9 +1,6 @@
 #include "kk/agents/testing.hpp"
 
-#include <fcntl.h>
 #include <fmt/format.h>
-#include <sys/file.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -16,6 +13,7 @@
 
 #include "kk/code/gen.hpp"
 #include "kk/core/paths.hpp"
+#include "kk/core/platform.hpp"
 #include "kk/core/text.hpp"
 #include "kk/index/index.hpp"
 #include "kk/runner/runner.hpp"
@@ -66,28 +64,9 @@ namespace {
 // One build at a time per process (mutex) and per project (flock), 6.4.
 std::mutex g_build_mu;
 
-struct FileLock {
-  int fd = -1;
-  // `on_wait`: called once when another process holds the lock (then it waits for it).
-  explicit FileLock(const fs::path& p, const std::function<void()>& on_wait = {}) {
-    std::error_code ec;
-    fs::create_directories(p.parent_path(), ec);
-    // Close-on-exec: neither the build's processes nor a program started after the build keep it.
-    fd = ::open(p.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
-    if (fd < 0) return;
-    if (::flock(fd, LOCK_EX | LOCK_NB) == 0) return;
-    if (on_wait) on_wait();
-    ::flock(fd, LOCK_EX);
-  }
-  ~FileLock() {
-    if (fd >= 0) {
-      ::flock(fd, LOCK_UN);
-      ::close(fd);
-    }
-  }
-  FileLock(const FileLock&) = delete;
-  FileLock& operator=(const FileLock&) = delete;
-};
+// flock (Windows: LockFileEx), close-on-exec: neither the build's processes nor a program started after the
+// build keep it.
+using FileLock = core::FileLock;
 
 }  // namespace
 
@@ -355,7 +334,7 @@ kk::Result<TestRun> TestService::build_and_test(const std::vector<std::string>& 
     const std::string what = cfg_.test_command.empty() ? "ctest" : cfg_.test_command;
     ro.argv = cfg_.test_command.empty()
                   ? std::vector<std::string>{"ctest", "--test-dir", build_dir.string(), "--output-on-failure"}
-                  : std::vector<std::string>{"sh", "-c", with_ticket_tests(root_, cfg_.test_dir, cfg_.test_command)};
+                  : runner::shell_argv(with_ticket_tests(root_, cfg_.test_dir, cfg_.test_command));
     ro.cwd = root_;
     ro.timeout = std::chrono::seconds(cfg_.test_timeout_s);
     auto r = runner::run(ro);

@@ -2,7 +2,6 @@
 
 #include <fmt/format.h>
 
-#include <unistd.h>
 
 #include <csignal>
 
@@ -14,6 +13,7 @@
 #include <set>
 
 #include "kk/core/paths.hpp"
+#include "kk/core/platform.hpp"
 #include "kk/core/text.hpp"
 
 namespace kk::metrics {
@@ -63,8 +63,7 @@ std::string stamp() {
   auto now = std::chrono::system_clock::now();
   auto t = std::chrono::system_clock::to_time_t(now);
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
-  std::tm tm{};
-  gmtime_r(&t, &tm);
+  std::tm tm = core::utc_tm(t);
   char buf[32];
   std::strftime(buf, sizeof buf, "%Y%m%d-%H%M%S", &tm);
   return fmt::format("{}-{:03d}", buf, ms);
@@ -92,7 +91,7 @@ kk::Result<RunJournal> RunJournal::open(const fs::path& project_root, RunInfo in
   j.info_ = std::move(info);
   json start = {{"type", "run_start"}, {"ticket", j.info_.ticket}, {"role", j.info_.role},  {"block", j.info_.block},
                 {"provider", j.info_.provider}, {"model", j.info_.model}, {"tier", j.info_.tier},
-                {"attempt", j.info_.attempt}, {"ts", core::unix_now()}, {"pid", ::getpid()}};
+                {"attempt", j.info_.attempt}, {"ts", core::unix_now()}, {"pid", core::current_pid()}};
   if (auto r = core::append_file(j.path_, start.dump() + "\n"); !r) return std::unexpected(r.error());
   json marker = start;
   marker["journal"] = j.path_.filename().string();
@@ -180,7 +179,7 @@ std::vector<ActiveRun> active_runs(const fs::path& project_root) {
       // destructor never removed the marker. Drop it so the GUI does not show a
       // phantom "agent working".
       int pid = j.value("pid", 0);
-      if (pid > 0 && ::kill(pid, 0) != 0 && errno == ESRCH) {
+      if (pid > 0 && !core::pid_alive(pid)) {
         fs::remove(e.path(), ec);
         continue;
       }
@@ -222,7 +221,7 @@ kk::Result<std::int64_t> parse_since(std::string_view s) {
     tm.tm_year = std::stoi(std::string(s.substr(0, 4))) - 1900;
     tm.tm_mon = std::stoi(std::string(s.substr(5, 2))) - 1;
     tm.tm_mday = std::stoi(std::string(s.substr(8, 2)));
-    return static_cast<std::int64_t>(timegm(&tm));
+    return static_cast<std::int64_t>(core::utc_time(tm));
   }
   try {
     return std::stoll(std::string(s));

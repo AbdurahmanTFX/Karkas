@@ -164,11 +164,7 @@ void record_traffic(const fs::path& root, const llm::McpTurn& t, const json& lin
   auto dir = root / ".karkas" / "mcp" / "traffic";
   fs::create_directories(dir, ec);
   auto stem = t.run.ends_with(".jsonl") ? t.run.substr(0, t.run.size() - 6) : t.run;
-  if (auto f = std::fopen((dir / (stem + ".jsonl")).c_str(), "a")) {
-    auto text = line.dump() + "\n";
-    std::fwrite(text.data(), 1, text.size(), f);
-    std::fclose(f);
-  }
+  (void)core::append_file(dir / (stem + ".jsonl"), line.dump() + "\n");
 }
 
 // What a client was shown of a run (.karkas/mcp/shown/<run>.json): the role, block and the hashes of

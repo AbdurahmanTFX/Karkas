@@ -17,6 +17,7 @@
 #include "kk/index/state.hpp"
 #include "kk/agents/testing.hpp"
 #include "kk/core/paths.hpp"
+#include "kk/core/platform.hpp"
 #include "kk/core/text.hpp"
 #include "kk/runner/runner.hpp"
 
@@ -29,8 +30,7 @@ namespace {
 
 std::string today() {
   auto t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-  std::tm tm{};
-  gmtime_r(&t, &tm);
+  std::tm tm = core::utc_tm(t);
   char buf[16];
   std::strftime(buf, sizeof buf, "%Y-%m-%d", &tm);
   return buf;

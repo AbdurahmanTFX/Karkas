@@ -18,12 +18,14 @@ using gui::RunPhase;
 
 namespace {
 
+#ifndef _WIN32  // the fake karkas is a shell script (docs/adr/0046)
 std::filesystem::path fake_cli(const test::TempDir& d, const std::string& body) {
   auto p = d.path() / "karkas";
   REQUIRE(core::write_file(p, "#!/bin/sh\n" + body));
   ::chmod(p.c_str(), 0755);
   return p;
 }
+#endif
 
 std::vector<std::string> texts(const std::vector<RunLine>& lines, RunLine::Kind k) {
   std::vector<std::string> out;
@@ -72,6 +74,7 @@ TEST_CASE("run: terminal text becomes lines (escapes, carriage returns, backspac
   CHECK(lines[0].size() == gui::TerminalText::kMaxLine);
 }
 
+#ifndef _WIN32
 TEST_CASE("run: the build's lines, then the program's in a terminal of its own, its input and exit code") {
   test::TempDir d{"gui_run"};
   auto cli = fake_cli(d, R"(echo "args: $*"
@@ -130,7 +133,9 @@ exit 3
   CHECK(std::find(out.begin(), out.end(), "name? Bob") != out.end());  // the terminal echoes what is typed
   CHECK(std::find(out.begin(), out.end(), "hello, Ada") == out.end());
 }
+#endif
 
+#ifndef _WIN32
 TEST_CASE("run: a failed build and nothing to run end before the program") {
   test::TempDir d{"gui_run_fail"};
   auto cli = fake_cli(d, R"(echo "· building"
@@ -156,7 +161,9 @@ exit 1
   CHECK(run2.last_end().nothing_to_run);
   CHECK_FALSE(run2.last_end().build_failed);
 }
+#endif
 
+#ifndef _WIN32
 TEST_CASE("run: Stop ends the program and what it started, a program that ignores it is killed") {
   test::TempDir d{"gui_run_stop"};
   auto cli = fake_cli(d, "echo '· running: build/app'\nsleep 30 &\nwait\n");
@@ -182,7 +189,9 @@ TEST_CASE("run: Stop ends the program and what it started, a program that ignore
   CHECK(run2.last_end().signal == SIGKILL);
   CHECK(run2.last_end().stopped);
 }
+#endif
 
+#ifndef _WIN32
 TEST_CASE("run: closing the GUI ends a running program") {
   test::TempDir d{"gui_run_quit"};
   auto marker = d.path() / "still_running";
@@ -196,3 +205,4 @@ TEST_CASE("run: closing the GUI ends a running program") {
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   CHECK_FALSE(std::filesystem::exists(marker));
 }
+#endif

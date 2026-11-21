@@ -1,9 +1,11 @@
 // karkas mcp — MCP server over stdio (15). stdout carries protocol messages only.
-#include <fcntl.h>
 #include <fmt/format.h>
+#ifndef _WIN32
+#include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <iostream>
 #include <map>
@@ -25,7 +27,11 @@
 #include "kk/mcp/server.hpp"
 #include "kk/templates.hpp"
 
+#ifdef _WIN32
+#include "kk/core/win_process.hpp"
+#else
 extern char** environ;
+#endif
 
 namespace kk::cli {
 
@@ -41,20 +47,37 @@ namespace {
 // The engine of a ticket, started in the background by kk_task / kk_debug / kk_ticket_run: the
 // same `karkas ticket run` the GUI and a terminal use (ADR 0024). Its output goes to a log file —
 // never to this server's stdout, which carries the protocol.
+#ifdef _WIN32
+using EngineProcess = std::shared_ptr<core::win::Child>;  // docs/adr/0046
+#else
+using EngineProcess = pid_t;
+#endif
 struct Started {
-  pid_t pid = 0;
+  EngineProcess pid{};
   std::string log;
   bool done = false;
   int exit_code = 0;
 };
 
-kk::Result<pid_t> spawn_engine(const fs::path& root, const std::vector<std::string>& args, const fs::path& log) {
+kk::Result<EngineProcess> spawn_engine(const fs::path& root, const std::vector<std::string>& args, const fs::path& log) {
   std::error_code ec;
   fs::create_directories(log.parent_path(), ec);
   std::string exe = core::self_executable().string();  // also after a rebuild (bugs.txt 9)
   if (exe.empty()) return kk::fail("mcp", "cannot find the karkas executable");
   std::vector<std::string> argv_s = {exe, "--project", root.string()};
   argv_s.insert(argv_s.end(), args.begin(), args.end());
+#ifdef _WIN32
+  // Not in a job of this server: a stop of the client does not end it (as its own session on Linux).
+  core::win::SpawnSpec sp;
+  sp.argv = argv_s;
+  sp.out = core::win::SpawnSpec::Io::File;
+  sp.out_file = log;
+  sp.err = core::win::SpawnSpec::Io::ToStdout;
+  sp.own_job = false;
+  auto child = core::win::Child::spawn(sp);
+  if (!child) return kk::fail("mcp", "cannot start karkas: " + child.error().message);
+  return std::make_shared<core::win::Child>(std::move(*child));
+#else
   std::vector<char*> argv;
   for (auto& a : argv_s) argv.push_back(a.data());
   argv.push_back(nullptr);
@@ -72,6 +95,7 @@ kk::Result<pid_t> spawn_engine(const fs::path& root, const std::vector<std::stri
   posix_spawnattr_destroy(&at);
   if (rc != 0) return kk::fail("mcp", fmt::format("cannot start karkas: {}", std::strerror(rc)));
   return pid;
+#endif
 }
 
 AutoRegister reg([](CLI::App& cli, App& app) {
@@ -262,11 +286,18 @@ AutoRegister reg([](CLI::App& cli, App& app) {
     auto reap = [started] {
       for (auto& [id, s] : *started) {
         if (s.done) continue;
+#ifdef _WIN32
+        if (auto code = s.pid ? s.pid->try_wait() : std::optional<int>(1)) {
+          s.done = true;
+          s.exit_code = *code;
+        }
+#else
         int status = 0;
         if (waitpid(s.pid, &status, WNOHANG) == s.pid) {
           s.done = true;
           s.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
         }
+#endif
       }
     };
     turns->tickets_running = [started, started_mu, reap] {

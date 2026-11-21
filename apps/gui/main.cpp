@@ -17,10 +17,12 @@
 #include <filesystem>
 #include <iostream>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "drop.hpp"
+#include "image_decode.hpp"
 #include "cursors.hpp"
 #include "kk/core/config.hpp"
 #include "kk/core/paths.hpp"
@@ -34,6 +36,10 @@
 #include "worker.hpp"
 
 namespace fs = std::filesystem;
+
+namespace kk::gui {
+std::vector<std::span<const unsigned char>> app_icon_pngs();  // generated: packaging/icons (ADR 0046)
+}  // namespace kk::gui
 
 namespace {
 
@@ -68,6 +74,20 @@ void screenshot_to(GLFWwindow* window, const std::string& path) {
                 flipped.begin() + static_cast<long>(y * row));
   }
   kk::gui::write_png(path, w, h, flipped);
+}
+
+// The application icon (ADR 0046) on X11 and Windows; on Wayland the desktop takes it from the .desktop
+// file named after the application id ("karkas"), and GLFW cannot set one.
+void set_window_icon(GLFWwindow* window) {
+  if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) return;
+  std::vector<kk::gui::Pixels> pixels;
+  for (auto png : kk::gui::app_icon_pngs()) {
+    auto px = kk::gui::decode_image(std::vector<std::uint8_t>(png.begin(), png.end()), 256);
+    if (px.error.empty() && px.w > 0) pixels.push_back(std::move(px));
+  }
+  std::vector<GLFWimage> images;
+  for (auto& px : pixels) images.push_back(GLFWimage{px.w, px.h, px.rgba.data()});
+  if (!images.empty()) glfwSetWindowIcon(window, static_cast<int>(images.size()), images.data());
 }
 
 }  // namespace
@@ -154,6 +174,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   glfwMakeContextCurrent(window);
+  set_window_icon(window);
   // Files dropped on the window: images and files for the note being edited (ADR 0041).
   glfwSetDropCallback(window, [](GLFWwindow*, int count, const char** paths) {
     kk::gui::push_dropped(std::vector<std::string>(paths, paths + count));

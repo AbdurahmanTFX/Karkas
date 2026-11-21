@@ -82,8 +82,10 @@ TEST_CASE("paths: is_within rejects escapes") {
   CHECK(is_within(d / "blk", d / "blk/impl/../impl/new.cpp"));
   CHECK_FALSE(is_within(d / "blk", d / "blk/../other.cpp"));
   CHECK_FALSE(is_within(d / "blk", "/etc/passwd"));
+#ifndef _WIN32  // a symlink needs a privilege on Windows (docs/adr/0046)
   std::filesystem::create_directory_symlink("/tmp", d / "blk/link");
   CHECK_FALSE(is_within(d / "blk", d / "blk/link/x"));
+#endif
 }
 
 TEST_CASE("paths: atomic write and target names") {

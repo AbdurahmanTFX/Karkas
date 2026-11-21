@@ -1,7 +1,6 @@
 #include "kk/agents/run.hpp"
 
 #include <fmt/format.h>
-#include <sys/stat.h>
 
 #include <algorithm>
 #include <array>
@@ -10,6 +9,7 @@
 
 #include "kk/code/gen.hpp"
 #include "kk/core/paths.hpp"
+#include "kk/core/platform.hpp"
 #include "kk/core/text.hpp"
 
 namespace kk::agents {
@@ -30,13 +30,17 @@ bool has_sources(const fs::path& dir) {
   return false;
 }
 
+// A program of this system: an executable ELF file (Windows: an .exe, "MZ").
 bool is_elf_program(const fs::path& p) {
-  struct stat st {};
-  if (::stat(p.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || (st.st_mode & S_IXUSR) == 0) return false;
+  if (!core::is_executable(p)) return false;
   std::ifstream in(p, std::ios::binary);
   std::array<char, 4> magic{};
   in.read(magic.data(), magic.size());
+#ifdef _WIN32
+  return in.gcount() >= 2 && magic[0] == 'M' && magic[1] == 'Z';
+#else
   return in.gcount() == 4 && magic == std::array<char, 4>{'\x7f', 'E', 'L', 'F'};
+#endif
 }
 
 }  // namespace
@@ -74,12 +78,22 @@ RunTarget run_target(const core::Schema& schema, const core::Config& cfg, const 
     why_not = "project.ksl names no project";
   } else {
     t.generated = (fs::path(cfg.build_dir) / schema.project.name).generic_string();
+#ifdef _WIN32
+    t.generated += ".exe";
+#endif
   }
   if (!cfg.run_command.empty()) {
     t.command = true;
     t.shown = cfg.run_command;
+#ifdef _WIN32
+    // cmd.exe runs the command; the arguments follow it quoted (docs/adr/0046).
+    std::string line = cfg.run_command;
+    for (const auto& a : args) line += " \"" + a + "\"";
+    t.argv = {"cmd.exe", "/d", "/s", "/c", line};
+#else
     t.argv = {"/bin/sh", "-c", args.empty() ? cfg.run_command : cfg.run_command + " \"$@\"", "sh"};
     t.argv.insert(t.argv.end(), args.begin(), args.end());
+#endif
     for (const auto& a : args) t.shown += " " + shell_quote(a);
     return t;
   }

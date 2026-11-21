@@ -3,7 +3,10 @@
 // The build streams to stderr; then the program replaces this process, so its output, exit code and
 // signals are its own.
 #include <fmt/format.h>
+#ifndef _WIN32
 #include <unistd.h>
+extern char** environ;
+#endif
 
 #include <cerrno>
 #include <cstring>
@@ -15,9 +18,11 @@
 #include "kk/agents/testing.hpp"
 #include "kk/core/config.hpp"
 #include "kk/core/schema.hpp"
+#include "kk/core/platform.hpp"
 #include "kk/runner/runner.hpp"
-
-extern char** environ;
+#ifdef _WIN32
+#include "kk/core/win_process.hpp"
+#endif
 
 namespace kk::cli {
 
@@ -29,16 +34,33 @@ void progress(const std::string& m) { std::cerr << "· " << m << "\n" << std::fl
 // Karkas, as in the agents' builds); everything else — the display, the desktop session — is kept.
 std::vector<std::string> program_environment() {
   std::vector<std::string> env;
-  for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
-    std::string_view kv(*e);
+  for (const auto& kv : core::environment()) {
     auto eq = kv.find('=');
-    if (eq == std::string_view::npos || runner::is_secret_name(kv.substr(0, eq))) continue;
-    env.emplace_back(kv);
+    if (eq == std::string::npos || runner::is_secret_name(std::string_view(kv).substr(0, eq))) continue;
+    env.push_back(kv);
   }
   return env;
 }
 
 [[noreturn]] void exec_program(const fs::path& root, const agents::RunTarget& t) {
+#ifdef _WIN32
+  // No exec on Windows: the program runs as a child on this console, its exit code becomes this one's
+  // (docs/adr/0046).
+  core::win::SpawnSpec sp;
+  sp.argv = t.argv;
+  if (t.argv.size() >= 4 && t.argv[1] == "/d" && t.argv[2] == "/s" && t.argv[3] == "/c") {
+    sp.command_line = "cmd.exe /d /s /c \"" + (t.argv.size() > 4 ? t.argv[4] : std::string()) + "\"";
+  }
+  sp.cwd = root;
+  sp.env = program_environment();
+  sp.in = sp.out = sp.err = core::win::SpawnSpec::Io::Inherit;
+  std::cout.flush();
+  std::cerr.flush();
+  auto child = core::win::Child::spawn(sp);
+  if (!child) die(fmt::format("cannot start {}: {}", t.shown, child.error().message));
+  auto code = child->wait();
+  std::exit(code.value_or(1));
+#else
   if (::chdir(root.c_str()) != 0) die(fmt::format("cannot enter {}: {}", root.string(), std::strerror(errno)));
   auto env_s = program_environment();
   std::vector<char*> env;
@@ -52,6 +74,7 @@ std::vector<std::string> program_environment() {
   std::cerr.flush();
   ::execve(argv[0], argv.data(), env.data());
   die(fmt::format("cannot start {}: {}", t.shown, std::strerror(errno)));
+#endif
 }
 
 AutoRegister reg([](CLI::App& cli, App& app) {
@@ -98,7 +121,7 @@ AutoRegister reg([](CLI::App& cli, App& app) {
       std::cerr << "karkas: " << agents::run_target_help(target, agents::program_candidates(root, *cfg));
       std::exit(1);
     }
-    if (!target.command && ::access(target.argv[0].c_str(), X_OK) != 0) {
+    if (!target.command && !core::is_executable(target.argv[0])) {
       die(fmt::format("there is no program {} (the build made none: is the entry block's main() there?)", target.shown));
     }
     progress("running: " + target.shown);

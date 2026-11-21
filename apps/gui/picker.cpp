@@ -15,6 +15,7 @@
 #include "kk/code/import.hpp"
 #include "kk/code/init.hpp"
 #include "kk/code/notes.hpp"
+#include "kk/core/platform.hpp"
 #include "kk/core/text.hpp"
 
 namespace fs = std::filesystem;
@@ -66,7 +67,7 @@ void ProjectPicker::draw_browser(float footer, std::optional<fs::path>* chosen) 
   if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Parent folder"));
   ImGui::SameLine();
   if (ImGui::Button(with_icon(Icon::Home, tr("Home")).c_str())) {
-    if (const char* h = std::getenv("HOME"); h != nullptr) go(h);
+    go(core::home_dir());
   }
   ImGui::SameLine();
   ImGui::SetNextItemWidth(-1);

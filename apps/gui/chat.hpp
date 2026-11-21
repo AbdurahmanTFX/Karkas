@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -91,6 +92,7 @@ class Chat {
   std::vector<ChatEntry> entries_;
   std::uint64_t serial_ = 0;
   pid_t pid_ = 0;
+  std::shared_ptr<void> child_;  // Windows: the core::win::Child of the command (docs/adr/0046)
   bool busy_ = false;
   std::optional<std::chrono::steady_clock::time_point> stop_at_;
   std::string ticket_;

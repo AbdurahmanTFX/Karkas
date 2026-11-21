@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 
+#include "kk/core/platform.hpp"
 #include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
 #include "kk/index/index.hpp"
@@ -90,10 +91,8 @@ inline std::string when(std::int64_t unix_s) {
   if (unix_s <= 0) return {};
   std::time_t t = static_cast<std::time_t>(unix_s);
   std::time_t now = std::time(nullptr);
-  std::tm a{};
-  std::tm b{};
-  localtime_r(&t, &a);
-  localtime_r(&now, &b);
+  std::tm a = core::local_tm(t);
+  std::tm b = core::local_tm(now);
   char buf[32];
   if (a.tm_year == b.tm_year && a.tm_yday == b.tm_yday) {
     std::strftime(buf, sizeof buf, "%H:%M", &a);

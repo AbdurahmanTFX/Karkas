@@ -1,19 +1,19 @@
 #include "kk/runner/runner.hpp"
 
 #include <fmt/format.h>
-#include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <map>
 #include <regex>
 #include <reproc++/drain.hpp>
 #include <reproc++/reproc.hpp>
 #include <set>
+#include <tuple>
 
+#include "kk/core/platform.hpp"
 #include "kk/core/text.hpp"
-
-extern char** environ;
 
 namespace kk::runner {
 
@@ -32,14 +32,27 @@ std::map<std::string, std::string> clean_environment(const std::map<std::string,
                                              "CMAKE_GENERATOR", "NINJA_STATUS", "SOURCE_DATE_EPOCH",
                                              // a compiler cache for the builds of agents and tests (ADR 0029)
                                              "CMAKE_C_COMPILER_LAUNCHER", "CMAKE_CXX_COMPILER_LAUNCHER", "CCACHE_BASEDIR",
-                                             "CCACHE_NOHASHDIR", "CCACHE_SLOPPINESS", "CCACHE_DISABLE"};
+                                             "CCACHE_NOHASHDIR", "CCACHE_SLOPPINESS", "CCACHE_DISABLE",
+#ifdef _WIN32
+                                             // what programs on Windows need to start at all (docs/adr/0046)
+                                             "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP",
+                                             "USERPROFILE", "USERNAME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+                                             "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
+                                             "COMMONPROGRAMFILES", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+#endif
+                                             };
   std::map<std::string, std::string> env;
-  for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
-    std::string_view kv(*e);
+  for (const auto& kv : core::environment()) {
     auto eq = kv.find('=');
-    if (eq == std::string_view::npos) continue;
-    std::string k(kv.substr(0, eq));
-    if (keep.contains(k) && !is_secret_name(k)) env[k] = std::string(kv.substr(eq + 1));
+    if (eq == std::string::npos) continue;
+    std::string k = kv.substr(0, eq);
+#ifdef _WIN32
+    std::string name = k;  // names on Windows have no case ("Path")
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+#else
+    const std::string& name = k;
+#endif
+    if (keep.contains(name) && !is_secret_name(k)) env[k] = kv.substr(eq + 1);
   }
   for (const auto& [k, v] : extra) {
     if (!is_secret_name(k)) env[k] = v;
@@ -49,15 +62,7 @@ std::map<std::string, std::string> clean_environment(const std::map<std::string,
 
 namespace {
 
-std::string find_program(const std::string& name) {
-  if (name.find('/') != std::string::npos) return name;
-  const char* path = std::getenv("PATH");
-  for (const auto& dir : core::split(path != nullptr ? path : "/usr/bin:/bin", ':')) {
-    auto p = fs::path(dir) / name;
-    if (::access(p.c_str(), X_OK) == 0) return p.string();
-  }
-  return name;
-}
+std::string find_program(const std::string& name) { return core::find_in_path(name); }
 
 }  // namespace
 
@@ -76,12 +81,11 @@ kk::Result<RunResult> run(const RunOptions& opts) {
     // The inherited environment without the named variables.
     o.env.behavior = reproc::env::empty;
     std::set<std::string> drop(opts.unset_env.begin(), opts.unset_env.end());
-    for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
-      std::string_view kv(*e);
+    for (const auto& kv : core::environment()) {
       auto eq = kv.find('=');
-      if (eq == std::string_view::npos) continue;
-      std::string k(kv.substr(0, eq));
-      if (!drop.contains(k) && !opts.env.contains(k)) env.emplace_back(k, std::string(kv.substr(eq + 1)));
+      if (eq == std::string::npos) continue;
+      std::string k = kv.substr(0, eq);
+      if (!drop.contains(k) && !opts.env.contains(k)) env.emplace_back(k, kv.substr(eq + 1));
     }
     for (const auto& [k, v] : opts.env) env.emplace_back(k, v);
   } else {
@@ -105,7 +109,12 @@ kk::Result<RunResult> run(const RunOptions& opts) {
   };
   ec = reproc::drain(proc, sink, reproc::sink::null);
   if (ec == std::errc::timed_out) r.timed_out = true;
-  auto [status, sec] = proc.stop(o.stop);
+  // Its output has ended: it is ending too; its own exit code. (A terminate sent to a process that has already
+  // exited reports no exit code on Windows, docs/adr/0046.)
+  int status = -1;
+  std::error_code wec = std::make_error_code(std::errc::timed_out);
+  if (!r.timed_out) std::tie(status, wec) = proc.wait(reproc::milliseconds(2000));
+  if (wec) std::tie(status, wec) = proc.stop(o.stop);
   r.exit_code = r.timed_out ? -1 : status;
   r.duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0);
   if (r.timed_out) r.output += fmt::format("\n[karkas] killed after {} ms timeout\n", opts.timeout.count());
@@ -179,10 +188,18 @@ std::string compress_build_warnings(std::string_view log, const fs::path& root, 
   return core::join(out, "\n");
 }
 
+std::vector<std::string> shell_argv(const std::string& command) {
+#ifdef _WIN32
+  return {"cmd.exe", "/d", "/s", "/c", command};
+#else
+  return {"sh", "-c", command};
+#endif
+}
+
 kk::Result<BuildResult> build_command(const std::string& command, const fs::path& cwd, std::chrono::seconds timeout,
                                       const OutputSink& on_output) {
   BuildResult br;
-  RunOptions ro{{"sh", "-c", command}, cwd, timeout};
+  RunOptions ro{shell_argv(command), cwd, timeout};
   ro.on_output = on_output;
   auto r = run(ro);
   if (!r) return std::unexpected(r.error());

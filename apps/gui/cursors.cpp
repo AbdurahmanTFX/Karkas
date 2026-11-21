@@ -165,6 +165,9 @@ std::optional<CursorImage> read_xcursor(const fs::path& file, int size) {
 
 std::vector<fs::path> cursor_search_path() {
   std::vector<fs::path> out;
+#ifdef _WIN32
+  return out;  // X cursor themes: Linux only; Windows draws its own cursors (docs/adr/0046)
+#endif
   const char* home = std::getenv("HOME");
   auto expand = [&](std::string p) -> fs::path {
     if (p.starts_with("~/") && home != nullptr) return fs::path(home) / p.substr(2);

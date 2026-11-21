@@ -332,7 +332,7 @@ mv "$turns/$stem-001.tmp" "$turns/$stem-001.resp.json"
   std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
   cfg.mcp_launch_command = fake.string();
   ::setenv("ANTHROPIC_API_KEY", "sk-test-must-not-leak", 1);
-  ::setenv("KK_FAKE_OUT", p.path().c_str(), 1);
+  ::setenv("KK_FAKE_OUT", p.path().string().c_str(), 1);
   agents::EngineOptions o;  // no providers: the engine's own MCP bridge, and its launcher
   o.tests = &tests;
   auto e = agents::Engine::create(p.path(), cfg, o);
@@ -415,7 +415,7 @@ mv "$turns/$stem-001.tmp" "$turns/$stem-001.resp.json"
 )SH");
   std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
   cfg.mcp_launch_command = fake.string();
-  ::setenv("KK_FAKE_OUT", p.path().c_str(), 1);
+  ::setenv("KK_FAKE_OUT", p.path().string().c_str(), 1);
   const int old_retry = agents::RunLauncher::limit_retry_s;
   agents::RunLauncher::limit_retry_s = 8;
   agents::EngineOptions o;
@@ -475,7 +475,7 @@ mv "$turns/$stem-001.tmp" "$turns/$stem-001.resp.json"
 )SH");
   std::filesystem::permissions(fake, std::filesystem::perms::owner_all);
   cfg.mcp_launch_command = fake.string();
-  ::setenv("KK_FAKE_OUT", p.path().c_str(), 1);
+  ::setenv("KK_FAKE_OUT", p.path().string().c_str(), 1);
   agents::EngineOptions o;
   o.tests = &tests;
   auto e = agents::Engine::create(p.path(), cfg, o);

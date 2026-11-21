@@ -1,6 +1,6 @@
 #pragma once
-// File watching with inotify (6.3, 14.8): fires after changes to cards, code or
-// .karkas/ settle for `debounce` (no polling, ~0% CPU while idle).
+// File watching with inotify (6.3, 14.8; Windows: ReadDirectoryChangesW, docs/adr/0046): fires after
+// changes to cards, code or .karkas/ settle for `debounce` (no polling, ~0% CPU while idle).
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -31,6 +31,8 @@ class Watcher {
   void add_tree(const std::filesystem::path& dir);
   int fd_ = -1;
   int wake_[2] = {-1, -1};
+  void* dir_handle_ = nullptr;  // Windows: the watched directory and the event that stops the thread
+  void* stop_event_ = nullptr;
   std::filesystem::path root_;
   Callback cb_;
   std::chrono::milliseconds debounce_{150};

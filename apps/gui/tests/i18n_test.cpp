@@ -60,7 +60,7 @@ TEST_CASE("language codes") {
 
 TEST_CASE("settings are saved and loaded, sizes clamped") {
   kk::test::TempDir dir;
-  setenv("XDG_CONFIG_HOME", dir.path().c_str(), 1);
+  setenv("XDG_CONFIG_HOME", dir.path().string().c_str(), 1);
   GuiSettings s;
   s.lang = Lang::Ru;
   s.block_scale = 1.75f;

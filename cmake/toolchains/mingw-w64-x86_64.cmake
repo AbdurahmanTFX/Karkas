@@ -1,0 +1,20 @@
+# Cross build for Windows x86-64 with MinGW-w64 (docs/adr/0046). Programs built here run under wine
+# (CMAKE_CROSSCOMPILING_EMULATOR), so tests and checks can run on Linux.
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR x86_64)
+set(KK_MINGW_PREFIX x86_64-w64-mingw32)
+set(CMAKE_C_COMPILER ${KK_MINGW_PREFIX}-gcc)
+set(CMAKE_CXX_COMPILER ${KK_MINGW_PREFIX}-g++)
+set(CMAKE_RC_COMPILER ${KK_MINGW_PREFIX}-windres)
+set(CMAKE_FIND_ROOT_PATH /usr/${KK_MINGW_PREFIX})
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+# pkg-config must not hand over the libraries of the Linux host.
+set(ENV{PKG_CONFIG_LIBDIR} /usr/${KK_MINGW_PREFIX}/lib/pkgconfig)
+set(ENV{PKG_CONFIG_PATH} "")
+find_program(KK_WINE NAMES wine wine64)
+if(KK_WINE)
+  set(CMAKE_CROSSCOMPILING_EMULATOR ${KK_WINE})
+endif()
