@@ -752,3 +752,13 @@
   lose their right angles (a block moved alone) becomes a smooth curve.
 - Not done: sockets spread along a block side; routes kept up to date when blocks move (Arrange again).
 - Tests 422; checked under Xvfb (wavkit top level and dsp, a dense notes project, undo, a block moved after).
+
+## GUI addition — right angles, a tool bar that fits, the schema alone (docs/adr/0043)
+
+- "Right angles" (tool bar, View, background menu): every line drawn with level and upright pieces and rounded
+  corners, through its bends too; "+" handles on the pieces.
+- The schema's tool bar fits its panel: texts go (into tooltips) when they do not fit, rows wrap when icons do
+  not; panel titles shorten; the window keeps at least 600×420.
+- "Schema only" (F11): side bar, inspector, bottom panel and bars hidden, brought back as they were.
+- "Arrange" leaves wider gaps: parallel lines 30 px, tracks 20 px.
+- karkas-gui `--size WxH`, script `key f11`. Tests 422; checked under Xvfb.
