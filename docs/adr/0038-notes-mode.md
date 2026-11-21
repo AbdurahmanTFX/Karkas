@@ -39,7 +39,9 @@ notes as plain file edits: `add_note_link` (a new last line `[[title]]`, the fil
 named the note by its old title follow, links by id stay).
 
 karkas-gui (ui_notes.cpp and the places that adapt):
-- "Programming | Notes" tabs in the menu bar after the menus. The open project's kind sets the mode.
+- "Programming | Notes" as the first two items of the Karkas menu, the current one checked (at first tabs
+  in the menu bar after the menus; moved into the menu at the user's request, 2026-11-21). The open
+  project's kind sets the mode.
   Each workspace keeps its last project (`last_code`, `last_notes` in gui.json; the recent list is
   shared, up to 16); the other tab opens its last project, else its picker — the recent projects of
   that kind, or the Create tab when there are none. Create chooses Programming / Notes; an existing

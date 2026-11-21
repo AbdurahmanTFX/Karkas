@@ -693,7 +693,7 @@
   index notices a changed text.
 - `karkas init` makes a notes project of a folder of .txt files (or `--notes`) with cards for the notes
   already there (files stay in place, folders become topics); `files` takes quoted paths.
-- karkas-gui: "Programming | Notes" in the menu bar, each with its last and recent projects; the project's
+- karkas-gui: "Programming | Notes" in the Karkas menu, each with its last and recent projects; the project's
   kind sets the mode. Notes by their titles with their first lines on the schema, edited in tabs (saved
   after a pause, Ctrl+S, on closing), lines drawn → `[[title]]`, rename with the links, remove with undo,
   inspector with text, links and backlinks, search in texts; run, build, agents and chat hidden.

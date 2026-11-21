@@ -1,4 +1,4 @@
-// Notes projects in karkas-gui (docs/adr/0038): "Programming | Notes" in the menu bar (two workspaces,
+// Notes projects in karkas-gui (docs/adr/0038): "Programming | Notes" in the Karkas menu (two workspaces,
 // each with its last project and its recent ones); in a notes project the schema holds topics and
 // notes, a note's text is edited in an editor tab (saved by itself after a pause, Ctrl+S, on closing),
 // [[links]] are the lines between notes (drawn on the schema they are written into the text), and the
@@ -35,44 +35,15 @@ constexpr double kAutosaveAfter = 1.5;  // seconds without typing
 const ImVec4 kNoteColor = rgb(120, 170, 240);
 const ImVec4 kTopicColor = rgb(220, 182, 122);
 
-// A tab of the menu bar: text with an underline when it is the current one.
-bool mode_tab(const char* id, Icon ic, const char* text, bool on, const char* tooltip) {
-  std::string label = with_icon(ic, text);
-  ImVec2 ts = ImGui::CalcTextSize(label.c_str());
-  float h = ImGui::GetWindowHeight();
-  ImVec2 p = ImGui::GetCursorScreenPos();
-  ImVec2 size(ts.x + 18, h);
-  ImGui::SetCursorScreenPos(ImVec2(p.x, ImGui::GetWindowPos().y));
-  bool clicked = ImGui::InvisibleButton(id, size);
-  bool hot = ImGui::IsItemHovered();
-  auto* dl = ImGui::GetWindowDrawList();
-  ImVec2 a = ImGui::GetItemRectMin();
-  if (on) dl->AddRectFilled(a, ImVec2(a.x + size.x, a.y + size.y), IM_COL32(255, 255, 255, 14));
-  if (hot && !on) dl->AddRectFilled(a, ImVec2(a.x + size.x, a.y + size.y), IM_COL32(255, 255, 255, 22));
-  if (on) dl->AddRectFilled(ImVec2(a.x + 4, a.y + size.y - 2), ImVec2(a.x + size.x - 4, a.y + size.y), theme::kAccent);
-  dl->AddText(ImVec2(a.x + 9, a.y + (h - ts.y) * 0.5f), on ? IM_COL32(240, 240, 240, 255) : IM_COL32(150, 150, 150, 255), label.c_str());
-  if (hot) {
-    ImGui::SetTooltip("%s", tooltip);
-    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-  }
-  ImGui::SameLine(0, 0);
-  return clicked;
-}
-
 }  // namespace
 
 // --- the two workspaces --------------------------------------------------------------------------
 
-void Ui::draw_mode_tabs() {
-  ImGui::SameLine(0, 18);
-  if (mode_tab("##mode_code", Icon::Code, tr("Programming"), !notes_ && !root_.empty(),
-               tr("Code projects: the schema of blocks, agents, build and run"))) {
-    switch_mode(false);
-  }
-  if (mode_tab("##mode_notes", Icon::Pencil, tr("Notes"), notes_,
-               tr("Notes: text files in topics, linked by [[name]] in their text"))) {
-    switch_mode(true);
-  }
+void Ui::draw_mode_items() {
+  if (ImGui::MenuItem(with_icon(Icon::Code, tr("Programming")).c_str(), nullptr, !notes_ && !root_.empty())) switch_mode(false);
+  ImGui::SetItemTooltip("%s", tr("Code projects: the schema of blocks, agents, build and run"));
+  if (ImGui::MenuItem(with_icon(Icon::Pencil, tr("Notes")).c_str(), nullptr, notes_)) switch_mode(true);
+  ImGui::SetItemTooltip("%s", tr("Notes: text files in topics, linked by [[name]] in their text"));
 }
 
 void Ui::show_picker_for(bool create, bool notes) {

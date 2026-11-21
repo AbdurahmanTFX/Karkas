@@ -180,10 +180,10 @@ class Ui {
   void show_run_tab();
   void save_run_command(const std::string& command);
   [[nodiscard]] std::string run_status_text() const;
-  // notes projects (ui_notes.cpp, ADR 0038): "Programming | Notes" in the menu bar, two workspaces;
+  // notes projects (ui_notes.cpp, ADR 0038): "Programming | Notes" in the Karkas menu, two workspaces;
   // in a notes project topics and notes, their texts edited here, [[links]] drawn as lines.
   bool notes_ = false;
-  void draw_mode_tabs();
+  void draw_mode_items();
   void switch_mode(bool notes);
   void notes_toolbar(const Model& m);
   void inspector_note(const Model& m, const index::BlockRow& b);

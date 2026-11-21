@@ -545,6 +545,8 @@ void Ui::draw_menu(const Model* m) {
   }
   ImGui::PopStyleVar();
   if (ImGui::BeginMenu("Karkas")) {
+    draw_mode_items();
+    ImGui::Separator();
     if (ImGui::MenuItem(with_icon(Icon::Plus, tr("New project...")).c_str(), "Ctrl+N")) show_picker(true);
     if (ImGui::MenuItem(with_icon(Icon::FolderOpen, tr("Open project...")).c_str(), "Ctrl+O")) show_picker();
     if (ImGui::BeginMenu(with_icon(Icon::Files, tr("Recent projects")).c_str(), !settings_.recent.empty())) {
@@ -598,7 +600,6 @@ void Ui::draw_menu(const Model* m) {
     ImGui::EndMenu();
   }
   run_menu(m);
-  draw_mode_tabs();
   draw_run_buttons(m);
   ImGui::EndMainMenuBar();
 }
