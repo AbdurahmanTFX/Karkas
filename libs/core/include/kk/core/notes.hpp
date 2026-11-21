@@ -1,7 +1,8 @@
 #pragma once
 // Notes projects (docs/adr/0038): the same schema of blocks, but a topic (group) holds notes and a
-// note (leaf) is a text file — <block folder>/note.txt, or the file its card lists (notes that were
-// in the folder before Karkas). Notes link to each other by [[name]] in their text; the schema
+// note (leaf) is a text file — <block folder>/note.md (note.txt when it was written before notes were
+// Markdown, docs/adr/0040), or the file its card lists (notes that were in the folder before Karkas).
+// Notes link to each other by [[name]] in their text, Markdown notes also by [text](file.md); the schema
 // loader reads those links, the schema draws them as "ref" lines. Nothing is generated or built.
 #include <functional>
 #include <optional>
@@ -19,9 +20,15 @@ struct Schema;
 bool is_notes_project(const Project& p);
 
 // The text file of a note, relative to the project root ("" for a topic): the first listed file,
-// else <block folder>/note.txt.
+// else <block folder>/note.md, or note.txt where the loader found only that (Block::note_txt).
 std::string note_file(const Block& b);
-inline constexpr std::string_view kNoteFileName = "note.txt";
+inline constexpr std::string_view kNoteFileName = "note.md";
+inline constexpr std::string_view kOldNoteFileName = "note.txt";
+
+// The note file a Markdown link of note file `from` names, from the project root: a destination ending
+// in .md, .markdown or .txt, relative to the note's folder ("/..." from the project root), "%20" decoded,
+// "#part" dropped. nullopt for URLs, anchors and other files.
+std::optional<std::string> note_link_file(std::string_view from, std::string_view href);
 
 // The [[links]] of a text, in order (names trimmed; empty ones and ones spanning lines skipped).
 std::vector<NoteRef> parse_note_refs(std::string_view text);
@@ -49,7 +56,8 @@ std::string fold_title(std::string_view s);
 std::string lower_text(std::string_view s);
 
 // Where a text names `title` as plain words (docs/adr/0038, agents for notes): whole-word occurrences,
-// ignoring case, outside [[links]]; byte offsets into the text. A title shorter than 3 letters finds nothing.
+// ignoring case, outside [[links]] and [text](links); byte offsets into the text. A title shorter than 3
+// letters finds nothing.
 std::vector<std::size_t> find_mentions(std::string_view text, std::string_view title);
 
 }  // namespace kk::core

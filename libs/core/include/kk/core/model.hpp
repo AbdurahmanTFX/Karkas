@@ -115,13 +115,15 @@ struct FilesDecl {
   int col = 0;
 };
 
-// A [[link]] in the text of a note (notes projects, docs/adr/0038): read from the note's file by the
-// schema loader, never written into the card.
+// A link in the text of a note (notes projects, docs/adr/0038): read from the note's file by the schema
+// loader, never written into the card. A [[link]] names a note; in a Markdown note a [text](file.md) link
+// names the note whose file it is (docs/adr/0040).
 struct NoteRef {
-  std::string name;    // as written between [[ and ]]
+  std::string name;    // as written between [[ and ]], or the destination of a Markdown link
   int line = 0;        // in the note's file
   std::string target;  // the note or topic it names ("" when it names none or several)
   int matches = 0;     // how many blocks the name fits
+  std::string path;    // a Markdown link: the file it names, from the project root ("" for a [[link]])
 };
 
 struct HistEntry {
@@ -155,7 +157,8 @@ struct Block {
   std::string dir;     // folder relative to the project root, e.g. "blocks/stream/ring"
   std::string parent;  // "" for top-level blocks
   std::vector<std::string> children;
-  int depth = 0;  // top-level = 1
+  int depth = 0;          // top-level = 1
+  bool note_txt = false;  // notes: its own text is note.txt, written before notes were Markdown (ADR 0040)
 
   [[nodiscard]] const Port* port(std::string_view name) const;
   [[nodiscard]] bool has_code() const;  // leaf, entry or shared

@@ -1,7 +1,9 @@
 #include "kk/core/notes.hpp"
 
 #include <array>
+#include <filesystem>
 
+#include "kk/core/markdown.hpp"
 #include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
 
@@ -73,7 +75,20 @@ bool is_notes_project(const Project& p) { return p.lang.value == "notes"; }
 std::string note_file(const Block& b) {
   if (b.kind == BlockKind::Group) return {};
   if (b.external()) return b.file_list().front();
-  return b.dir.empty() ? std::string(kNoteFileName) : b.dir + "/" + std::string(kNoteFileName);
+  std::string name(b.note_txt ? kOldNoteFileName : kNoteFileName);
+  return b.dir.empty() ? name : b.dir + "/" + name;
+}
+
+std::optional<std::string> note_link_file(std::string_view from, std::string_view href) {
+  if (href.empty() || md::is_url(href)) return std::nullopt;
+  auto dest = std::string(href.substr(0, href.find_first_of("#?")));
+  if (dest.empty()) return std::nullopt;  // an anchor in the same note
+  dest = md::percent_decode(dest);
+  auto ext = to_lower(std::filesystem::path(dest).extension().string());
+  if (ext != ".md" && ext != ".markdown" && ext != ".txt") return std::nullopt;
+  std::filesystem::path p = dest.starts_with('/') ? std::filesystem::path(dest.substr(1))
+                                                  : std::filesystem::path(std::string(from)).parent_path() / dest;
+  return p.lexically_normal().generic_string();
 }
 
 namespace {
@@ -188,6 +203,7 @@ std::vector<std::size_t> find_mentions(std::string_view text, std::string_view t
   auto low = lower_text(text);
   std::vector<std::pair<std::size_t, std::size_t>> links;
   each_ref(text, [&](std::size_t b, std::size_t e, const std::string&, const std::string&, int) { links.emplace_back(b, e); });
+  for (const auto& l : md::links(text)) links.emplace_back(l.begin, l.end);
   for (auto at = low.find(t); at != std::string::npos; at = low.find(t, at + 1)) {
     std::size_t end = at + t.size();
     std::size_t after = end;

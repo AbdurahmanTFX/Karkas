@@ -69,6 +69,7 @@ TEST_CASE("notes agent: the tools read the notes and collect proposed edits, rea
   auto w = host.call(call("write_note", {{"note", "plan.start"}, {"text", "Шаг 1: собрать команду.\n[[Бюджет]] — отдельно."}}));
   CHECK_FALSE(w.is_error);
   CHECK(core::contains(host.call(call("read_note", {{"note", "plan.start"}})).content, "[[Бюджет]] — отдельно.\n"));
+  CHECK(core::contains(host.call(call("read_note", {{"note", "plan.start"}})).content, "format: plain text\n"));  // note.txt (ADR 0040)
   auto t = host.call(call("new_topic", {{"title", "Идеи"}}));
   CHECK(core::contains(t.content, "new topic idei"));
   auto n = host.call(call("new_note", {{"topic", "idei"}, {"title", "Реклама"}, {"text", "Листовки"}}));
@@ -123,7 +124,7 @@ TEST_CASE("notes agent: a request becomes an answer and a proposal, nothing is w
   auto ok = agents::approve_notes_proposal(rig.d.path(), "N-0001");
   REQUIRE_MESSAGE(ok, (ok ? "" : ok.error().message));
   CHECK(test::read(rig.d / "blocks/plan/start/note.txt") == "Шаг 1: собрать команду.\n[[Бюджет]] — отдельно.\nШаг 2: офис.\n");
-  CHECK(test::read(rig.d / "blocks/plan/ofis/note.txt") == "Аренда, см. [[Бюджет]].\n");
+  CHECK(test::read(rig.d / "blocks/plan/ofis/note.md") == "Аренда, см. [[Бюджет]].\n");  // a new note is Markdown (ADR 0040)
   auto s = core::load_schema(rig.d.path());
   REQUIRE(s);
   REQUIRE(s->find("plan.ofis") != nullptr);
@@ -171,7 +172,7 @@ TEST_CASE("notes agent: a question gets an answer and no proposal, auto applies 
     auto r = rig.engine->task("заведи заметку про команду");  // a notes project: the assistant, not a ticket
     REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
     CHECK(core::contains(*r, "auto: approved N-0001"));
-    CHECK(test::read(rig.d / "blocks/komanda/note.txt") == "Ищем двух людей.\n");
+    CHECK(test::read(rig.d / "blocks/komanda/note.md") == "Ищем двух людей.\n");
     CHECK_FALSE(std::filesystem::exists(rig.d / ".karkas/tickets/T-0001.ksl"));
   }
   {

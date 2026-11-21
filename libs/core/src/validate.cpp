@@ -53,11 +53,12 @@ struct Checker {
         add("E06", 'E', &b, fmt::format("a note must not hold other blocks (found {})", b.children.front()), b.kind_text.line,
             b.kind_text.col);
       }
-      // W08: a [[link]] that names no block, or several.
+      // W08: a [[link]] that names no block, or several; a Markdown link to a file that is no note.
       for (const auto& r : b.refs) {
         if (r.matches == 1) continue;
-        std::string msg = r.matches == 0 ? fmt::format("[[{}]] names no note", r.name)
-                                         : fmt::format("[[{}]] names {} notes: write the id (topic.note)", r.name, r.matches);
+        std::string msg = !r.path.empty()    ? fmt::format("the link ({}) names no note: {} is not a note's file", r.name, r.path)
+                          : r.matches == 0 ? fmt::format("[[{}]] names no note", r.name)
+                                           : fmt::format("[[{}]] names {} notes: write the id (topic.note)", r.name, r.matches);
         out.push_back(Issue{"W08", 'W', b.id, std::move(msg), SourceLoc{note_file(b), r.line, 1}});
       }
     }

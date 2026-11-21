@@ -3,10 +3,12 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <map>
 #include <queue>
 #include <set>
 
+#include "kk/core/markdown.hpp"
 #include "kk/core/notes.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
@@ -399,17 +401,37 @@ Result<Schema> load_schema(const std::filesystem::path& root_in) {
     if (b.parent.empty()) continue;
     if (Block* p = s.find_mut(b.parent)) p->children.push_back(b.id);
   }
-  // Notes: the [[links]] of each note's text, resolved once every block is known (docs/adr/0038).
+  // Notes: the links of each note's text, resolved once every block is known (docs/adr/0038). A note's
+  // own text is note.md; a note written before notes were Markdown keeps its note.txt (docs/adr/0040).
   if (is_notes_project(s.project)) {
+    std::map<std::string, std::string> by_file;  // note file → its note
     for (auto& b : s.blocks) {
+      if (b.kind == BlockKind::Leaf && !b.external()) {
+        std::error_code ec;
+        b.note_txt = !std::filesystem::exists(s.root / b.dir / std::string(kNoteFileName), ec) &&
+                     std::filesystem::exists(s.root / b.dir / std::string(kOldNoteFileName), ec);
+      }
       auto file = note_file(b);
       if (file.empty()) continue;
+      by_file[file] = b.id;
       auto note = read_file(s.root / file);
       if (!note) continue;  // not written yet
       b.refs = parse_note_refs(*note);
+      if (md::is_markdown_file(file)) {
+        for (const auto& l : md::links(*note)) {
+          if (auto path = note_link_file(file, l.href)) b.refs.push_back(NoteRef{.name = l.href, .line = l.line, .target = {}, .matches = 0, .path = *path});
+        }
+        std::stable_sort(b.refs.begin(), b.refs.end(), [](const NoteRef& x, const NoteRef& y) { return x.line < y.line; });
+      }
     }
     for (auto& b : s.blocks) {
       for (auto& r : b.refs) {
+        if (!r.path.empty()) {
+          auto it = by_file.find(r.path);
+          r.matches = it == by_file.end() ? 0 : 1;
+          if (it != by_file.end()) r.target = it->second;
+          continue;
+        }
         auto fits = resolve_note(s, r.name);
         r.matches = static_cast<int>(fits.size());
         if (fits.size() == 1) r.target = fits.front();

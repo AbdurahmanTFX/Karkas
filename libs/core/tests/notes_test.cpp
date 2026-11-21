@@ -110,3 +110,80 @@ TEST_CASE("notes: a listed path with spaces is written quoted and read back") {
   REQUIRE(again);
   CHECK(again->file_list() == b->file_list());
 }
+
+// --- Markdown notes (docs/adr/0040) ---------------------------------------------------------------------
+
+TEST_CASE("notes: a note's own text is note.md, a note written before keeps its note.txt") {
+  test::TempDir d{"notes_md_file"};
+  test::write(d / "project.ksl", "@project vault\nlang notes\n");
+  test::write(d / "blocks/old/block.ksl", "@block old\npurpose Старая\nkind leaf\n");
+  test::write(d / "blocks/old/note.txt", "текст\n");
+  test::write(d / "blocks/new/block.ksl", "@block new\npurpose Новая\nkind leaf\n");  // nothing written yet
+  test::write(d / "blocks/both/block.ksl", "@block both\npurpose Обе\nkind leaf\n");
+  test::write(d / "blocks/both/note.txt", "old\n");
+  test::write(d / "blocks/both/note.md", "new\n");
+  auto s = load_schema(d.path());
+  REQUIRE(s);
+  CHECK(note_file(*s->find("old")) == "blocks/old/note.txt");
+  CHECK(note_file(*s->find("new")) == "blocks/new/note.md");
+  CHECK(note_file(*s->find("both")) == "blocks/both/note.md");
+}
+
+TEST_CASE("notes: the note file a Markdown link names") {
+  CHECK(note_link_file("blocks/a/note.md", "../b/note.md") == "blocks/b/note.md");
+  CHECK(note_link_file("vault/Index.md", "My%20Note.md#part") == "vault/My Note.md");
+  CHECK(note_link_file("vault/Index.md", "sub/x.txt") == "vault/sub/x.txt");
+  CHECK(note_link_file("vault/Index.md", "/top.markdown") == "top.markdown");
+  CHECK_FALSE(note_link_file("vault/Index.md", "https://a.org/x.md"));
+  CHECK_FALSE(note_link_file("vault/Index.md", "#part"));
+  CHECK_FALSE(note_link_file("vault/Index.md", "pic.png"));
+  CHECK_FALSE(note_link_file("vault/Index.md", "Other Note"));  // no extension: not a note's file
+}
+
+TEST_CASE("notes: in a Markdown note [text](file.md) links a note like [[name]], code and other files are no links") {
+  test::TempDir d{"notes_md_links"};
+  test::write(d / "project.ksl", "@project vault\nlang notes\n");
+  test::write(d / "blocks/a/block.ksl", "@block a\npurpose План\nkind leaf\n");
+  test::write(d / "blocks/a/note.md",
+              "# План\nСм. [бюджет](../b/note.md), [[Идеи]] и [нет](nope.md).\n[сайт](https://x.org) ![](pic.png) [файл](doc.pdf)\n"
+              "```\n[код](../b/note.md)\n```\n[старая](<../../vault/My Note.md>)\n");
+  test::write(d / "blocks/b/block.ksl", "@block b\npurpose Бюджет\nkind leaf\n");
+  test::write(d / "blocks/c/block.ksl", "@block c\npurpose Идеи\nkind leaf\nfiles \"vault/My Note.md\"\n");
+  test::write(d / "vault/My Note.md", "[назад](/blocks/a/note.md)\n");
+  test::write(d / "blocks/t/block.ksl", "@block t\npurpose Текст\nkind leaf\n");
+  test::write(d / "blocks/t/note.txt", "[не ссылка](../b/note.md)\n");  // a .txt note: no Markdown links
+  auto s = load_schema(d.path());
+  REQUIRE(s);
+  const auto* a = s->find("a");
+  REQUIRE(a != nullptr);
+  REQUIRE(a->refs.size() == 4);
+  // By line; on one line the [[links]] first.
+  CHECK(a->refs[0].target == "c");  // [[Идеи]]
+  CHECK(a->refs[0].path.empty());
+  CHECK(a->refs[1].target == "b");
+  CHECK(a->refs[1].path == "blocks/b/note.md");
+  CHECK(a->refs[1].line == 2);
+  CHECK(a->refs[2].matches == 0);
+  CHECK(a->refs[2].path == "blocks/a/nope.md");
+  CHECK(a->refs[3].target == "c");
+  CHECK(a->refs[3].line == 7);
+  CHECK(s->find("c")->refs.size() == 1);
+  CHECK(s->find("c")->refs[0].target == "a");
+  CHECK(s->find("t")->refs.empty());
+  std::vector<std::string> pairs;
+  for (const auto& l : s->links()) {
+    if (l.kind == LinkKind::Ref) pairs.push_back(l.src_block + "->" + l.dst_block);
+  }
+  CHECK(pairs == std::vector<std::string>{"a->c", "a->b", "c->a"});
+  std::vector<std::string> w08;
+  for (const auto& i : check_schema(*s)) {
+    if (i.code == "W08") w08.push_back(i.message + " @" + i.loc.file + ":" + std::to_string(i.loc.line));
+  }
+  CHECK(w08 == std::vector<std::string>{"the link (nope.md) names no note: blocks/a/nope.md is not a note's file @blocks/a/note.md:2"});
+}
+
+TEST_CASE("notes: words inside a Markdown link are no mention") {
+  auto at = find_mentions("см. [Бюджет](money.md) и Бюджет", "Бюджет");
+  REQUIRE(at.size() == 1);
+  CHECK(at[0] == std::string("см. [Бюджет](money.md) и ").size());
+}

@@ -7,6 +7,7 @@
 #include <regex>
 
 #include "kk/code/notes.hpp"
+#include "kk/core/markdown.hpp"
 #include "kk/core/model.hpp"
 #include "kk/core/notes.hpp"
 #include "kk/core/paths.hpp"
@@ -383,6 +384,9 @@ ToolOutcome NotesToolHost::call(const ToolCall& c) {
     }
     auto text = text_for(id);
     std::string r = fmt::format("@note {} \"{}\"\n", id, title_for(id));
+    // A new note and a note.md are Markdown; a note written before (note.txt, a listed .txt) plain text (ADR 0040).
+    const auto* nb = s_.find(id);
+    r += nb == nullptr || core::md::is_markdown_file(core::note_file(*nb)) ? "format: Markdown\n" : "format: plain text\n";
     if (!out_links.empty()) r += "links: " + core::join(out_links, ", ") + "\n";
     if (!in_links.empty()) r += "linked from: " + core::join(in_links, ", ") + "\n";
     return {r + "--- text\n" + (text.empty() ? "(empty)\n" : text), false, false};

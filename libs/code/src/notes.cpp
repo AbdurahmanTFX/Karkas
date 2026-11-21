@@ -5,6 +5,7 @@
 #include <map>
 #include <set>
 
+#include "kk/core/markdown.hpp"
 #include "kk/core/model.hpp"
 #include "kk/core/notes.hpp"
 #include "kk/core/paths.hpp"
@@ -17,7 +18,21 @@ namespace fs = std::filesystem;
 
 namespace {
 
-bool is_note_file(const fs::path& p) { return core::to_lower(p.extension().string()) == ".txt"; }
+// Text notes: .txt, and Markdown (.md, .markdown; docs/adr/0040).
+bool is_note_file(const fs::path& p) {
+  auto ext = core::to_lower(p.extension().string());
+  return ext == ".txt" || ext == ".md" || ext == ".markdown";
+}
+
+// The files every repository has (README.md, LICENSE.txt ...): they alone do not make a folder notes.
+bool repo_file(const fs::path& p) {
+  auto stem = core::to_lower(p.stem().string());
+  for (const char* n : {"readme", "license", "licence", "changelog", "changes", "contributing", "code_of_conduct", "security", "authors",
+                        "notice", "copying", "todo"}) {
+    if (stem == n) return true;
+  }
+  return false;
+}
 
 // Folders that hold no notes of the user: hidden ones (.git, .karkas), build trees, Karkas's cards.
 bool skipped_dir(const std::string& name, const std::string& blocks) {
@@ -43,9 +58,9 @@ void each_note_file(const fs::path& root, const std::string& blocks, F f) {
 
 bool has_notes(const fs::path& dir) {
   bool found = false;
-  each_note_file(dir, "blocks", [&](const fs::path&) {
-    found = true;
-    return false;
+  each_note_file(dir, "blocks", [&](const fs::path& p) {
+    found = !repo_file(p);
+    return !found;
   });
   return found;
 }
@@ -146,6 +161,16 @@ kk::Result<int> remove_note_link(const core::Schema& s, const std::string& src, 
     auto bar = inner.find('|');
     return std::string(core::trim(bar == std::string::npos ? std::string_view(inner) : std::string_view(inner).substr(bar + 1)));
   });
+  // A Markdown note's [text](file.md) links to it become their text (docs/adr/0040).
+  if (const auto* d = s.find(dst); d != nullptr && core::md::is_markdown_file(file)) {
+    auto target = core::note_file(*d);
+    auto ls = core::md::links(out);
+    for (auto it = ls.rbegin(); it != ls.rend(); ++it) {
+      if (target.empty() || core::note_link_file(file, it->href) != target) continue;
+      out = out.substr(0, it->begin) + it->label + out.substr(it->end);
+      ++n;
+    }
+  }
   if (n > 0) {
     if (auto r = core::write_file(s.root / file, out); !r) return std::unexpected(r.error());
   }

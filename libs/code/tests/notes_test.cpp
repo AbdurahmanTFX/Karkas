@@ -92,15 +92,16 @@ TEST_CASE("notes: links added and removed from the schema, titles changed with t
   test::write(d / "blocks/game/block.ksl", "@block game\npurpose Игра про кота\nkind leaf\n");
   test::write(d / "blocks/game/note.txt", "Кот. См. [[Сюжет|историю]] и [[story]].");
   test::write(d / "blocks/story/block.ksl", "@block story\npurpose Сюжет\nkind leaf\n");
-  test::write(d / "blocks/music/block.ksl", "@block music\npurpose Музыка\nkind leaf\n");  // no note.txt yet
+  test::write(d / "blocks/music/block.ksl", "@block music\npurpose Музыка\nkind leaf\n");  // no text yet
   auto load = [&] {
     auto s = core::load_schema(d.path());
     REQUIRE(s);
     return std::move(*s);
   };
-  // A link from a note without a file yet: the file is made.
+  // A link from a note without a file yet: the file is made, Markdown (docs/adr/0040).
   REQUIRE(code::add_note_link(load(), "music", "game"));
-  CHECK(test::read(d / "blocks/music/note.txt") == "[[Игра про кота]]\n");
+  CHECK(test::read(d / "blocks/music/note.md") == "[[Игра про кота]]\n");
+  CHECK_FALSE(std::filesystem::exists(d / "blocks/music/note.txt"));
   REQUIRE(code::add_note_link(load(), "game", "music"));
   CHECK(test::read(d / "blocks/game/note.txt") == "Кот. См. [[Сюжет|историю]] и [[story]].\n[[Музыка]]\n");
 
@@ -170,4 +171,63 @@ TEST_CASE("notes: plain words that name another note are links to suggest, one c
   auto again = code::link_mention(load(), "story", "game");
   REQUIRE(again);
   CHECK_FALSE(*again);  // nothing left to link
+}
+
+// --- Markdown notes (docs/adr/0040) ---------------------------------------------------------------------
+
+TEST_CASE("notes: init takes Markdown notes too, README and the like alone are no notes") {
+  test::TempDir d{"md_vault"};
+  test::write(d / "Index.md", "# Указатель\nСм. [план](Проекты/План%20игры.md).\n");
+  test::write(d / "Проекты/План игры.md", "- [ ] сюжет\n");
+  test::write(d / "Проекты/old.markdown", "x\n");
+  test::write(d / "Покупки.txt", "молоко\n");
+  CHECK(code::has_notes(d.path()));
+  auto r = code::init_project(d.path());
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().message));
+  CHECK(r->notes);
+  auto s = core::load_schema(d.path());
+  REQUIRE(s);
+  const auto* index = s->find("index");
+  REQUIRE(index != nullptr);
+  CHECK(index->purpose.value == "Index");
+  CHECK(core::note_file(*index) == "Index.md");
+  REQUIRE(s->find("proekty.plan_igry") != nullptr);
+  CHECK(core::note_file(*s->find("proekty.plan_igry")) == "Проекты/План игры.md");
+  REQUIRE(s->find("proekty.old") != nullptr);
+  REQUIRE(s->find("pokupki") != nullptr);
+  REQUIRE(index->refs.size() == 1);
+  CHECK(index->refs[0].target == "proekty.plan_igry");
+
+  test::TempDir repo{"fresh_repo"};
+  test::write(repo / "README.md", "# My app\n");
+  test::write(repo / "LICENSE.txt", "MIT\n");
+  CHECK_FALSE(code::has_notes(repo.path()));
+  test::write(repo / "ideas.md", "мысли\n");
+  CHECK(code::has_notes(repo.path()));
+}
+
+TEST_CASE("notes: removing a line on the schema makes a Markdown note's [text](file.md) links text") {
+  test::TempDir d{"md_unlink"};
+  test::write(d / "project.ksl", "@project vault\nlang notes\n");
+  test::write(d / "blocks/a/block.ksl", "@block a\npurpose План\nkind leaf\n");
+  test::write(d / "blocks/a/note.md", "См. [**бюджет**](../b/note.md), [[Бюджет]] и [идеи](../c/note.md).\n`[код](../b/note.md)`\n");
+  test::write(d / "blocks/b/block.ksl", "@block b\npurpose Бюджет\nkind leaf\n");
+  test::write(d / "blocks/c/block.ksl", "@block c\npurpose Идеи\nkind leaf\n");
+  auto s = core::load_schema(d.path());
+  REQUIRE(s);
+  auto n = code::remove_note_link(*s, "a", "b");
+  REQUIRE(n);
+  CHECK(*n == 2);
+  CHECK(test::read(d / "blocks/a/note.md") == "См. **бюджет**, Бюджет и [идеи](../c/note.md).\n`[код](../b/note.md)`\n");
+}
+
+TEST_CASE("notes: a plain word inside a Markdown link is no mention to link") {
+  test::TempDir d{"md_mentions"};
+  test::write(d / "project.ksl", "@project vault\nlang notes\n");
+  test::write(d / "blocks/a/block.ksl", "@block a\npurpose План\nkind leaf\n");
+  test::write(d / "blocks/a/note.md", "[Бюджет](https://example.org/budget) — смета.\n");
+  test::write(d / "blocks/b/block.ksl", "@block b\npurpose Бюджет\nkind leaf\n");
+  auto s = core::load_schema(d.path());
+  REQUIRE(s);
+  CHECK(code::unlinked_mentions(*s, "a").empty());
 }
