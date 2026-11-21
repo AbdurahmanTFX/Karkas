@@ -366,8 +366,8 @@ Part layout_part(const Graph& g, const std::vector<int>& nodes, const std::vecto
   auto sep = [&](int a, int b) {
     bool da = vs[static_cast<std::size_t>(a)].node < 0;
     bool db = vs[static_cast<std::size_t>(b)].node < 0;
-    if (da && db) return 14.0;
-    if (da || db) return std::max(18.0, g.node_sep * 0.6);
+    if (da && db) return 30.0;  // parallel lines far enough apart to stay apart (thick bundles too)
+    if (da || db) return std::max(30.0, g.node_sep * 0.8);
     return g.node_sep;
   };
   auto weight = [&](int a, int b) {
@@ -452,8 +452,8 @@ Part layout_part(const Graph& g, const std::vector<int>& nodes, const std::vecto
     turn_of[{a, b}] = {gi, gaps[gi].size()};
     gaps[gi].push_back({li, port(a), port(b), -1});
   }
-  constexpr double kTrack = 10;    // between tracks
-  constexpr double kMarginX = 26;  // from a column to its first track
+  constexpr double kTrack = 20;    // between tracks
+  constexpr double kMarginX = 34;  // from a column to its first track
   std::vector<int> tracks(gaps.size(), 0);
   for (std::size_t gi = 0; gi < gaps.size(); ++gi) {
     auto& turns = gaps[gi];
@@ -490,7 +490,7 @@ Part layout_part(const Graph& g, const std::vector<int>& nodes, const std::vecto
       int track = 0;
       for (std::size_t oj = 0; oj < oi; ++oj) {
         const auto& u = turns[bent[order[oj]]];
-        bool overlap = std::min(t.from, t.to) < std::max(u.from, u.to) + 8 && std::min(u.from, u.to) < std::max(t.from, t.to) + 8;
+        bool overlap = std::min(t.from, t.to) < std::max(u.from, u.to) + 16 && std::min(u.from, u.to) < std::max(t.from, t.to) + 16;
         if (overlap) track = std::max(track, u.track + 1);
       }
       t.track = track;
@@ -671,7 +671,7 @@ kk::Result<Layout> SugiyamaEngine::layout(const Graph& g) {
       r.from = g.nodes[static_cast<std::size_t>(line.u)].id;
       r.to = g.nodes[static_cast<std::size_t>(line.v)].id;
       r.kind = line.kind;
-      double shift = (static_cast<double>(m) - static_cast<double>(members.size() - 1) / 2.0) * 5.0;
+      double shift = (static_cast<double>(m) - static_cast<double>(members.size() - 1) / 2.0) * 10.0;
       for (const auto& pt : chain) r.points.push_back({pt.x + offset[part].x + shift, pt.y + offset[part].y + shift});
       if (line.u != dag_tail) std::reverse(r.points.begin(), r.points.end());
     }

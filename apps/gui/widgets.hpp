@@ -11,10 +11,22 @@ namespace kk::gui::ui {
 
 // Flat button with an icon (and optional text); highlighted when `on`.
 bool icon_button(const char* id, Icon icon, const char* tooltip = nullptr, bool on = false, const char* text = nullptr);
+
+// A tool bar that fits its panel (ADR 0043). Between begin and end, icon buttons and toggles lose their
+// text when the bar with all its texts would be wider than the panel (the text goes to the tooltip),
+// and an item that does not fit on the row starts a new row. `*full` keeps the width the bar needs with
+// its texts (measured when it was drawn with them).
+void tool_row_begin(float* full);
+void tool_row_end(float* full);
+// Before an item of the bar that is not an icon button (a separator, a text): a new row when it does
+// not fit on this one.
+void tool_fit(float width);
+[[nodiscard]] bool tool_compact();
 // A toggle chip: flips `*v` when clicked.
 bool toggle(const char* id, Icon icon, const char* text, bool* v, const char* tooltip = nullptr);
-// Uppercase-style title of a side panel or a section (heading font, muted).
-void panel_title(const char* text);
+// Uppercase-style title of a side panel or a section (heading font, muted); with `reserve`, shortened
+// with "…" to leave that much room on its right (the panel's buttons).
+void panel_title(const char* text, float reserve = -1.0f);
 // Collapsible section header like the side bar of an IDE.
 bool section(const char* label, bool default_open = true);
 // Rounded pill with text.

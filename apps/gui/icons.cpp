@@ -308,6 +308,19 @@ const std::array<Sdf, static_cast<std::size_t>(Icon::Count)>& shapes() {
         float line = seg(p, {0.30f, 0.38f}, {0.62f, 0.60f}, 0.04f);
         return U(S(U(a, b), gaps), line);
       },
+      // Corner (two blocks joined by a line with right angles)
+      [](V p) {
+        float a = S(box(p, {0.04f, 0.12f}, {0.36f, 0.40f}, 0.05f), box(p, {0.04f + 2 * T, 0.12f + 2 * T}, {0.36f - 2 * T, 0.40f - 2 * T}, 0.02f));
+        float b = S(box(p, {0.64f, 0.60f}, {0.96f, 0.88f}, 0.05f), box(p, {0.64f + 2 * T, 0.60f + 2 * T}, {0.96f - 2 * T, 0.88f - 2 * T}, 0.02f));
+        float line = U(seg(p, {0.36f, 0.26f}, {0.52f, 0.26f}, T), U(seg(p, {0.52f, 0.26f}, {0.52f, 0.74f}, T), seg(p, {0.52f, 0.74f}, {0.64f, 0.74f}, T)));
+        return U(U(a, b), line);
+      },
+      // Focus (arrows to two corners: the schema over the whole window)
+      [](V p) {
+        float tr = U(seg(p, {0.60f, 0.12f}, {0.88f, 0.12f}, T), U(seg(p, {0.88f, 0.12f}, {0.88f, 0.40f}, T), seg(p, {0.88f, 0.12f}, {0.58f, 0.42f}, T)));
+        float bl = U(seg(p, {0.12f, 0.60f}, {0.12f, 0.88f}, T), U(seg(p, {0.12f, 0.88f}, {0.40f, 0.88f}, T), seg(p, {0.12f, 0.88f}, {0.42f, 0.58f}, T)));
+        return U(tr, bl);
+      },
   };
   return s;
 }

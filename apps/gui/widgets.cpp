@@ -14,8 +14,51 @@
 
 namespace kk::gui::ui {
 
+namespace {
+
+// The tool bar being drawn (tool_row_begin .. tool_row_end).
+struct Row {
+  bool on = false;
+  bool compact = false;  // icons only
+  float start = 0;       // the left edge of the bar
+  float limit = 0;       // the right edge of the panel's content
+  float needed = 0;      // the width of the bar on one row with its texts
+} g_row;
+
+}  // namespace
+
+void tool_row_begin(float* full) {
+  g_row.on = true;
+  g_row.start = ImGui::GetCursorScreenPos().x;
+  g_row.limit = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+  g_row.compact = *full > g_row.limit - g_row.start + 0.5f;
+  g_row.needed = 0;
+}
+
+void tool_row_end(float* full) {
+  if (!g_row.compact) *full = g_row.needed;
+  g_row.on = false;
+}
+
+void tool_fit(float width) {
+  if (!g_row.on) return;
+  g_row.needed += width + ImGui::GetStyle().ItemSpacing.x;
+  float x = ImGui::GetCursorScreenPos().x;
+  if (x > g_row.start + 1 && x + width > g_row.limit) ImGui::NewLine();
+}
+
+bool tool_compact() { return g_row.on && g_row.compact; }
+
 bool icon_button(const char* id, Icon icon_id, const char* tooltip, bool on, const char* text) {
-  std::string label = text != nullptr && *text != '\0' ? with_icon(icon_id, text) : std::string(icon(icon_id));
+  const bool has_text = text != nullptr && *text != '\0';
+  const bool show_text = has_text && !tool_compact();
+  std::string label = show_text ? with_icon(icon_id, text) : std::string(icon(icon_id));
+  if (g_row.on) {
+    if (has_text && !show_text) {  // the width it needs with its text, for when there is room again
+      g_row.needed += ImGui::CalcTextSize(with_icon(icon_id, text).c_str()).x - ImGui::CalcTextSize(label.c_str()).x;
+    }
+    tool_fit(ImGui::CalcTextSize(label.c_str()).x + 12);
+  }
   label += "##";
   label += id;
   ImGui::PushStyleColor(ImGuiCol_Button, on ? theme::accent(0.35f) : ImVec4(0, 0, 0, 0));
@@ -25,7 +68,13 @@ bool icon_button(const char* id, Icon icon_id, const char* tooltip, bool on, con
   bool r = ImGui::Button(label.c_str());
   ImGui::PopStyleVar();
   ImGui::PopStyleColor(3);
-  if (tooltip != nullptr && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tooltip);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+    if (has_text && !show_text) {  // the text it lost goes to the tooltip
+      ImGui::SetTooltip("%s", tooltip != nullptr ? (std::string(text) + "\n" + tooltip).c_str() : text);
+    } else if (tooltip != nullptr) {
+      ImGui::SetTooltip("%s", tooltip);
+    }
+  }
   return r;
 }
 
@@ -35,10 +84,19 @@ bool toggle(const char* id, Icon icon_id, const char* text, bool* v, const char*
   return clicked;
 }
 
-void panel_title(const char* text) {
+void panel_title(const char* text, float reserve) {
   ImGui::PushFont(theme::heading_font());
   ImGui::PushStyleColor(ImGuiCol_Text, theme::col(theme::kTextMuted));
-  ImGui::TextUnformatted(text);
+  if (reserve < 0) {
+    ImGui::TextUnformatted(text);
+  } else {
+    float room = ImGui::GetContentRegionAvail().x - reserve - ImGui::GetStyle().ItemSpacing.x;
+    if (room > ImGui::GetFontSize()) {
+      ImGui::TextUnformatted(ellipsize(text, room).c_str());
+    } else {
+      ImGui::Dummy(ImVec2(1, ImGui::GetTextLineHeight()));  // no room: the buttons only
+    }
+  }
   ImGui::PopStyleColor();
   ImGui::PopFont();
 }

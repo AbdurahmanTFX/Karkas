@@ -132,6 +132,7 @@ Ui::Ui(Worker& w, GuiSettings& settings, bool persist, std::function<void()> wak
 }
 
 Ui::~Ui() {
+  set_schema_only(false);  // the next project opens with the panels as they were
   // Notes typed but not saved yet (the pause before the autosave had not passed): written now, here —
   // the worker may stop before it would take a job (ADR 0038).
   for (const auto& [file, at] : note_edited_at_) {
@@ -191,7 +192,18 @@ void Ui::settings_changed() {
   set_lang(settings_.lang);
   ImGui::GetIO().FontGlobalScale = settings_.ui_scale;
   req_.block_scale = settings_.block_scale;
-  if (persist_) save_settings(settings_);
+  if (!persist_) return;
+  if (schema_only_) {  // the panels hidden for the moment are saved as they will come back
+    GuiSettings s = settings_;
+    s.show_side = schema_only_->side;
+    s.show_inspector = schema_only_->inspector;
+    s.show_bottom = schema_only_->bottom;
+    s.show_activity = schema_only_->activity;
+    s.show_status = schema_only_->status;
+    save_settings(s);
+  } else {
+    save_settings(settings_);
+  }
 }
 
 std::pair<float, float> Ui::base_size(const Model& m, const std::string& id) const {
@@ -1428,7 +1440,8 @@ void Ui::draw_graph(const Model& m) {
     float thick;
     bool lit;
     std::size_t pi;  // its plan entry
-    bool bent;       // drawn here through the user's points, not by the editor
+    bool bent;       // it has the user's points (bends)
+    bool own;        // drawn here, not by the editor: bent, or every line when lines have right angles
   };
   std::vector<Drawn> drawn;
   drawn.reserve(planned.size());
@@ -1472,8 +1485,9 @@ void Ui::draw_graph(const Model& m) {
       }
     }
     bool bent = bends_.contains(p.key);
-    if (!bent) ed::Link(lid, from, to, c, t);
-    drawn.push_back({from, to, c, t, dimming && lit_pair(p.a, p.b), pi, bent});
+    bool own = bent || settings_.square_lines;
+    if (!own) ed::Link(lid, from, to, c, t);
+    drawn.push_back({from, to, c, t, dimming && lit_pair(p.a, p.b), pi, bent, own});
   }
   g_prof.mark(4);
   // Geometry of every line (canvas units): one cubic for a line the editor draws (the same curve
@@ -1539,9 +1553,57 @@ void Ui::draw_graph(const Model& m) {
       out.push_back({p0, c1, c2, p3});
     }
   };
-  // A line routed by "Arrange" (ADR 0042): level and upright pieces with rounded corners, its first and
-  // last piece level at its sockets. False when its corners are no longer at right angles (a block was
-  // moved alone): it is then drawn as a smooth curve through them.
+  // Level and upright pieces through `pts` with rounded corners, as cubic pieces (hover, menus and flow
+  // arrows work on them as on any line).
+  auto rounded = [&](const std::vector<ImVec2>& pts, std::vector<Seg>& out) {
+    out.clear();
+    std::vector<ImVec2> clean;  // no repeated points, no corner on a straight piece
+    for (const auto& p : pts) {
+      if (!clean.empty() && std::fabs(clean.back().x - p.x) < 0.01f && std::fabs(clean.back().y - p.y) < 0.01f) continue;
+      if (clean.size() >= 2) {
+        ImVec2 u = clean[clean.size() - 2];
+        ImVec2 v = clean.back();
+        if ((std::fabs(u.x - v.x) < 0.01f && std::fabs(v.x - p.x) < 0.01f) || (std::fabs(u.y - v.y) < 0.01f && std::fabs(v.y - p.y) < 0.01f)) {
+          clean.back() = p;
+          continue;
+        }
+      }
+      clean.push_back(p);
+    }
+    if (clean.size() < 2) return;
+    auto line = [&](ImVec2 s0, ImVec2 e) {
+      float len = std::hypot(e.x - s0.x, e.y - s0.y);
+      int n = std::max(1, static_cast<int>(std::ceil(len / 60.0f)));  // pieces of about equal length (for the flow arrows)
+      for (int k = 0; k < n; ++k) {
+        float t0 = static_cast<float>(k) / static_cast<float>(n);
+        float t1 = static_cast<float>(k + 1) / static_cast<float>(n);
+        ImVec2 p0(s0.x + (e.x - s0.x) * t0, s0.y + (e.y - s0.y) * t0);
+        ImVec2 p3(s0.x + (e.x - s0.x) * t1, s0.y + (e.y - s0.y) * t1);
+        out.push_back({p0, ImVec2(p0.x + (p3.x - p0.x) / 3, p0.y + (p3.y - p0.y) / 3), ImVec2(p0.x + (p3.x - p0.x) * 2 / 3, p0.y + (p3.y - p0.y) * 2 / 3), p3});
+      }
+    };
+    ImVec2 cur = clean.front();
+    for (std::size_t i = 1; i + 1 < clean.size(); ++i) {
+      ImVec2 p = clean[i];
+      ImVec2 din(p.x - clean[i - 1].x, p.y - clean[i - 1].y);
+      ImVec2 dout(clean[i + 1].x - p.x, clean[i + 1].y - p.y);
+      float lin = std::hypot(din.x, din.y);
+      float lout = std::hypot(dout.x, dout.y);
+      if (lin < 0.01f || lout < 0.01f) continue;
+      din = ImVec2(din.x / lin, din.y / lin);
+      dout = ImVec2(dout.x / lout, dout.y / lout);
+      float r = std::min({12.0f, lin / 2, lout / 2});
+      ImVec2 s0(p.x - din.x * r, p.y - din.y * r);
+      ImVec2 s1(p.x + dout.x * r, p.y + dout.y * r);
+      line(cur, s0);
+      constexpr float kKappa = 0.5523f;  // a quarter circle as a cubic
+      out.push_back({s0, ImVec2(s0.x + din.x * r * kKappa, s0.y + din.y * r * kKappa), ImVec2(s1.x - dout.x * r * kKappa, s1.y - dout.y * r * kKappa), s1});
+      cur = s1;
+    }
+    line(cur, clean.back());
+  };
+  // A line routed by "Arrange" (ADR 0042): its first and last piece level at its sockets. False when its
+  // corners are no longer at right angles (a block was moved alone): it is then drawn another way.
   auto ortho_path = [&](const std::vector<ImVec2>& q, std::vector<Seg>& out) {
     out.clear();
     if (q.size() < 3) return false;
@@ -1557,64 +1619,79 @@ void Ui::draw_graph(const Model& m) {
     std::vector<ImVec2> pts{a};
     for (const auto& p : c) pts.push_back(p);
     pts.push_back(b);
-    const float tol = 0.75f;
     for (std::size_t i = 1; i + 2 < pts.size(); ++i) {
-      if (std::fabs(pts[i].x - pts[i + 1].x) > tol && std::fabs(pts[i].y - pts[i + 1].y) > tol) return false;
+      if (std::fabs(pts[i].x - pts[i + 1].x) > 0.75f && std::fabs(pts[i].y - pts[i + 1].y) > 0.75f) return false;
     }
-    std::vector<ImVec2> clean;  // no repeated points, no corner on a straight piece
-    for (const auto& p : pts) {
-      if (!clean.empty() && std::fabs(clean.back().x - p.x) < 0.01f && std::fabs(clean.back().y - p.y) < 0.01f) continue;
-      if (clean.size() >= 2) {
-        ImVec2 u = clean[clean.size() - 2];
-        ImVec2 v = clean.back();
-        if ((std::fabs(u.x - v.x) < 0.01f && std::fabs(v.x - p.x) < 0.01f) || (std::fabs(u.y - v.y) < 0.01f && std::fabs(v.y - p.y) < 0.01f)) {
-          clean.back() = p;
-          continue;
-        }
-      }
-      clean.push_back(p);
-    }
-    auto line = [&](ImVec2 s, ImVec2 e) {
-      float len = std::hypot(e.x - s.x, e.y - s.y);
-      int n = std::max(1, static_cast<int>(std::ceil(len / 60.0f)));  // pieces of about equal length (for the flow arrows)
-      for (int k = 0; k < n; ++k) {
-        float t0 = static_cast<float>(k) / static_cast<float>(n);
-        float t1 = static_cast<float>(k + 1) / static_cast<float>(n);
-        ImVec2 p0(s.x + (e.x - s.x) * t0, s.y + (e.y - s.y) * t0);
-        ImVec2 p3(s.x + (e.x - s.x) * t1, s.y + (e.y - s.y) * t1);
-        out.push_back({p0, ImVec2(p0.x + (p3.x - p0.x) / 3, p0.y + (p3.y - p0.y) / 3), ImVec2(p0.x + (p3.x - p0.x) * 2 / 3, p0.y + (p3.y - p0.y) * 2 / 3), p3});
-      }
-    };
-    ImVec2 cur = clean.front();
-    for (std::size_t i = 1; i + 1 < clean.size(); ++i) {
-      ImVec2 p = clean[i];
-      ImVec2 din(p.x - clean[i - 1].x, p.y - clean[i - 1].y);
-      ImVec2 dout(clean[i + 1].x - p.x, clean[i + 1].y - p.y);
-      float lin = std::hypot(din.x, din.y);
-      float lout = std::hypot(dout.x, dout.y);
-      if (lin < 0.01f || lout < 0.01f) continue;
-      din = ImVec2(din.x / lin, din.y / lin);
-      dout = ImVec2(dout.x / lout, dout.y / lout);
-      float r = std::min({10.0f, lin / 2, lout / 2});
-      ImVec2 s0(p.x - din.x * r, p.y - din.y * r);
-      ImVec2 s1(p.x + dout.x * r, p.y + dout.y * r);
-      line(cur, s0);
-      constexpr float kKappa = 0.5523f;  // a quarter circle as a cubic
-      out.push_back({s0, ImVec2(s0.x + din.x * r * kKappa, s0.y + din.y * r * kKappa), ImVec2(s1.x - dout.x * r * kKappa, s1.y - dout.y * r * kKappa), s1});
-      cur = s1;
-    }
-    line(cur, clean.back());
+    rounded(pts, out);
     return true;
   };
+  // Lines with right angles (ADR 0043): from its socket along the socket's axis, to each of its points
+  // along one axis and then the other, into the far socket along that socket's axis (a step half way
+  // when both sockets face the same axis). The "+" handles: the middle of the longest piece between two
+  // of its points, each with the place a new point takes.
+  using Mids = std::vector<std::pair<ImVec2, std::size_t>>;
+  auto square_path = [&](const std::vector<ImVec2>& q, ImVec2 da, ImVec2 db, std::vector<Seg>& out, Mids& mids) {
+    out.clear();
+    mids.clear();
+    if (q.size() < 2) return false;
+    const bool across = std::fabs(da.x) >= std::fabs(da.y);  // leaves level (else upright)
+    const bool end_across = std::fabs(db.x) >= std::fabs(db.y);
+    std::vector<ImVec2> pts{q.front()};
+    std::vector<std::size_t> start{0};  // where each stretch between two points begins in pts
+    ImVec2 cur = q.front();
+    for (std::size_t k = 1; k < q.size(); ++k) {
+      ImVec2 to = q[k];
+      if (k + 1 < q.size()) {
+        pts.push_back(across ? ImVec2(to.x, cur.y) : ImVec2(cur.x, to.y));
+        pts.push_back(to);
+        cur = to;
+        start.push_back(pts.size() - 1);
+        continue;
+      }
+      if (across == end_across) {
+        if (across) {
+          float mx = (cur.x + to.x) / 2;
+          pts.push_back(ImVec2(mx, cur.y));
+          pts.push_back(ImVec2(mx, to.y));
+        } else {
+          float my = (cur.y + to.y) / 2;
+          pts.push_back(ImVec2(cur.x, my));
+          pts.push_back(ImVec2(to.x, my));
+        }
+      } else {
+        pts.push_back(across ? ImVec2(to.x, cur.y) : ImVec2(cur.x, to.y));
+      }
+      pts.push_back(to);
+    }
+    start.push_back(pts.size() - 1);
+    for (std::size_t k = 0; k + 1 < start.size(); ++k) {
+      float best = -1;
+      ImVec2 at_mid = pts[start[k]];
+      for (std::size_t i = start[k]; i < start[k + 1]; ++i) {
+        float l = std::hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+        if (l > best) {
+          best = l;
+          at_mid = ImVec2((pts[i].x + pts[i + 1].x) / 2, (pts[i].y + pts[i + 1].y) / 2);
+        }
+      }
+      mids.emplace_back(at_mid, k);
+    }
+    rounded(pts, out);
+    return !out.empty();
+  };
   std::vector<std::vector<Seg>> geo(drawn.size());
+  std::vector<Mids> mids(drawn.size());  // the "+" handles of each line
   {
     std::vector<ImVec2> q;
     ImVec2 da;
     ImVec2 db;
     for (std::size_t i = 0; i < drawn.size(); ++i) {
       if (!line_points(drawn[i], q, da, db)) continue;
-      bool square = drawn[i].bent && ortho_.contains(planned[drawn[i].pi].key) && ortho_path(q, geo[i]);
-      if (!square) spline(q, da, db, geo[i]);
+      bool routed = drawn[i].bent && ortho_.contains(planned[drawn[i].pi].key) && ortho_path(q, geo[i]);
+      if (routed) continue;  // its corners are its handles
+      if (settings_.square_lines && square_path(q, da, db, geo[i], mids[i])) continue;
+      spline(q, da, db, geo[i]);
+      for (std::size_t j = 0; j < geo[i].size(); ++j) mids[i].emplace_back(at(geo[i][j].data(), 0.5f), j);
     }
   }
   // The line under the mouse (~7 px on screen) — or the one whose bend is dragged.
@@ -1687,7 +1764,7 @@ void Ui::draw_graph(const Model& m) {
     dl->ChannelsSetCurrent(underlay_channel);
     for (std::size_t i = 0; i < drawn.size(); ++i) {
       const auto& d = drawn[i];
-      if (!d.bent) continue;
+      if (!d.own) continue;
       bool hot = static_cast<int>(i) == hover_line;
       if (hot) {
         for (const auto& sg : geo[i]) dl->AddBezierCubic(sg[0], sg[1], sg[2], sg[3], ImGui::GetColorU32(with_alpha(d.color, 0.25f)), d.thick + 6.0f);
@@ -1772,10 +1849,8 @@ void Ui::draw_graph(const Model& m) {
           if (pts.empty()) bends_.erase(key);
           ++bends_version_;
           save_bends();
-        } else if (!ortho_.contains(key)) {  // a routed line: its corners are its handles
-          const auto& segs = geo[static_cast<std::size_t>(hover_line)];
-          for (std::size_t j = 0; j < segs.size(); ++j) {
-            ImVec2 c = at(segs[j].data(), 0.5f);
+        } else {
+          for (const auto& [c, j] : mids[static_cast<std::size_t>(hover_line)]) {
             std::string label = "##mid" + key + "#" + std::to_string(j);
             button(label, c);
             bool hot = ImGui::IsItemHovered();
@@ -2022,7 +2097,7 @@ void Ui::draw_graph(const Model& m) {
     if (auto text = bundle_text(hl.Get()); !text.empty()) ImGui::SetTooltip("%s", text.c_str());
   }
   // A bent line is not the editor's: its tooltip and menu come from here.
-  const bool bent_hovered = hover_line >= 0 && drawn[static_cast<std::size_t>(hover_line)].bent;
+  const bool bent_hovered = hover_line >= 0 && drawn[static_cast<std::size_t>(hover_line)].own;
   if (!menu_open && !handle_tip.empty()) {
     ImGui::SetTooltip("%s", handle_tip.c_str());
   } else if (!menu_open && bent_hovered) {
@@ -2185,6 +2260,9 @@ void Ui::draw_graph(const Model& m) {
     }
     if (ImGui::MenuItem(with_icon(Icon::Fit, tr("Fit to view")).c_str())) navigate_ = 1;
     if (!nested && ImGui::MenuItem(with_icon(Icon::Schema, tr("Arrange blocks and lines")).c_str())) arrange_request_ = true;
+    if (ImGui::MenuItem(with_icon(Icon::Corner, tr("Lines with right angles")).c_str(), nullptr, settings_.square_lines)) {
+      square_lines(!settings_.square_lines);
+    }
     if (ImGui::MenuItem(with_icon(Icon::Schema, tr("Auto layout (reset positions and sizes)")).c_str())) auto_layout = true;
     if (std::any_of(drawn.begin(), drawn.end(), [](const Drawn& d) { return d.bent; }) &&
         ImGui::MenuItem(with_icon(Icon::Undo, tr("Straighten every line of this level")).c_str())) {

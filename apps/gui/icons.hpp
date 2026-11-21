@@ -12,7 +12,7 @@ enum class Icon {
   Folder, FolderOpen, File, Cube, Play, Library, Gear, Search, Layers, Link, Undo, Plus, Close, Check,
   Warning, Error, Info, Ticket, Agent, Hammer, Coins, Changes, Eye, Fit, Home, ArrowUp, Schema, Code,
   Sliders, Files, Wave, Dot, Pin, Card, Stop, Trash, Send, Chat,
-  Copy, Windows, Pencil, Bolt, ChevronRight, ChevronDown, Ghost, Float, PopOut, Dock, Sketch, Count
+  Copy, Windows, Pencil, Bolt, ChevronRight, ChevronDown, Ghost, Float, PopOut, Dock, Sketch, Corner, Focus, Count
 };
 
 // UTF-8 text of the icon glyph (U+E000 + index).

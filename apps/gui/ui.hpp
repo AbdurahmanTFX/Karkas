@@ -459,6 +459,16 @@ class Ui {
   };
   std::optional<ArrangeUndo> arrange_undo_;
   void arrange_buttons(const Model& m);  // the toolbar's "Arrange" and its way back
+  // ADR 0043: the schema's tool bar fits its panel (texts go, rows wrap); lines with right angles; the
+  // schema alone over the window (the panels come back as they were).
+  float toolbar_full_w_ = 0;
+  void view_buttons();  // right angles, the schema alone
+  struct SchemaOnly {
+    bool side, inspector, bottom, activity, status, chat;
+  };
+  std::optional<SchemaOnly> schema_only_;
+  void set_schema_only(bool on);
+  void square_lines(bool on);
   // dialogs
   std::string dialog_;  // "add_block", "add_port", "rename", "merge", "split"
   std::string target_;

@@ -244,3 +244,8 @@
 {"Arrange", "Упорядочить"},
 {"Put the blocks and lines back where they were before arranging", "Вернуть блоки и линии туда, где они были до упорядочивания"},
 {"Arrange blocks and lines", "Упорядочить блоки и линии"},
+{"Lines with right angles", "Линии с прямыми углами"},
+{"Right angles", "Прямые углы"},
+{"Draw every line of the schema with right angles: level and upright pieces with rounded corners (a line you bend keeps them)", "Рисовать все линии схемы с прямыми углами: горизонтальные и вертикальные участки со скруглёнными поворотами (изогнутая вручную линия их сохраняет)"},
+{"Only the schema: hide the side bar, the inspector, the bottom panel and the bars (F11; again to bring them back)", "Только схема: скрыть боковую панель, инспектор, нижнюю панель и полосы (F11; повторно — вернуть)"},
+{"Schema only", "Только схема"},

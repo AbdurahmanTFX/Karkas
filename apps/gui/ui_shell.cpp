@@ -538,6 +538,7 @@ void Ui::draw_menu(const Model* m) {
     focus_search_ = true;
   }
   if (ImGui::IsKeyChordPressed(ImGuiMod_Alt | ImGuiKey_UpArrow) && !req_.scope.empty()) enter(core::parent_id(req_.scope));
+  if (ImGui::IsKeyPressed(ImGuiKey_F11, false)) set_schema_only(!schema_only_);  // ADR 0043
   if (picker_) {
     if (auto chosen = picker_->draw(&picker_open_, false)) {
       open_request_ = *chosen;
@@ -572,6 +573,11 @@ void Ui::draw_menu(const Model* m) {
     ImGui::EndMenu();
   }
   if (ImGui::BeginMenu(tr("View"))) {
+    if (ImGui::MenuItem(with_icon(Icon::Focus, tr("Schema only")).c_str(), "F11", schema_only_.has_value())) set_schema_only(!schema_only_);
+    if (ImGui::MenuItem(with_icon(Icon::Corner, tr("Lines with right angles")).c_str(), nullptr, settings_.square_lines)) {
+      square_lines(!settings_.square_lines);
+    }
+    ImGui::Separator();
     if (ImGui::MenuItem(with_icon(Icon::Files, tr("Explorer")).c_str(), nullptr, side_ == SideView::Explorer)) side_ = SideView::Explorer;
     if (ImGui::MenuItem(with_icon(Icon::Search, tr("Search")).c_str(), "Ctrl+Shift+F", side_ == SideView::Search)) side_ = SideView::Search;
     if (ImGui::MenuItem(with_icon(Icon::Changes, notes_ ? tr("AI proposals") : tr("Schema changes")).c_str(), nullptr, side_ == SideView::Changes)) {
@@ -789,8 +795,8 @@ void Ui::draw_side_bar(const Model* m) {
     ImGui::End();
     return;
   }
-  ui::panel_title(tr(titles[view]));
   float btn_w = ImGui::GetFrameHeight() * 1.1f;
+  ui::panel_title(tr(titles[view]), btn_w * (side_ == SideView::Explorer ? 3.0f : 1.0f));
   if (side_ == SideView::Explorer) {
     ImGui::SameLine(ImGui::GetContentRegionMax().x - btn_w * 3);
     if (ui::icon_button("ex_open", Icon::FolderOpen, tr("Open project..."))) show_picker();
@@ -1519,11 +1525,13 @@ void Ui::draw_schema_toolbar(const Model& m) {
   }
   draw_address(m);
   ImGui::Spacing();
+  ui::tool_row_begin(&toolbar_full_w_);
   bool all = req_.all_levels;
   if (ui::toggle("tb_all", Icon::Layers, tr("All levels"), &all, tr("Open every group in place (wheel zooms)"))) set_all_levels(m, all);
   ImGui::SameLine(0, 4);
   ui::toggle("tb_use", Icon::Link, tr("use links"), &req_.show_use, tr("Show links to shared blocks"));
   ImGui::SameLine(0, 4);
+  ui::tool_fit(8);
   ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
   ImGui::SameLine(0, 4);
   ImGui::BeginDisabled(!m.can_undo);
@@ -1539,6 +1547,8 @@ void Ui::draw_schema_toolbar(const Model& m) {
   ImGui::SameLine(0, 4);
   arrange_buttons(m);
   ImGui::SameLine(0, 4);
+  view_buttons();
+  ImGui::SameLine(0, 4);
   if (ui::icon_button("tb_up", Icon::ArrowUp, tr("Up one level"), false) && !req_.scope.empty()) enter(core::parent_id(req_.scope));
   ImGui::SameLine(0, 4);
   // Prototype mode (ADR 0035): sketch ghost blocks and dependencies, then give them to the architect.
@@ -1550,19 +1560,71 @@ void Ui::draw_schema_toolbar(const Model& m) {
   }
   if (!pinned_.empty()) {
     ImGui::SameLine(0, 12);
-    ImGui::TextColored(rgb(255, 230, 120), "%s", with_icon(Icon::Pin, fmt::format(fmt::runtime(tr("Highlighted: {}")), pinned_.size())).c_str());
+    std::string pinned = with_icon(Icon::Pin, fmt::format(fmt::runtime(tr("Highlighted: {}")), pinned_.size()));
+    ui::tool_fit(ImGui::CalcTextSize(pinned.c_str()).x);
+    ImGui::TextColored(rgb(255, 230, 120), "%s", pinned.c_str());
     ImGui::SameLine(0, 4);
     if (ui::icon_button("tb_clear", Icon::Close, tr("Clear"))) pinned_.clear();
   }
   ImGui::SameLine(0, 4);
+  ui::tool_fit(8);
   ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
   ImGui::SameLine(0, 4);
   draw_model_chip(m);
   if (!path_error_.empty()) {
     ImGui::SameLine(0, 12);
+    ui::tool_fit(ImGui::CalcTextSize(path_error_.c_str()).x);
     ImGui::TextColored(rgb(241, 76, 76), "%s", path_error_.c_str());
   }
+  ui::tool_row_end(&toolbar_full_w_);
   draw_prototype_bar(m);
+}
+
+void Ui::view_buttons() {
+  bool square = settings_.square_lines;
+  if (ui::toggle("tb_square", Icon::Corner, tr("Right angles"), &square,
+                 tr("Draw every line of the schema with right angles: level and upright pieces with rounded corners (a line "
+                    "you bend keeps them)"))) {
+    square_lines(square);
+  }
+  ImGui::SameLine(0, 4);
+  bool alone = schema_only_.has_value();
+  if (ui::icon_button("tb_focus", Icon::Focus, tr("Only the schema: hide the side bar, the inspector, the bottom panel and the bars "
+                                                 "(F11; again to bring them back)"),
+                      alone, tr("Schema only"))) {
+    set_schema_only(!alone);
+  }
+}
+
+void Ui::square_lines(bool on) {
+  if (settings_.square_lines == on) return;
+  settings_.square_lines = on;
+  ++bends_version_;
+  settings_changed();
+}
+
+void Ui::set_schema_only(bool on) {
+  if (on == schema_only_.has_value()) return;
+  if (on) {
+    schema_only_ = SchemaOnly{settings_.show_side, settings_.show_inspector, settings_.show_bottom, settings_.show_activity, settings_.show_status,
+                              show_chat_};
+    settings_.show_side = false;
+    settings_.show_inspector = false;
+    settings_.show_bottom = false;
+    settings_.show_activity = false;
+    settings_.show_status = false;
+    show_chat_ = false;
+    select_tab_ = "#schema";
+  } else {
+    settings_.show_side = schema_only_->side;
+    settings_.show_inspector = schema_only_->inspector;
+    settings_.show_bottom = schema_only_->bottom;
+    settings_.show_activity = schema_only_->activity;
+    settings_.show_status = schema_only_->status;
+    show_chat_ = schema_only_->chat;
+    schema_only_.reset();
+  }
+  navigate_ = 4;  // the schema fitted to its new size
 }
 
 void Ui::arrange_buttons(const Model& m) {
@@ -1863,7 +1925,7 @@ void Ui::draw_inspector(const Model& m) {
     ImGui::End();
     return;
   }
-  ui::panel_title(tr("INSPECTOR"));
+  ui::panel_title(tr("INSPECTOR"), ImGui::GetFrameHeight() * 1.1f);
   ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight() * 1.1f);
   tile_button(Tile::Inspector);
   ImGui::Spacing();

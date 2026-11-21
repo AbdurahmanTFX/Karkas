@@ -312,9 +312,11 @@ void Ui::notes_toolbar(const Model& m) {
   (void)m;
   draw_address(m);
   ImGui::Spacing();
+  ui::tool_row_begin(&toolbar_full_w_);
   bool all = req_.all_levels;
   if (ui::toggle("tb_all", Icon::Layers, tr("All levels"), &all, tr("Open every topic in place (wheel zooms)"))) set_all_levels(m, all);
   ImGui::SameLine(0, 4);
+  ui::tool_fit(8);
   ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
   ImGui::SameLine(0, 4);
   ImGui::BeginDisabled(!m.can_undo);
@@ -339,11 +341,15 @@ void Ui::notes_toolbar(const Model& m) {
   ImGui::SameLine(0, 4);
   arrange_buttons(m);
   ImGui::SameLine(0, 4);
+  view_buttons();
+  ImGui::SameLine(0, 4);
   if (ui::icon_button("tb_up", Icon::ArrowUp, tr("Up one level"), false) && !req_.scope.empty()) enter(core::parent_id(req_.scope));
   if (!path_error_.empty()) {
     ImGui::SameLine(0, 12);
+    ui::tool_fit(ImGui::CalcTextSize(path_error_.c_str()).x);
     ImGui::TextColored(rgb(241, 76, 76), "%s", path_error_.c_str());
   }
+  ui::tool_row_end(&toolbar_full_w_);
 }
 
 void Ui::draw_note_dialogs(const Model& m) {

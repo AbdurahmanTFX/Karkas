@@ -1,7 +1,7 @@
 // karkas-gui (14): Dear ImGui (docking) + GLFW + OpenGL 3.3 + imgui-node-editor.
 //   karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]
 //              [--lang en|ru] [--block-scale F] [--settings] [--chat] [--script "..."] [--drag x1,y1,x2,y2]
-//              [--frames N --screenshot out.png]   (headless checks)
+//              [--frames N --screenshot out.png] [--size WxH]   (headless checks)
 // Without a project (started outside one) the window opens with "Open project".
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -41,7 +41,7 @@ void usage() {
   std::cerr << "usage: karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]\n"
                "                  [--lang en|ru] [--block-scale F] [--settings] [--chat] [--script \"...\"]\n"
                "                  [--drag x1,y1,x2,y2] [--layout file.ini] [--prototype]\n"
-               "                  [--frames N] [--screenshot out.png] [--version]\n";
+               "                  [--frames N] [--screenshot out.png] [--size WxH] [--version]\n";
 }
 
 void render(GLFWwindow* window) {
@@ -74,6 +74,8 @@ void screenshot_to(GLFWwindow* window, const std::string& path) {
 
 int main(int argc, char** argv) {
   std::string project, scope, select, screenshot, lang, layout_file;
+  int win_w = 1600;
+  int win_h = 950;
   float block_scale = 0;
   bool all_levels = false;
   bool open_settings = false;
@@ -98,6 +100,14 @@ int main(int argc, char** argv) {
     else if (a == "--drag") script_text += "drag " + kk::core::replace_all(next(), ",", " ") + ";";
     else if (a == "--frames") frames = std::atoi(next().c_str());
     else if (a == "--screenshot") screenshot = next();
+    else if (a == "--size") {  // the window's size at the start (a narrow window in a headless check)
+      auto v = next();
+      auto x = v.find('x');
+      if (x != std::string::npos) {
+        win_w = std::max(320, std::atoi(v.substr(0, x).c_str()));
+        win_h = std::max(240, std::atoi(v.substr(x + 1).c_str()));
+      }
+    }
     else if (a == "--version") {
       std::cout << "karkas-gui " << KARKAS_VERSION << "\n";
       return 0;
@@ -137,7 +147,7 @@ int main(int argc, char** argv) {
   glfwWindowHintString(GLFW_WAYLAND_APP_ID, "karkas");
   glfwWindowHintString(GLFW_X11_CLASS_NAME, "karkas");
   glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "karkas");
-  GLFWwindow* window = glfwCreateWindow(1600, 950, "Karkas", nullptr, nullptr);
+  GLFWwindow* window = glfwCreateWindow(win_w, win_h, "Karkas", nullptr, nullptr);
   if (window == nullptr) {
     std::cerr << "karkas-gui: cannot create an OpenGL 3.3 window\n";
     glfwTerminate();
@@ -173,6 +183,11 @@ int main(int argc, char** argv) {
   if (block_scale > 0) settings.block_scale = std::clamp(block_scale, kk::gui::kMinBlockScale, kk::gui::kMaxBlockScale);
   kk::gui::set_lang(settings.lang);
   io.FontGlobalScale = settings.ui_scale;
+  // Narrower than this the panels have no room even for their tool bars' icons (ADR 0043).
+  {
+    float k = std::max(1.0f, settings.ui_scale);
+    glfwSetWindowSizeLimits(window, static_cast<int>(600 * k), static_cast<int>(420 * k), GLFW_DONT_CARE, GLFW_DONT_CARE);
+  }
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init("#version 330");
   kk::gui::viewports::init(window, true);

@@ -72,6 +72,7 @@ GuiSettings load_settings() {
     s.note_view = std::clamp(j.value("note_view", 0), 0, 2);
     s.show_activity = j.value("show_activity", true);
     s.show_status = j.value("show_status", true);
+    s.square_lines = j.value("square_lines", false);
     // 0.08 was the floor of a size read while the layout was being rebuilt: not a user's size.
     auto frac = [&](const char* key, float def, float lo, float hi) {
       float v = j.value(key, def);
@@ -141,6 +142,7 @@ bool save_settings(const GuiSettings& s) {
             {"note_view", s.note_view},
             {"show_activity", s.show_activity},
             {"show_status", s.show_status},
+            {"square_lines", s.square_lines},
             {"side_frac", s.side_frac},
             {"inspector_frac", s.inspector_frac},
             {"bottom_frac", s.bottom_frac},
