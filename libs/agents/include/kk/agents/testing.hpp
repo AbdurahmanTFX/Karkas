@@ -48,7 +48,13 @@ class TestService final : public ITestService {
   // generated first when it is Karkas's). Its output goes to `on_output` as it comes; `on_wait` is
   // called when another build of the project holds the build lock. Not recorded as test results.
   kk::Result<runner::BuildResult> build_program(const runner::OutputSink& on_output, const std::function<void()>& on_wait = {});
+  // The folder that holds doctest/doctest.h for target builds (-DKARKAS_DOCTEST_DIR), docs/adr/0047: the
+  // build tree's doctest of a developer build when it is still there, else the copy embedded in Karkas,
+  // written once under data_home()/karkas. "" when neither works: the generated CMake finds doctest itself.
   static std::string doctest_include();
+  // The same with its inputs given: `built_with` = the build tree's folder ("" = none), `data_dir` = where
+  // the embedded copy goes (<data_dir>/doctest-<version>/doctest/doctest.h).
+  static std::string doctest_include(const std::string& built_with, const std::filesystem::path& data_dir);
 
  private:
   std::filesystem::path root_;

@@ -4,6 +4,7 @@
 
 #include "kk/agents/testing.hpp"
 #include "kk/core/text.hpp"
+#include "kk/templates.hpp"
 #include "kk/test/support.hpp"
 
 using namespace kk;
@@ -172,4 +173,28 @@ TEST_CASE("testing: the test command gets the ticket's behaviour test files, and
   CHECK(core::contains(seen, "tests/behaviour/listed.txt"));
   CHECK(core::contains(seen, "tests/behaviour/new_test.txt"));
   CHECK_FALSE(core::contains(seen, "old_test.txt"));
+}
+
+TEST_CASE("testing: doctest for target builds is the build tree's when it is there, else the copy carried by Karkas (ADR 0047)") {
+  test::TempDir d{"doctest"};
+  const auto embedded = templates::get("vendor/doctest/doctest.h");
+  REQUIRE(embedded);
+  CHECK(core::contains(*embedded, "DOCTEST_VERSION_MAJOR"));
+  // A developer build: its build tree still has doctest.
+  test::write(d / "tree/doctest/doctest.h", "// doctest\n");
+  CHECK(agents::TestService::doctest_include((d / "tree").string(), d / "data") == (d / "tree").string());
+  CHECK_FALSE(std::filesystem::exists(d / "data"));
+  // A package on another machine: the folder it was built in is not there (v0.1.0 passed it anyway).
+  auto dir = agents::TestService::doctest_include("/nonexistent/build/_deps/doctest-src", d / "data");
+  REQUIRE_FALSE(dir.empty());
+  CHECK(std::filesystem::path(dir).parent_path() == d / "data");
+  CHECK(std::filesystem::path(dir).filename().string().starts_with("doctest-2."));
+  CHECK(test::read(std::filesystem::path(dir) / "doctest/doctest.h") == *embedded);
+  // Kept as it is; a damaged copy is written again.
+  CHECK(agents::TestService::doctest_include("", d / "data") == dir);
+  test::write(std::filesystem::path(dir) / "doctest/doctest.h", "broken");
+  CHECK(agents::TestService::doctest_include("", d / "data") == dir);
+  CHECK(test::read(std::filesystem::path(dir) / "doctest/doctest.h") == *embedded);
+  // Nowhere to write it: nothing is passed, the generated CMake looks for doctest itself.
+  CHECK(agents::TestService::doctest_include("", {}).empty());
 }

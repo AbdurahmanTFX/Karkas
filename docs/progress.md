@@ -798,3 +798,10 @@
 - karkas-gui for recorded demos: `--show` (the check's window shown, the scripted pointer drawn), `--record out|-`
   (every frame of the script as raw RGB, the interface's clock 1/25 s per frame, for ffmpeg), `--max-seconds`,
   and `glide X Y N` in scripts (the pointer moves there over N frames).
+
+## Fixes after a check of the v0.1.0 package on another machine
+
+- doctest.h is carried in the binary (docs/adr/0047): v0.1.0 passed the build machine's doctest folder
+  (`-DKARKAS_DOCTEST_DIR=/home/tfx/...`) to every configure, so `karkas test`, testers and `implement` failed
+  elsewhere. Now the build tree's folder only in developer builds when it exists, else the embedded copy written
+  to `<data_home>/karkas/doctest-2.4.12`; the generated CMake ignores a folder without doctest.h.

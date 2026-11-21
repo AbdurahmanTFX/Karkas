@@ -17,6 +17,7 @@
 #include "kk/core/text.hpp"
 #include "kk/index/index.hpp"
 #include "kk/runner/runner.hpp"
+#include "kk/templates.hpp"
 
 namespace kk::agents {
 
@@ -74,10 +75,30 @@ TestService::TestService(fs::path root, const core::Config& cfg) : root_(std::mo
 
 std::string TestService::doctest_include() {
 #ifdef KK_DOCTEST_INCLUDE_DIR
-  return KK_DOCTEST_INCLUDE_DIR;
+  const std::string built_with = KK_DOCTEST_INCLUDE_DIR;
 #else
-  return {};
+  const std::string built_with;
 #endif
+  return doctest_include(built_with, core::data_home() / "karkas");
+}
+
+std::string TestService::doctest_include(const std::string& built_with, const fs::path& data_dir) {
+  std::error_code ec;
+  if (!built_with.empty() && fs::is_regular_file(fs::path(built_with) / "doctest" / "doctest.h", ec)) return built_with;
+  auto text = templates::get("vendor/doctest/doctest.h");
+  if (!text || data_dir.empty()) return {};
+  // One folder per doctest version: an older Karkas next to a newer one keeps its own copy.
+  static const std::regex version_re(
+      R"(#define DOCTEST_VERSION_MAJOR (\d+)\s+#define DOCTEST_VERSION_MINOR (\d+)\s+#define DOCTEST_VERSION_PATCH (\d+))");
+  std::string head(text->substr(0, std::min<std::size_t>(text->size(), 16 * 1024)));
+  std::smatch m;
+  auto dir = data_dir / (std::regex_search(head, m, version_re) ? fmt::format("doctest-{}.{}.{}", m[1].str(), m[2].str(), m[3].str())
+                                                                 : std::string("doctest"));
+  auto file = dir / "doctest" / "doctest.h";
+  if (auto have = core::read_file(file); !have || *have != *text) {
+    if (auto w = core::write_file(file, *text); !w) return {};
+  }
+  return dir.generic_string();
 }
 
 namespace {
