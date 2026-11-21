@@ -10,6 +10,18 @@ C++23, CMake + Ninja. Состояние по этапам — docs/progress.md,
 
 Для Graphviz-раскладки: `sudo pacman -S graphviz`, затем пересобрать (иначе встроенный Сугияма).
 
+## Пакеты (docs/adr/0046)
+
+    cmake --workflow --preset package-linux     # build/package-linux/packages/*.tar.gz
+    cmake --workflow --preset package-windows   # build/package-windows/packages/*.zip (MinGW-w64)
+
+Два пакета: `karkas-gui` — приложение (karkas-gui и CLI karkas, который оно запускает; на Linux ещё
+пункт меню, иконка и `install.sh` в `~/.local`), `karkas-cli` — только CLI. Пакет Linux нужен glibc 2.38+,
+libcurl, SQLite и OpenGL. Windows собирается кросс-компилятором MinGW-w64; проверка — под wine:
+
+    cmake --preset windows && cmake --build --preset windows    # отладочная сборка с тестами
+    WINEDEBUG=-all wine build/windows/libs/core/kk_core_tests.exe
+
 ## Новый проект (13.1)
 
     karkas init myproj --idea "..."    # project.ksl, karkas.toml, .karkas/

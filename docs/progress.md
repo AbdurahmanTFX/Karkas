@@ -777,3 +777,16 @@
 - Locked: move around, open levels, select, look (tooltips, open text/code); no dragging, resizing, linking,
   bending, deleting or editing items in menus and tool bar. Free: as before.
 - Tests 426; checked under Xvfb (wavkit, notes project).
+
+## Packages for Linux and Windows; the Windows port (docs/adr/0046)
+
+- Icon of the application (packaging/icons: PNG 16…512, .ico), in karkas-gui's window, the .desktop entry and
+  the .exe files.
+- Target `packages`, workflows `package-linux` (tar.gz) and `package-windows` (zip): `karkas-gui` (the window and
+  the CLI it runs) and `karkas-cli`. Linux: static third-party and C++ runtime, glibc 2.38+, install.sh into
+  ~/.local with a menu entry.
+- Windows: cross build with MinGW-w64 (presets `windows`, `package-windows`), SQLite and libcurl (Schannel) from
+  pinned sources, static .exe with icon, version and a UTF-8 manifest; checked under wine.
+- kk/core/platform.hpp and kk/core/win_process.hpp; Windows branches for child processes (chat, Run tab, launcher,
+  MCP engines, karkas run/gui), the file watcher (ReadDirectoryChangesW per folder), clipboard images, folders.
+- Tests: Linux 428; under wine core, layout, llm, metrics, mcp, runner, gui all pass (see the ADR for the rest).
