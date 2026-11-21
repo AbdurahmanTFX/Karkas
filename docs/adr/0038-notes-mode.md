@@ -1,6 +1,7 @@
 # 0038 — Notes mode: text notes in topics, linked by [[name]]; two workspaces
 
-Status: accepted (extends 3 data model, 4 KSL, 14 GUI; amends 14.7 — notes are edited in karkas-gui)
+Status: accepted (extends 3 data model, 4 KSL, 14 GUI; amends 14.7 — notes are edited in karkas-gui);
+amended by ADR 0040 — a note's own text is note.md (note.txt kept), .md files are notes, Markdown links
 
 ## Context
 

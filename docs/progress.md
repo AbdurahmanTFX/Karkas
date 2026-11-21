@@ -712,3 +712,16 @@
 - karkas-gui: the chat is the "Notes assistant" in a notes project; answers carry Show / Approve / Reject; the
   side bar's "AI proposals" shows each with its diff; the inspector has Ask and the mentions.
 - Not verified here: a real model run (no API key). Tests 386; checked under Xvfb with a prepared proposal.
+
+## Addition — Markdown notes: note.md, [text](file.md) links, rendered and highlighted (docs/adr/0040)
+
+- kk_core: a Markdown parser of its own (`kk::core::md`: blocks, inline marks, links with offsets, plain lines),
+  no new dependency; a line break stays a line break.
+- Notes: a new note is note.md (note.txt kept where it is); in a Markdown note `[text](file.md)` links the note of
+  that file (W08 when there is none); removing a line on the schema makes such links text; init and import take
+  .md / .markdown (README and the like alone are no notes); the assistant knows a note's format.
+- karkas-gui: a Markdown note rendered in the inspector and in its tab (Text | Both | Rendered), links to notes,
+  web addresses and files, a double click edits that line; Markdown colored in the editor; the schema shows a
+  note's first lines without marks. Fixed: a saved note no longer grows a blank last line.
+- Not done: text selection in the rendered view, images, anchors, the inner lines of a fenced block colored.
+- Tests 411; checked under Xvfb (inspector, the three views, a link followed, double click to edit, new note.md).
