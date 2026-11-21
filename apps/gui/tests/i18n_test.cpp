@@ -64,14 +64,17 @@ TEST_CASE("settings are saved and loaded, sizes clamped") {
   GuiSettings s;
   s.lang = Lang::Ru;
   s.block_scale = 1.75f;
+  s.schema_locked = true;
   REQUIRE(save_settings(s));
   CHECK(settings_path() == dir.path() / "karkas" / "gui.json");
   auto l = load_settings();
   CHECK(l.lang == Lang::Ru);
   CHECK(l.block_scale == doctest::Approx(1.75f));
+  CHECK(l.schema_locked);
   REQUIRE(kk::core::write_file(settings_path(), R"({"language":"en","block_scale":0.01})"));
   l = load_settings();
   CHECK(l.lang == Lang::En);
+  CHECK_FALSE(l.schema_locked);  // free unless locked on purpose
   CHECK(l.block_scale == doctest::Approx(kMinBlockScale));  // never shrinks to a dot
   unsetenv("XDG_CONFIG_HOME");
 }

@@ -54,3 +54,19 @@ void fit_canvas(ax::NodeEditor::EditorContext* editor, ImVec2 view_min, ImVec2 v
 }
 
 }  // namespace kk::gui
+
+namespace kk::gui {
+
+// The node editor drags blocks (and draws new links from points) with its drag button and has no
+// other switch for it. Locked, the drag button is one the editor never presses its items with (it
+// emits them for the select, navigate and context buttons only, 0 to 2), so a press on a block
+// selects it and nothing moves. A double click on a block is then seen by the caller (the editor
+// reports double clicks of the drag button).
+void lock_canvas(ax::NodeEditor::EditorContext* editor, bool locked) {
+  auto* ctx = reinterpret_cast<ax::NodeEditor::Detail::EditorContext*>(editor);
+  if (ctx == nullptr) return;
+  auto& cfg = const_cast<ax::NodeEditor::Detail::Config&>(ctx->GetConfig());  // the editor's own copy
+  cfg.DragButtonIndex = locked ? ImGuiMouseButton_COUNT - 1 : ImGuiMouseButton_Left;
+}
+
+}  // namespace kk::gui

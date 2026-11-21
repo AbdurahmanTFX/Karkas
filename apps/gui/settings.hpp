@@ -31,6 +31,7 @@ struct GuiSettings {
   bool show_activity = true;    // the activity bar on the left
   bool show_status = true;      // the status bar at the bottom
   bool square_lines = false;    // lines of the schema drawn with right angles (ADR 0043)
+  bool schema_locked = false;   // mouse on the schema locked: look, move around, select only (ADR 0045)
   // Sizes of the docked panels as parts of the window: the default layout (ADR 0032).
   float side_frac = 0.19f, inspector_frac = 0.26f, bottom_frac = 0.28f;
   // Tiles that are windows of the desktop (side, inspector, tickets, agents, build, costs,

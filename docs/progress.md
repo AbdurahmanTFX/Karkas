@@ -770,3 +770,10 @@
 - karkas-gui: in "All levels" and groups opened in place the bends of levels are not applied, lines are routed
   around the blocks between side sockets; a group's layout much wider than high is wrapped into rows.
 - Tests 426; checked under Xvfb (wavkit, a dense notes project).
+
+## GUI addition — locked and free mouse on the schema (docs/adr/0045)
+
+- A padlock toggle on the schema's tool bar (both modes), View menu, background menu, Ctrl+L; saved in gui.json.
+- Locked: move around, open levels, select, look (tooltips, open text/code); no dragging, resizing, linking,
+  bending, deleting or editing items in menus and tool bar. Free: as before.
+- Tests 426; checked under Xvfb (wavkit, notes project).

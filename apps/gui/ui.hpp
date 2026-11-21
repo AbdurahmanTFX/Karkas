@@ -38,6 +38,9 @@ namespace kk::gui {
 // Fits the blocks of `editor` into the screen part [free_min, free_max] of its canvas
 // [view_min, view_max] (panels cover the rest), zooming in at most to `max_zoom` (canvas_fit.cpp).
 void fit_canvas(ax::NodeEditor::EditorContext* editor, ImVec2 view_min, ImVec2 view_max, ImVec2 free_min, ImVec2 free_max, float max_zoom);
+// Locked: blocks of `editor` are not dragged and its points do not start new links; selecting and
+// moving the view stay (canvas_fit.cpp, ADR 0045).
+void lock_canvas(ax::NodeEditor::EditorContext* editor, bool locked);
 // Forgets what the schema canvas keeps between frames (another project is opened).
 void reset_canvas_caches();
 }  // namespace kk::gui
@@ -440,6 +443,7 @@ class Ui {
   bool fit_on_apply_ = false;     // fit the view when the next layout arrives (open/close)
   bool canvas_hovered_ = false;   // the mouse is over the schema canvas (it sets its own cursor)
   bool drag_from_node_ = false;   // the left drag started on a block (move cursor)
+  bool locked_press_ = false;     // locked: the left press was on a block or a point (a hint while dragging)
   // block resizing
   std::string resizing_;
   std::pair<float, float> resize_start_{0, 0};
@@ -471,6 +475,10 @@ class Ui {
   std::optional<SchemaOnly> schema_only_;
   void set_schema_only(bool on);
   void square_lines(bool on);
+  // Mouse on the schema (ADR 0045): locked — move around, open levels, select, look at contents;
+  // free — everything (move, resize, link, bend, edit through menus and tool bars).
+  void set_schema_locked(bool on);
+  void lock_button();
   // dialogs
   std::string dialog_;  // "add_block", "add_port", "rename", "merge", "split"
   std::string target_;

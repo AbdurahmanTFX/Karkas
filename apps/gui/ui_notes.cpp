@@ -313,16 +313,20 @@ void Ui::notes_toolbar(const Model& m) {
   draw_address(m);
   ImGui::Spacing();
   ui::tool_row_begin(&toolbar_full_w_);
+  const bool locked = settings_.schema_locked;
+  lock_button();
+  ImGui::SameLine(0, 4);
   bool all = req_.all_levels;
   if (ui::toggle("tb_all", Icon::Layers, tr("All levels"), &all, tr("Open every topic in place (wheel zooms)"))) set_all_levels(m, all);
   ImGui::SameLine(0, 4);
   ui::tool_fit(8);
   ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
   ImGui::SameLine(0, 4);
-  ImGui::BeginDisabled(!m.can_undo);
+  ImGui::BeginDisabled(!m.can_undo || locked);
   if (ui::icon_button("tb_undo", Icon::Undo, tr("Undo the last edit"))) w_.undo();
   ImGui::EndDisabled();
   ImGui::SameLine(0, 4);
+  ImGui::BeginDisabled(locked);
   if (ui::icon_button("tb_note", Icon::Plus, tr("A new note on this level"), false, tr("Note"))) {
     note_dialog_ = "add_note";
     note_target_ = req_.scope;
@@ -336,6 +340,7 @@ void Ui::notes_toolbar(const Model& m) {
     note_title_buf_.clear();
     note_dialog_focus_ = true;
   }
+  ImGui::EndDisabled();
   ImGui::SameLine(0, 4);
   if (ui::icon_button("tb_fit", Icon::Fit, tr("Fit to view"))) navigate_ = 1;
   ImGui::SameLine(0, 4);

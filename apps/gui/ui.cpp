@@ -482,6 +482,10 @@ void Ui::draw_graph(const Model& m) {
     canvas_hovered_ = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(a, canvas_max_);
   }
   ed::SetCurrentEditor(ed_);
+  // Mouse locked (ADR 0045): the view moves, levels open, blocks are selected and looked at; nothing
+  // on the schema is moved, resized, linked, bent or changed through its menus.
+  const bool locked = settings_.schema_locked;
+  lock_canvas(ed_, locked);
   ed::Begin("schema");
   // The editor starts on its underlay channel: over the grid, under lines and blocks. Lines the
   // user bent are drawn there, so they lie like the editor's own lines.
@@ -1309,7 +1313,7 @@ void Ui::draw_graph(const Model& m) {
     ImGui::PopStyleVar();
     ImGui::SetWindowFontScale(1.0f);
     // Resize grip in the bottom-right corner (min/max sizes, 14.6); same size on screen at any zoom.
-    if (!nested && !is_ghost && !overview) {
+    if (!nested && !is_ghost && !overview && !locked) {
       float grip = std::min({kGrip / std::max(ed::GetCurrentZoom(), 0.05f), inner_w / 4, inner_h / 3});
       ImGui::SetCursorScreenPos(ImVec2(o.x + inner_w - grip, o.y + inner_h - grip));
       ImGui::InvisibleButton(("##grip" + unit).c_str(), ImVec2(grip, grip));
@@ -1833,7 +1837,7 @@ void Ui::draw_graph(const Model& m) {
   // each piece (drag bends the line there). A pressed handle holds the mouse: the editor neither
   // pans nor selects meanwhile; the same id each frame keeps the dragged one pressed.
   std::string handle_tip;
-  if (hover_line >= 0 && !nested) {  // the nested view is temporary: its lines are not bent by hand
+  if (hover_line >= 0 && !nested && !locked) {  // the nested view is temporary: its lines are not bent by hand
     const auto& d = drawn[static_cast<std::size_t>(hover_line)];
     const std::string& key = planned[d.pi].key;
     std::vector<ImVec2> q;
@@ -2027,7 +2031,7 @@ void Ui::draw_graph(const Model& m) {
   }
 
   // Draw a link from an out port or fn to a consumer (14.6).
-  if (ed::BeginCreate(rgb(255, 255, 255), 2.0f)) {
+  if (!locked && ed::BeginCreate(rgb(255, 255, 255), 2.0f)) {
     ed::PinId a;
     ed::PinId b;
     bool queried = ed::QueryNewLink(&a, &b) && a && b;
@@ -2079,7 +2083,13 @@ void Ui::draw_graph(const Model& m) {
     }
     ed::EndCreate();
   }
-  if (ed::BeginDelete()) {
+  if (locked && ed::BeginDelete()) {  // Delete, Alt+click on a line: nothing goes
+    ed::LinkId lid;
+    while (ed::QueryDeletedLink(&lid)) ed::RejectDeletedItem();
+    ed::NodeId nid;
+    while (ed::QueryDeletedNode(&nid)) ed::RejectDeletedItem();
+    ed::EndDelete();
+  } else if (!locked && ed::BeginDelete()) {
     ed::LinkId lid;
     while (ed::QueryDeletedLink(&lid)) {
       // Delete on a selected line removes every link it shows (after the KSL preview).
@@ -2107,9 +2117,14 @@ void Ui::draw_graph(const Model& m) {
   }
 
   // Double click: group → enter, leaf → code (14.3).
-  auto dbl = ed::GetDoubleClickedNode();
+  // Locked, the editor does not see double clicks on blocks (they come with its drag button): taken here.
+  auto dbl = !locked ? ed::GetDoubleClickedNode()
+                     : (canvas_hovered_ && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) ? ed::GetHoveredNode() : ed::NodeId());
   std::string go_into;
   bool shift = ImGui::GetIO().KeyShift;
+  if (dbl && sketch_nodes_.contains(dbl.Get())) {
+    if (locked) dbl = ed::NodeId();  // a prototype block is not edited while locked
+  }
   if (dbl && sketch_nodes_.contains(dbl.Get())) {
     sketch_target_ = sketch_nodes_[dbl.Get()];  // edit the prototype block
     sketch_dialog_ = true;
@@ -2162,7 +2177,15 @@ void Ui::draw_graph(const Model& m) {
   if (auto hp = ed::GetHoveredPin(); hp && pin_of.contains(hp.Get())) {
     hover_pin_ = hp.Get();
     auto parts = core::split(pin_of[hp.Get()], ':', false);
-    if (parts.size() == 3 && !ImGui::IsMouseDragging(0) && !menu_open && !card_units.contains(parts[0])) {
+    if (parts.size() == 3 && !ImGui::IsMouseDragging(0) && !menu_open && !card_units.contains(parts[0]) && locked) {
+      if (parts[1].empty() && parts[2] == "in") {  // what the point is, not how to draw from it
+        ImGui::SetTooltip("%s", tr("In: links from blocks that call or use this one."));
+      } else if (parts[1].empty() && parts[2] == "out") {
+        ImGui::SetTooltip("%s", tr("Out: what this block calls or uses."));
+      } else if (parts[2] == "fn") {
+        ImGui::SetTooltip("%s", fmt::format(fmt::runtime(tr("Function {}()")), parts[1]).c_str());
+      }
+    } else if (parts.size() == 3 && !ImGui::IsMouseDragging(0) && !menu_open && !card_units.contains(parts[0])) {
       if (parts[1].empty() && parts[2] == "in") {
         ImGui::SetTooltip("%s", tr("In: links from blocks that call or use this one. Drop a data output here to add an input."));
       } else if (parts[1].empty() && parts[2] == "out") {
@@ -2184,7 +2207,7 @@ void Ui::draw_graph(const Model& m) {
   if (suppress_bg_menu_ > 0) {
     --suppress_bg_menu_;
     (void)ed::ShowBackgroundContextMenu();
-  } else if (ed::ShowNodeContextMenu(&ctx) && (node_of.contains(ctx.Get()) || sketch_nodes_.contains(ctx.Get()))) {
+  } else if (ed::ShowNodeContextMenu(&ctx) && (node_of.contains(ctx.Get()) || (!locked && sketch_nodes_.contains(ctx.Get())))) {
     if (sketch_nodes_.contains(ctx.Get())) {
       sketch_target_ = sketch_nodes_[ctx.Get()];
       ImGui::OpenPopup("sketch_menu");
@@ -2205,19 +2228,25 @@ void Ui::draw_graph(const Model& m) {
       const auto& f = menu_links_.front();
       ImGui::TextDisabled("%s → %s · %s", f.src_block.c_str(), f.dst_block.c_str(), f.kind.c_str());
       ImGui::Separator();
-      if (bends_.contains(menu_line_key_) && ImGui::MenuItem(with_icon(Icon::Undo, tr("Straighten the line")).c_str())) {
-        bends_.erase(menu_line_key_);
-        ortho_.erase(menu_line_key_);
-        ++bends_version_;
-        save_bends();
-      }
       auto label = [](const LinkDesc& l) {
         if (l.kind == "data" || l.kind == "event") return fmt::format("{}:{} → {}:{}", l.src_block, l.src_port, l.dst_block, l.dst_port);
         if (l.kind == "call") return fmt::format("{}()", l.dst_port);
         return l.kind + " " + l.dst_block;
       };
+      if (locked) {  // what the line carries, nothing to change
+        for (std::size_t i = 0; i < menu_links_.size() && i < 30; ++i) ImGui::TextUnformatted(label(menu_links_[i]).c_str());
+        ImGui::Separator();
+        ImGui::TextDisabled("%s", with_icon(Icon::Lock, tr("The schema is locked (Ctrl+L frees it)")).c_str());
+      }
+      if (!locked && bends_.contains(menu_line_key_) && ImGui::MenuItem(with_icon(Icon::Undo, tr("Straighten the line")).c_str())) {
+        bends_.erase(menu_line_key_);
+        ortho_.erase(menu_line_key_);
+        ++bends_version_;
+        save_bends();
+      }
       ImGui::PushStyleColor(ImGuiCol_Text, rgb(241, 110, 110));
-      if (menu_links_.size() == 1) {
+      if (locked) {
+      } else if (menu_links_.size() == 1) {
         if (ImGui::MenuItem(with_icon(Icon::Close, tr("Remove the link")).c_str())) propose_unlink(menu_links_);
       } else {
         for (std::size_t i = 0; i < menu_links_.size() && i < 30; ++i) {
@@ -2241,31 +2270,47 @@ void Ui::draw_graph(const Model& m) {
     ImGui::TextDisabled("%s", block_title(m, target_).c_str());
     ImGui::Separator();
     if (topic && ImGui::MenuItem(with_icon(Icon::Layers, tr("Open")).c_str())) go_into = target_;
-    if (!topic && b != nullptr && ImGui::MenuItem(with_icon(Icon::Pencil, tr("Edit the text")).c_str())) {
+    if (!topic && b != nullptr && ImGui::MenuItem(locked ? with_icon(Icon::Eye, tr("Open the text")).c_str() : with_icon(Icon::Pencil, tr("Edit the text")).c_str())) {
       select(target_);
       open_note(m, target_);
     }
-    if (b != nullptr && ImGui::MenuItem(with_icon(Icon::Card, tr("Rename...")).c_str())) {
-      note_dialog_ = "retitle";
-      note_target_ = target_;
-      note_title_buf_ = b->purpose;
-      note_dialog_focus_ = true;
+    if (locked) {  // looking only (ADR 0045)
+      if (b != nullptr && ImGui::MenuItem(with_icon(Icon::Folder, tr("Open folder")).c_str())) w_.open_block_folder(b->id);
+      ImGui::Separator();
+      ImGui::TextDisabled("%s", with_icon(Icon::Lock, tr("The schema is locked (Ctrl+L frees it)")).c_str());
+    } else {
+      if (b != nullptr && ImGui::MenuItem(with_icon(Icon::Card, tr("Rename...")).c_str())) {
+        note_dialog_ = "retitle";
+        note_target_ = target_;
+        note_title_buf_ = b->purpose;
+        note_dialog_focus_ = true;
+      }
+      if (topic && ImGui::MenuItem(with_icon(Icon::Plus, tr("New note in this topic...")).c_str())) {
+        note_dialog_ = "add_note";
+        note_target_ = target_;
+        note_title_buf_.clear();
+        note_dialog_focus_ = true;
+      }
+      if (ImGui::MenuItem(with_icon(Icon::Fit, tr("Reset size")).c_str())) reset_one = true;
+      if (b != nullptr && ImGui::MenuItem(with_icon(Icon::Folder, tr("Open folder")).c_str())) w_.open_block_folder(b->id);
+      ImGui::Separator();
+      ImGui::PushStyleColor(ImGuiCol_Text, rgb(241, 110, 110));
+      if (ImGui::MenuItem(with_icon(Icon::Trash, tr("Remove...")).c_str())) {
+        note_dialog_ = "remove";
+        note_target_ = target_;
+      }
+      ImGui::PopStyleColor();
     }
-    if (topic && ImGui::MenuItem(with_icon(Icon::Plus, tr("New note in this topic...")).c_str())) {
-      note_dialog_ = "add_note";
-      note_target_ = target_;
-      note_title_buf_.clear();
-      note_dialog_focus_ = true;
-    }
-    if (ImGui::MenuItem(with_icon(Icon::Fit, tr("Reset size")).c_str())) reset_one = true;
+    ImGui::EndPopup();
+  } else if (locked && ImGui::BeginPopup("node_menu")) {  // looking only (ADR 0045)
+    const auto* b = snap.block(target_);
+    ImGui::TextDisabled("%s", target_.c_str());
+    ImGui::Separator();
+    if (b != nullptr && b->kind == "group" && ImGui::MenuItem(with_icon(Icon::Layers, tr("Open")).c_str())) go_into = target_;
+    if (b != nullptr && ImGui::MenuItem(with_icon(Icon::Card, tr("Open card in editor")).c_str())) w_.open_in_editor(b->dir + "/block.ksl", 1);
     if (b != nullptr && ImGui::MenuItem(with_icon(Icon::Folder, tr("Open folder")).c_str())) w_.open_block_folder(b->id);
     ImGui::Separator();
-    ImGui::PushStyleColor(ImGuiCol_Text, rgb(241, 110, 110));
-    if (ImGui::MenuItem(with_icon(Icon::Trash, tr("Remove...")).c_str())) {
-      note_dialog_ = "remove";
-      note_target_ = target_;
-    }
-    ImGui::PopStyleColor();
+    ImGui::TextDisabled("%s", with_icon(Icon::Lock, tr("The schema is locked (Ctrl+L frees it)")).c_str());
     ImGui::EndPopup();
   } else if (ImGui::BeginPopup("node_menu")) {
     const auto* b = snap.block(target_);
@@ -2290,7 +2335,16 @@ void Ui::draw_graph(const Model& m) {
     ImGui::PopStyleColor();
     ImGui::EndPopup();
   }
-  if (ImGui::BeginPopup("bg_menu")) {
+  if (locked && ImGui::BeginPopup("bg_menu")) {  // looking only (ADR 0045)
+    if (ImGui::MenuItem(with_icon(Icon::Fit, tr("Fit to view")).c_str())) navigate_ = 1;
+    if (ImGui::MenuItem(with_icon(Icon::Corner, tr("Lines with right angles")).c_str(), nullptr, settings_.square_lines)) {
+      square_lines(!settings_.square_lines);
+    }
+    if (ImGui::MenuItem(with_icon(Icon::Folder, tr("Show project folder")).c_str())) w_.open_folder("");
+    ImGui::Separator();
+    if (ImGui::MenuItem(with_icon(Icon::Unlock, tr("Free the schema")).c_str(), "Ctrl+L")) set_schema_locked(false);
+    ImGui::EndPopup();
+  } else if (ImGui::BeginPopup("bg_menu")) {
     if (proto_on_ && ImGui::MenuItem(with_icon(Icon::Sketch, tr("Add a prototype block here")).c_str())) {
       sketch_new_pos_ = ed::ScreenToCanvas(ImGui::GetMousePosOnOpeningCurrentPopup());
       sketch_target_.clear();
@@ -2331,6 +2385,8 @@ void Ui::draw_graph(const Model& m) {
       save_bends();
     }
     if (ImGui::MenuItem(with_icon(Icon::Folder, tr("Show project folder")).c_str())) w_.open_folder("");
+    ImGui::Separator();
+    if (ImGui::MenuItem(with_icon(Icon::Lock, tr("Lock the schema")).c_str(), "Ctrl+L")) set_schema_locked(true);
     ImGui::EndPopup();
   }
   sketch_popups(m);
@@ -2354,8 +2410,11 @@ void Ui::draw_graph(const Model& m) {
   // Cursor: a hand over what can be clicked or dragged into a link, the move arrows while a
   // block or the canvas is dragged.
   if (canvas_hovered_ || ImGui::IsMouseDragging(0) || ImGui::IsMouseDragging(1) || ImGui::IsMouseDragging(2)) {
-    if (ImGui::IsMouseClicked(0)) drag_from_node_ = !hovered_now.empty() && !ed::GetHoveredPin();
-    if (ImGui::IsMouseReleased(0)) drag_from_node_ = false;
+    if (ImGui::IsMouseClicked(0)) {
+      drag_from_node_ = !locked && !hovered_now.empty() && !ed::GetHoveredPin();
+      locked_press_ = locked && !hovered_now.empty();
+    }
+    if (ImGui::IsMouseReleased(0)) drag_from_node_ = locked_press_ = false;
     if ((ImGui::IsMouseDragging(0) && drag_from_node_ && resizing_.empty()) || ImGui::IsMouseDragging(1) || ImGui::IsMouseDragging(2)) {
       ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
     } else if (ed::GetHoveredPin() || ed::GetHoveredLink()) {
@@ -2368,6 +2427,10 @@ void Ui::draw_graph(const Model& m) {
   g_prof.mark(6);
   ed::End();
   g_prof.mark(7);
+  if (locked && locked_press_ && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {  // a block or a point dragged in vain
+    ImGui::SetMouseCursor(ImGuiMouseCursor_NotAllowed);
+    ImGui::SetTooltip("%s", with_icon(Icon::Lock, tr("The schema is locked: blocks stay and lines are not drawn (Ctrl+L frees it)")).c_str());
+  }
   // The highlight is cleared only by a plain left click on the background. The editor reports
   // a background "click" on the release of any button, also after a drag, and only in End():
   // panning with the right button or drawing a selection rectangle must keep the highlight.

@@ -321,6 +321,20 @@ const std::array<Sdf, static_cast<std::size_t>(Icon::Count)>& shapes() {
         float bl = U(seg(p, {0.12f, 0.60f}, {0.12f, 0.88f}, T), U(seg(p, {0.12f, 0.88f}, {0.40f, 0.88f}, T), seg(p, {0.12f, 0.88f}, {0.42f, 0.58f}, T)));
         return U(tr, bl);
       },
+      // Lock (a padlock, its shackle closed)
+      [](V p) {
+        float body = S(box(p, {0.16f, 0.46f}, {0.84f, 0.94f}, 0.08f), U(circle(p, {0.5f, 0.64f}, 0.075f), box(p, {0.465f, 0.64f}, {0.535f, 0.82f})));
+        float arc = I(ring(p, {0.5f, 0.36f}, 0.20f, T), box(p, {0.0f, 0.0f}, {1.0f, 0.36f}));
+        float legs = U(seg(p, {0.30f, 0.36f}, {0.30f, 0.48f}, T), seg(p, {0.70f, 0.36f}, {0.70f, 0.48f}, T));
+        return U(body, U(arc, legs));
+      },
+      // Unlock (the shackle raised, open on the right)
+      [](V p) {
+        float body = S(box(p, {0.16f, 0.46f}, {0.84f, 0.94f}, 0.08f), U(circle(p, {0.5f, 0.64f}, 0.075f), box(p, {0.465f, 0.64f}, {0.535f, 0.82f})));
+        float arc = I(ring(p, {0.5f, 0.26f}, 0.20f, T), box(p, {0.0f, 0.0f}, {1.0f, 0.26f}));
+        float legs = U(seg(p, {0.30f, 0.26f}, {0.30f, 0.48f}, T), seg(p, {0.70f, 0.26f}, {0.70f, 0.32f}, T));
+        return U(body, U(arc, legs));
+      },
   };
   return s;
 }

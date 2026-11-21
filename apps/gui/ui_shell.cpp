@@ -539,6 +539,7 @@ void Ui::draw_menu(const Model* m) {
   }
   if (ImGui::IsKeyChordPressed(ImGuiMod_Alt | ImGuiKey_UpArrow) && !req_.scope.empty()) enter(core::parent_id(req_.scope));
   if (ImGui::IsKeyPressed(ImGuiKey_F11, false)) set_schema_only(!schema_only_);  // ADR 0043
+  if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_L)) set_schema_locked(!settings_.schema_locked);  // ADR 0045
   if (picker_) {
     if (auto chosen = picker_->draw(&picker_open_, false)) {
       open_request_ = *chosen;
@@ -576,6 +577,9 @@ void Ui::draw_menu(const Model* m) {
     if (ImGui::MenuItem(with_icon(Icon::Focus, tr("Schema only")).c_str(), "F11", schema_only_.has_value())) set_schema_only(!schema_only_);
     if (ImGui::MenuItem(with_icon(Icon::Corner, tr("Lines with right angles")).c_str(), nullptr, settings_.square_lines)) {
       square_lines(!settings_.square_lines);
+    }
+    if (ImGui::MenuItem(with_icon(Icon::Lock, tr("Lock the schema")).c_str(), "Ctrl+L", settings_.schema_locked)) {
+      set_schema_locked(!settings_.schema_locked);
     }
     ImGui::Separator();
     if (ImGui::MenuItem(with_icon(Icon::Files, tr("Explorer")).c_str(), nullptr, side_ == SideView::Explorer)) side_ = SideView::Explorer;
@@ -1526,6 +1530,9 @@ void Ui::draw_schema_toolbar(const Model& m) {
   draw_address(m);
   ImGui::Spacing();
   ui::tool_row_begin(&toolbar_full_w_);
+  const bool locked = settings_.schema_locked;
+  lock_button();
+  ImGui::SameLine(0, 4);
   bool all = req_.all_levels;
   if (ui::toggle("tb_all", Icon::Layers, tr("All levels"), &all, tr("Open every group in place (wheel zooms)"))) set_all_levels(m, all);
   ImGui::SameLine(0, 4);
@@ -1534,14 +1541,16 @@ void Ui::draw_schema_toolbar(const Model& m) {
   ui::tool_fit(8);
   ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
   ImGui::SameLine(0, 4);
-  ImGui::BeginDisabled(!m.can_undo);
+  ImGui::BeginDisabled(!m.can_undo || locked);
   if (ui::icon_button("tb_undo", Icon::Undo, tr("Undo the last edit"))) w_.undo();
   ImGui::EndDisabled();
   ImGui::SameLine(0, 4);
+  ImGui::BeginDisabled(locked);
   if (ui::icon_button("tb_add", Icon::Plus, tr("Add a block to this level"), false, tr("Add block"))) {
     dialog_ = "add_block";
     target_ = req_.scope;
   }
+  ImGui::EndDisabled();
   ImGui::SameLine(0, 4);
   if (ui::icon_button("tb_fit", Icon::Fit, tr("Fit to view"))) navigate_ = 1;
   ImGui::SameLine(0, 4);
@@ -1553,11 +1562,13 @@ void Ui::draw_schema_toolbar(const Model& m) {
   ImGui::SameLine(0, 4);
   // Prototype mode (ADR 0035): sketch ghost blocks and dependencies, then give them to the architect.
   bool proto = proto_on_;
+  ImGui::BeginDisabled(locked);
   if (ui::toggle("tb_proto", Icon::Sketch, tr("Prototype"), &proto,
                  tr("Sketch the blocks and dependencies you want as ghosts; on approval the architect builds the schema from "
                     "the idea and the sketch, keeping its main logic"))) {
     set_prototype(proto);
   }
+  ImGui::EndDisabled();
   if (!pinned_.empty()) {
     ImGui::SameLine(0, 12);
     std::string pinned = with_icon(Icon::Pin, fmt::format(fmt::runtime(tr("Highlighted: {}")), pinned_.size()));
@@ -1631,7 +1642,7 @@ void Ui::arrange_buttons(const Model& m) {
   const std::string view = m.req.scope.empty() ? "root" : m.req.scope;
   if (arrange_undo_ && arrange_undo_->view != view) arrange_undo_.reset();  // another level: no way back
   const bool nested = !m.nested.empty() || !req_.expanded.empty() || req_.all_levels;
-  ImGui::BeginDisabled(nested || m.graph.nodes.empty());
+  ImGui::BeginDisabled(nested || m.graph.nodes.empty() || settings_.schema_locked);
   if (ui::icon_button("tb_arrange", Icon::Schema,
                       nested ? tr("Close the groups opened in place first: arranging works on one level")
                              : tr("Arrange this level: blocks in ranks along the lines, few crossings, and every line routed "
@@ -1642,6 +1653,7 @@ void Ui::arrange_buttons(const Model& m) {
   ImGui::EndDisabled();
   if (arrange_undo_) {
     ImGui::SameLine(0, 2);
+    ImGui::BeginDisabled(settings_.schema_locked);
     if (ui::icon_button("tb_arrange_undo", Icon::Undo, tr("Put the blocks and lines back where they were before arranging"))) {
       for (const auto& [key, pts] : arrange_undo_->bends) {
         if (pts.empty()) {
@@ -1662,7 +1674,31 @@ void Ui::arrange_buttons(const Model& m) {
       relayout_serial_ = m.serial;
       arrange_undo_.reset();
     }
+    ImGui::EndDisabled();
   }
+}
+
+void Ui::lock_button() {
+  bool locked = settings_.schema_locked;
+  if (ui::toggle("tb_lock", locked ? Icon::Lock : Icon::Unlock, locked ? tr("Locked") : tr("Free"), &locked,
+                 settings_.schema_locked
+                     ? tr("Mouse on the schema: locked. Only moving around the schema and its levels, selecting blocks and looking "
+                          "at what they hold; nothing is moved, linked or changed. Click (Ctrl+L) to free it")
+                     : tr("Mouse on the schema: free. Blocks are moved and resized, lines drawn and bent, menus change the "
+                          "schema. Click (Ctrl+L) to lock it: only moving around, selecting and looking"))) {
+    set_schema_locked(locked);
+  }
+}
+
+void Ui::set_schema_locked(bool on) {
+  if (settings_.schema_locked == on) return;
+  settings_.schema_locked = on;
+  if (on) {
+    set_prototype(false);  // the sketch is kept; it is drawn again when freed and turned on
+    bend_drag_key_.clear();
+    bend_drag_index_ = -1;
+  }
+  settings_changed();
 }
 
 void Ui::draw_file_header(const Model& m, const std::string& file) {
