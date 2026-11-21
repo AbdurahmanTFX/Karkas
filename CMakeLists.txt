@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.29)
-project(karkas VERSION 0.1.0 LANGUAGES C CXX)
+project(karkas VERSION 0.1.1 LANGUAGES C CXX)
 if(WIN32)
   enable_language(RC)  # icons, version and manifest of the .exe files (docs/adr/0046)
 endif()

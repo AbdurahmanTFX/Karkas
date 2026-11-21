@@ -23,7 +23,9 @@ The package also carried a folder name of the build machine.
   the embedded copy written once to `<data_home>/karkas/doctest-<major.minor.patch>/doctest/doctest.h`
   (`~/.local/share`, `%LOCALAPPDATA%`; rewritten when it differs), else "" (nothing is passed).
 - `KK_DOCTEST_INCLUDE_DIR` is defined for kk_agents only when `KARKAS_TESTS` is on: packages
-  (`KARKAS_TESTS=OFF`) have no build-machine folder in them and always use the embedded copy.
+  (`KARKAS_TESTS=OFF`) carry no doctest folder of the build machine and always use the embedded copy.
+  (`karkas bench` still has the source folder as its default for bench/ and the reference fixture: a
+  developer tool that needs the source tree anyway.)
 - The generated CMake (cmake_preamble.cmake) treats a `KARKAS_DOCTEST_DIR` without `doctest/doctest.h` as
   unset (a status line says so) and goes on to `find_package(doctest)` / FetchContent. A build folder
   configured by v0.1.0 keeps the bad path in its cache; the next build by Karkas passes the good one.

@@ -815,3 +815,8 @@
   (CacheTest::Insert is not SkipList::Insert), and the D06 check of an imported project does not call skipped test
   or vendored code orphans (docs/adr/0048). leveldb: 71 blocks (was 101), 31 test programs left out, 0 errors.
 - Tests 433.
+
+## Release v0.1.1
+
+- Version 0.1.1: the fixes above (doctest carried in the binary, builder folders, import of tests), packages for
+  Linux and Windows rebuilt; README links point to v0.1.1.

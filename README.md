@@ -24,7 +24,7 @@
 
 ![Karkas demo](docs/media/karkas-demo.gif)
 
-<p align="center"><i>Full video (1080p, 80 s): <a href="https://github.com/AbdurahmanTFX/Karkas/releases/download/v0.1.0/karkas-demo.mp4">karkas-demo.mp4</a></i></p>
+<p align="center"><i>Full video (1080p, 80 s): <a href="https://github.com/AbdurahmanTFX/Karkas/releases/download/v0.1.1/karkas-demo.mp4">karkas-demo.mp4</a></i></p>
 
 ## Why
 
@@ -104,19 +104,19 @@ inv     a single track with gain 1.0 passes through unchanged
 
 ## Download
 
-Release **[v0.1.0](https://github.com/AbdurahmanTFX/Karkas/releases/tag/v0.1.0)**:
+Release **[v0.1.1](https://github.com/AbdurahmanTFX/Karkas/releases/tag/v0.1.1)**:
 
 | Package | Linux x86-64 | Windows x86-64 |
 |---|---|---|
-| **Karkas** — the application (the window and the CLI it runs) | [karkas-gui-0.1.0-linux-x86_64.tar.gz](https://github.com/AbdurahmanTFX/Karkas/releases/download/v0.1.0/karkas-gui-0.1.0-linux-x86_64.tar.gz) | [karkas-gui-0.1.0-windows-x86_64.zip](https://github.com/AbdurahmanTFX/Karkas/releases/download/v0.1.0/karkas-gui-0.1.0-windows-x86_64.zip) |
-| **karkas** — the command line alone | [karkas-cli-0.1.0-linux-x86_64.tar.gz](https://github.com/AbdurahmanTFX/Karkas/releases/download/v0.1.0/karkas-cli-0.1.0-linux-x86_64.tar.gz) | [karkas-cli-0.1.0-windows-x86_64.zip](https://github.com/AbdurahmanTFX/Karkas/releases/download/v0.1.0/karkas-cli-0.1.0-windows-x86_64.zip) |
+| **Karkas** — the application (the window and the CLI it runs) | [karkas-gui-0.1.1-linux-x86_64.tar.gz](https://github.com/AbdurahmanTFX/Karkas/releases/download/v0.1.1/karkas-gui-0.1.1-linux-x86_64.tar.gz) | [karkas-gui-0.1.1-windows-x86_64.zip](https://github.com/AbdurahmanTFX/Karkas/releases/download/v0.1.1/karkas-gui-0.1.1-windows-x86_64.zip) |
+| **karkas** — the command line alone | [karkas-cli-0.1.1-linux-x86_64.tar.gz](https://github.com/AbdurahmanTFX/Karkas/releases/download/v0.1.1/karkas-cli-0.1.1-linux-x86_64.tar.gz) | [karkas-cli-0.1.1-windows-x86_64.zip](https://github.com/AbdurahmanTFX/Karkas/releases/download/v0.1.1/karkas-cli-0.1.1-windows-x86_64.zip) |
 
 **Linux** — glibc 2.38 or newer (Ubuntu 24.04, Fedora 39, Debian 13, Arch…) with libcurl, SQLite 3 and
 OpenGL 3.3. Unpack and run `./bin/karkas-gui`, or install it for yourself with a menu entry and the icon:
 
 ```sh
-tar xf karkas-gui-0.1.0-linux-x86_64.tar.gz
-cd karkas-gui-0.1.0-linux-x86_64
+tar xf karkas-gui-0.1.1-linux-x86_64.tar.gz
+cd karkas-gui-0.1.1-linux-x86_64
 ./install.sh            # into ~/.local;  sudo PREFIX=/usr/local ./install.sh for everyone
 ```
 
@@ -191,7 +191,7 @@ docs/           SPEC.txt (the specification, in Russian), adr/ (decision records
 
 ## Status
 
-Version 0.1.0 — an early, working release. Linux is the main platform; the Windows port is new. The
+Version 0.1.1 — an early, working release. Linux is the main platform; the Windows port is new. The
 specification and the decision records are in the repository; parts of the docs are in Russian.
 
 ## How it was made
