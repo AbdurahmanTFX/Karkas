@@ -2,6 +2,7 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <cstdlib>
 
 #include "drop.hpp"
@@ -31,6 +32,7 @@ std::optional<InputScript> InputScript::parse(std::string_view text, std::string
   };
   auto num = [](const std::string& v) { return std::strtof(v.c_str(), nullptr); };
   auto& f = s.frames_;
+  float lx = 0, ly = 0;  // where the mouse is after the commands so far (glide starts there)
   for (const auto& raw : core::split(text, ';')) {
     auto w = core::split_ws(raw);
     if (w.empty()) continue;
@@ -39,7 +41,26 @@ std::optional<InputScript> InputScript::parse(std::string_view text, std::string
     auto key_shift = [&](bool down) {
       if (shift) f.emplace_back([down](ImGuiIO& io) { io.AddKeyEvent(ImGuiMod_Shift, down); });
     };
-    if (cmd == "move" && w.size() == 3) {
+    if (w.size() >= 3 && cmd != "key" && cmd != "type" && cmd != "drop") {
+      bool two_points = (cmd == "drag" || cmd == "rdrag") && w.size() == 5;
+      float px = num(w[two_points ? 3 : 1]), py = num(w[two_points ? 4 : 2]);
+      if (cmd != "glide") {
+        lx = px;
+        ly = py;
+      }
+    }
+    if (cmd == "glide" && w.size() == 4) {
+      // Eased, so a recorded demo shows where the mouse goes (karkas-gui --show).
+      float x0 = lx, y0 = ly, x = num(w[1]), y = num(w[2]);
+      int n = std::max(1, static_cast<int>(num(w[3])));
+      for (int i = 1; i <= n; ++i) {
+        float t = static_cast<float>(i) / static_cast<float>(n);
+        float e = t * t * (3 - 2 * t);
+        f.emplace_back([=](ImGuiIO& io) { mouse_at(io, x0 + (x - x0) * e, y0 + (y - y0) * e); });
+      }
+      lx = x;
+      ly = y;
+    } else if (cmd == "move" && w.size() == 3) {
       float x = num(w[1]), y = num(w[2]);
       f.emplace_back([x, y](ImGuiIO& io) { mouse_at(io, x, y); });
     } else if ((cmd == "click" || cmd == "dclick") && w.size() >= 3) {

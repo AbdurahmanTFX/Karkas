@@ -2,6 +2,9 @@
 //   karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]
 //              [--lang en|ru] [--block-scale F] [--settings] [--chat] [--script "..."] [--drag x1,y1,x2,y2]
 //              [--frames N --screenshot out.png] [--size WxH]   (headless checks)
+//              [--show] [--max-seconds S] [--record out.rgb|-]   (a demo: the window shown, the scripted
+//                pointer drawn; --record writes every frame of the script as raw RGB, the clock of the
+//                interface going 1/25 s per frame, for ffmpeg -f rawvideo -r 25)
 // Without a project (started outside one) the window opens with "Open project".
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -13,6 +16,7 @@
 #include <GL/gl.h>
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -47,7 +51,9 @@ void usage() {
   std::cerr << "usage: karkas-gui [--project <dir>] [--scope <block>] [--select <block>] [--all-levels]\n"
                "                  [--lang en|ru] [--block-scale F] [--settings] [--chat] [--script \"...\"]\n"
                "                  [--drag x1,y1,x2,y2] [--layout file.ini] [--prototype]\n"
-               "                  [--frames N] [--screenshot out.png] [--size WxH] [--version]\n";
+               "                  [--frames N] [--screenshot out.png] [--size WxH] [--show] [--max-seconds S]\n"
+               "                  [--record out.rgb|-]\n"
+               "                  [--version]\n";
 }
 
 void render(GLFWwindow* window) {
@@ -103,6 +109,9 @@ int main(int argc, char** argv) {
   bool open_proto = false;
   std::string script_text;  // headless checks: scripted input (script.hpp)
   int frames = 0;
+  bool show = false;     // the check's window shown, the scripted pointer drawn (a recorded demo)
+  int max_seconds = 30;  // a check ends after this at the latest
+  std::string record;    // raw RGB frames of the script: a file, or "-" for stdout (a recorded demo)
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -120,6 +129,9 @@ int main(int argc, char** argv) {
     else if (a == "--drag") script_text += "drag " + kk::core::replace_all(next(), ",", " ") + ";";
     else if (a == "--frames") frames = std::atoi(next().c_str());
     else if (a == "--screenshot") screenshot = next();
+    else if (a == "--show") show = true;
+    else if (a == "--record") record = next();
+    else if (a == "--max-seconds") max_seconds = std::max(1, std::atoi(next().c_str()));
     else if (a == "--size") {  // the window's size at the start (a narrow window in a headless check)
       auto v = next();
       auto x = v.find('x');
@@ -161,7 +173,7 @@ int main(int argc, char** argv) {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-  if (frames > 0) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+  if (frames > 0 && !show) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
   // The windows of the tiles sent out (ADR 0032) carry the same application id: one group in
   // the task bar, and window rules of the desktop can name them ("karkas").
   glfwWindowHintString(GLFW_WAYLAND_APP_ID, "karkas");
@@ -285,8 +297,12 @@ int main(int argc, char** argv) {
   // Redraw on events only (14.8): near 0% CPU while idle; ~20 fps while agents work
   // (pulsing blocks). One extra frame after every event lets ImGui settle hovers/popups.
   int settle = 3;
+  std::FILE* rec = nullptr;
+  if (!record.empty()) rec = record == "-" ? stdout : std::fopen(record.c_str(), "wb");
   auto wait = [&](bool animate) {
-    if (frames > 0 || animate) {
+    if (rec != nullptr) {
+      glfwPollEvents();  // frame by frame, as fast as they are drawn: the clock is the frame count
+    } else if (frames > 0 || animate) {
       glfwWaitEventsTimeout(0.05);
     } else if (settle > 0) {
       --settle;
@@ -368,6 +384,7 @@ int main(int argc, char** argv) {
         auto t0 = std::chrono::steady_clock::now();
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
+        if (rec != nullptr) io.DeltaTime = 1.0f / 25.0f;  // a recorded frame is 1/25 s of the video
         kk::gui::viewports::before_new_frame();
         if (phase == 1) script->step(io);
         ImGui::NewFrame();
@@ -375,11 +392,41 @@ int main(int argc, char** argv) {
         ui.request().char_w = ImGui::CalcTextSize("abcdefghijklmnopqrstuvwxyz").x / 26.0f;
         ui.request().line_h = ImGui::GetTextLineHeightWithSpacing();
         bool animate = ui.draw(model, first);
+        if ((show || rec != nullptr) && frames > 0) {
+          // The scripted mouse has no cursor of the system: an arrow where it is (a recorded demo).
+          ImVec2 m = io.MousePos;
+          if (m.x > -1e5f) {
+            auto* fg = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
+            const float s = 1.4f;
+            ImVec2 pts[7] = {{m.x, m.y},
+                             {m.x, m.y + 17 * s},
+                             {m.x + 4.2f * s, m.y + 13 * s},
+                             {m.x + 7.2f * s, m.y + 19.5f * s},
+                             {m.x + 9.6f * s, m.y + 18.4f * s},
+                             {m.x + 6.8f * s, m.y + 12.2f * s},
+                             {m.x + 12 * s, m.y + 12 * s}};
+            fg->AddConcavePolyFilled(pts, 7, IM_COL32(255, 255, 255, 255));
+            fg->AddPolyline(pts, 7, IM_COL32(20, 20, 20, 255), ImDrawFlags_Closed, 1.5f);
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+              fg->AddCircle(m, 14, IM_COL32(120, 170, 255, 220), 0, 3.0f);
+            }
+          }
+        }
         double draw_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         first = false;
         if (ui.quit_requested()) glfwSetWindowShouldClose(window, GLFW_TRUE);
         worker.set_request(ui.request());
         render(window);
+        if (rec != nullptr && frames > 0 && (phase == 1 || phase == 2)) {  // the script and the model following it
+          int fw = 0;
+          int fh = 0;
+          glfwGetFramebufferSize(window, &fw, &fh);
+          std::vector<std::uint8_t> px(static_cast<std::size_t>(fw) * static_cast<std::size_t>(fh) * 3);
+          glPixelStorei(GL_PACK_ALIGNMENT, 1);
+          glReadPixels(0, 0, fw, fh, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+          const auto row = static_cast<std::size_t>(fw) * 3;
+          for (int y = fh - 1; y >= 0; --y) std::fwrite(px.data() + static_cast<std::size_t>(y) * row, 1, row, rec);
+        }
         kk::gui::viewports::render_other_windows(window);
         apply_cursor();
         save_layout(false);
@@ -414,7 +461,7 @@ int main(int argc, char** argv) {
             settle_frames = synced ? settle_frames + 1 : 0;
             if (settle_frames >= 8) phase = 3;
           }
-          if (phase == 3 || std::chrono::steady_clock::now() - start > std::chrono::seconds(30)) {
+          if (phase == 3 || std::chrono::steady_clock::now() - start > std::chrono::seconds(max_seconds)) {
             if (!screenshot.empty()) screenshot_to(window, screenshot);
             save_layout(true);
             // Headless check of the tiles (ADR 0032): the windows of the desktop and the tiles docked.
@@ -438,6 +485,10 @@ int main(int argc, char** argv) {
       }
     }
     first_project = false;
+    if (rec != nullptr && rec != stdout) {
+      std::fclose(rec);
+      rec = nullptr;
+    }
     if (next_project) {
       root = *next_project;
     } else {
