@@ -37,10 +37,23 @@ struct Pos {
   double w = 0, h = 0;  // manual size of the block on the picture; 0 = automatic
 };
 
+struct Point {
+  double x = 0, y = 0;
+};
+
+// The path of a line between its two blocks (docs/adr/0042): the points it passes through, in the
+// layout's coordinates — across the column of every rank it passes over, between the blocks there.
+// Empty: the line joins neighbor ranks, a plain curve will do.
+struct Route {
+  std::string from, to, kind;
+  std::vector<Point> points;
+};
+
 struct Layout {
   std::map<std::string, Pos> pos;
   double width = 0, height = 0;
   std::string engine;
+  std::vector<Route> routes;  // one per edge of the graph (the built-in engine; not cached)
 };
 
 class ILayoutEngine {
@@ -50,8 +63,11 @@ class ILayoutEngine {
   [[nodiscard]] virtual std::string name() const = 0;
 };
 
-// Layered layout (cycle removal, longest-path ranks, dummy nodes, barycentric crossing
-// reduction, priority coordinate assignment). Deterministic: same graph → same layout.
+// Layered layout (docs/adr/0042): a pair linked both ways is one edge; cycles broken by the greedy
+// order of Eades, Lin and Smyth; ranks by the longest path, then pulled to shorten lines; dummy nodes on
+// long lines; order by median sweeps and transposition (crossings counted with a Fenwick tree);
+// positions per rank by weighted isotonic regression (long lines straight); routes through the dummies;
+// connected parts packed on shelves, single blocks in rows. Deterministic: same graph → same layout.
 class SugiyamaEngine final : public ILayoutEngine {
  public:
   kk::Result<Layout> layout(const Graph& g) override;

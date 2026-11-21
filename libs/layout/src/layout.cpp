@@ -184,7 +184,8 @@ kk::VoidResult LayoutStore::save_manual(const std::string& view, const std::map<
 }
 
 Layout LayoutStore::get(const std::string& view, const Graph& g, ILayoutEngine& engine) const {
-  auto hash = graph_hash(g) + "-" + engine.name();
+  // The version of the built-in engine is part of the key: a better layout replaces the cached one.
+  auto hash = graph_hash(g) + "-" + engine.name() + (engine.name() == "sugiyama" ? "-v2" : "");
   Layout l;
   if (auto c = cached(hash)) {
     l = *c;
