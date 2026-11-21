@@ -1,7 +1,8 @@
 #pragma once
 // Markdown of notes (docs/adr/0040): a small parser of its own, no dependency, for what notes use —
 // headings, paragraphs, lists with task boxes, quotes, fenced and indented code, rules, tables, front
-// matter; inline bold, italic, strikethrough, code, links, images, [[links]], <autolinks> and bare URLs.
+// matter; inline bold, italic, strikethrough, code, links, images (and Obsidian ![[embeds]], docs/adr/0041),
+// [[links]], <autolinks> and bare URLs.
 // A line break in the text stays a line break (as in note apps), not a space. Deterministic: it shows
 // notes, reads their links and gives the plain first lines drawn on the schema.
 #include <cstddef>
@@ -19,9 +20,10 @@ struct Run {
   bool italic = false;
   bool strike = false;
   bool code = false;
-  bool image = false;  // ![alt](src): text is the alt text, href the source
-  bool wiki = false;   // [[name]] or [[name|shown]]: text is what is shown, href the name
+  bool image = false;  // ![alt](src) or ![[file.png]]: text is the alt text (the file name), href the source
+  bool wiki = false;   // [[name]] or [[name|shown]]: text is what is shown, href the name; with image: ![[file.png]]
   std::string href;    // a link's destination as written ("" for plain text)
+  int width = 0;       // an image: the width asked for in pixels ("|300" after its alt text or name), 0 its own
   bool operator==(const Run&) const = default;
 };
 
@@ -53,6 +55,18 @@ struct Link {
   std::size_t begin = 0, end = 0;
 };
 std::vector<Link> links(std::string_view text);
+
+// An image of a text outside code (docs/adr/0041): ![alt](src "title"), or ![[file.png|300]] (an Obsidian
+// embed of an image file; an embed of anything else is a [[link]]).
+struct Image {
+  std::string alt, src;
+  bool wiki = false;
+  int width = 0;
+  int line = 0;
+};
+std::vector<Image> images(std::string_view text);
+// A file name with an image extension: .png .jpg .jpeg .gif .bmp .webp .svg .avif (any case).
+bool is_image_file(std::string_view path);
 
 // The text without its markup, one line per heading, paragraph line, item ("• ", "1. ", "☐ ", "☑ "),
 // code line and table row (cells joined by " | "); blank lines, rules and front matter left out.

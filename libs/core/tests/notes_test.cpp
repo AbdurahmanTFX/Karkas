@@ -187,3 +187,63 @@ TEST_CASE("notes: words inside a Markdown link are no mention") {
   REQUIRE(at.size() == 1);
   CHECK(at[0] == std::string("см. [Бюджет](money.md) и ").size());
 }
+
+// --- images (docs/adr/0041) ---------------------------------------------------------------------------------
+
+TEST_CASE("notes: the file an image shows — relative, from the root, by name nearest to the note, URLs never") {
+  test::TempDir d{"notes_media"};
+  test::write(d / "blocks/a/note.md", "x");
+  test::write(d / "blocks/a/pic.png", "png");
+  test::write(d / "img/x.png", "png");
+  test::write(d / "top.png", "png");
+  test::write(d / "assets/sub/deep.png", "png");
+  test::write(d / "blocks/a/att/dup.png", "png");
+  test::write(d / "other/dup.png", "png");
+  test::write(d / ".hidden/deep2.png", "png");
+  test::write(d / "my notes/a b.png", "png");
+  MediaFinder f(d.path());
+  CHECK(f.find("blocks/a/note.md", "pic.png", false) == "blocks/a/pic.png");
+  CHECK(f.find("blocks/a/note.md", "../../img/x.png", false) == "img/x.png");
+  CHECK(f.find("blocks/a/note.md", "/img/x.png", false) == "img/x.png");
+  CHECK(f.find("blocks/a/note.md", "/my%20notes/a%20b.png", false) == "my notes/a b.png");
+  CHECK_FALSE(f.find("blocks/a/note.md", "missing.png", false));
+  CHECK_FALSE(f.find("blocks/a/note.md", "https://example.org/x.png", false));
+  CHECK(f.find("blocks/a/note.md", "pic.png", true) == "blocks/a/pic.png");  // the note's folder
+  CHECK(f.find("blocks/a/note.md", "top.png", true) == "top.png");           // the project root
+  CHECK(f.find("blocks/a/note.md", "deep.png", true) == "assets/sub/deep.png");  // by name
+  CHECK(f.find("blocks/a/note.md", "dup.png", true) == "blocks/a/att/dup.png");  // nearest to the note
+  CHECK(f.find("other/n.md", "dup.png", true) == "other/dup.png");
+  CHECK_FALSE(f.find("blocks/a/note.md", "deep2.png", true));  // hidden folders are skipped
+}
+
+TEST_CASE("notes: the loader reads a Markdown note's images, an embed of an image is no link, W09 for a missing one") {
+  test::TempDir d{"notes_media_load"};
+  test::write(d / "project.ksl", "@project vault\nlang notes\n");
+  test::write(d / "blocks/a/block.ksl", "@block a\npurpose План\nkind leaf\n");
+  test::write(d / "blocks/a/note.md",
+              "![схема](pic.png)\n![[deep.png|300]] [[Бюджет]]\n![нет](missing.png)\n![сеть](https://x.org/a.png)\n![[gone.jpg]]\n");
+  test::write(d / "blocks/a/pic.png", "png");
+  test::write(d / "assets/deep.png", "png");
+  test::write(d / "blocks/b/block.ksl", "@block b\npurpose Бюджет\nkind leaf\n");
+  test::write(d / "blocks/t/block.ksl", "@block t\npurpose Текст\nkind leaf\n");
+  test::write(d / "blocks/t/note.txt", "![x](nothing.png)\n");  // a .txt note has no images
+  auto s = load_schema(d.path());
+  REQUIRE(s);
+  const auto* a = s->find("a");
+  REQUIRE(a != nullptr);
+  REQUIRE(a->media.size() == 4);  // the URL is left out
+  CHECK(a->media[0].file == "blocks/a/pic.png");
+  CHECK(a->media[1].wiki);
+  CHECK(a->media[1].file == "assets/deep.png");
+  CHECK(a->media[2].file.empty());
+  CHECK(a->media[3].file.empty());
+  REQUIRE(a->refs.size() == 1);  // [[Бюджет]]; ![[deep.png]] is no link
+  CHECK(a->refs[0].target == "b");
+  CHECK(s->find("t")->media.empty());
+  std::vector<std::string> w;
+  for (const auto& i : check_schema(*s)) {
+    if (i.code == "W08" || i.code == "W09") w.push_back(i.code + " " + i.message + " @" + std::to_string(i.loc.line));
+  }
+  CHECK(w == std::vector<std::string>{"W09 image missing.png not found @3", "W09 image ![[gone.jpg]] not found @5"});
+  CHECK(find_mentions("![[Бюджет.png]] Бюджет", "Бюджет") == std::vector<std::size_t>{std::string("![[Бюджет.png]] ").size()});
+}

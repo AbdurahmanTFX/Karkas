@@ -126,6 +126,14 @@ struct NoteRef {
   std::string path;    // a Markdown link: the file it names, from the project root ("" for a [[link]])
 };
 
+// An image in the text of a Markdown note (docs/adr/0041): read by the schema loader with the file it shows.
+struct NoteMedia {
+  std::string src;   // as written: the destination of ![alt](src), or the name of ![[name]]
+  bool wiki = false;
+  int line = 0;      // in the note's file
+  std::string file;  // the file it shows, from the project root ("" when there is none)
+};
+
 struct HistEntry {
   std::string ticket;  // "T-0042" or "summary" for the folded line (3.10)
   std::string text;
@@ -148,6 +156,7 @@ struct Block {
   std::vector<HistEntry> hist;
   std::vector<FilesDecl> files;
   std::vector<NoteRef> refs;  // notes projects: the [[links]] of the note's text (filled by the loader)
+  std::vector<NoteMedia> media;  // notes projects: the local images of a Markdown note's text (filled by the loader)
   Trivia header;
   std::vector<std::string> tail;
   std::string file;

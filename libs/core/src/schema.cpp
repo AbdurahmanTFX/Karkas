@@ -405,6 +405,7 @@ Result<Schema> load_schema(const std::filesystem::path& root_in) {
   // own text is note.md; a note written before notes were Markdown keeps its note.txt (docs/adr/0040).
   if (is_notes_project(s.project)) {
     std::map<std::string, std::string> by_file;  // note file → its note
+    MediaFinder media(s.root);
     for (auto& b : s.blocks) {
       if (b.kind == BlockKind::Leaf && !b.external()) {
         std::error_code ec;
@@ -422,6 +423,10 @@ Result<Schema> load_schema(const std::filesystem::path& root_in) {
           if (auto path = note_link_file(file, l.href)) b.refs.push_back(NoteRef{.name = l.href, .line = l.line, .target = {}, .matches = 0, .path = *path});
         }
         std::stable_sort(b.refs.begin(), b.refs.end(), [](const NoteRef& x, const NoteRef& y) { return x.line < y.line; });
+        for (const auto& im : md::images(*note)) {  // local images and the files they show (docs/adr/0041)
+          if (!im.wiki && md::is_url(im.src)) continue;
+          b.media.push_back(NoteMedia{.src = im.src, .wiki = im.wiki, .line = im.line, .file = media.find(file, im.src, im.wiki).value_or("")});
+        }
       }
     }
     for (auto& b : s.blocks) {

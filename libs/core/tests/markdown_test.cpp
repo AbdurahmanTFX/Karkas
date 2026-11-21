@@ -18,7 +18,7 @@ std::string show(const std::vector<md::Run>& runs) {
     if (r.bold) t = "**" + t + "**";
     if (r.strike) t = "~~" + t + "~~";
     if (r.image) {
-      t = "!" + t + "|" + r.href;
+      t = "!" + t + "|" + r.href + (r.width > 0 ? "@" + std::to_string(r.width) : "") + (r.wiki ? "~" : "");
     } else if (r.wiki) {
       t = "[[" + t + "|" + r.href + "]]";
     } else if (!r.href.empty()) {
@@ -218,4 +218,39 @@ TEST_CASE("markdown: file names, URLs, percent escapes") {
   CHECK(md::percent_decode("My%20Note.md") == "My Note.md");
   CHECK(md::percent_decode("%D0%BA%D0%BE%D1%82") == "кот");
   CHECK(md::percent_decode("100%") == "100%");
+}
+
+// --- images (docs/adr/0041) ---------------------------------------------------------------------------------
+
+TEST_CASE("markdown: images with an Obsidian size, embeds of image files, embeds of notes stay links") {
+  CHECK(inl("![диаграмма|300](img/d.png)") == "!диаграмма|img/d.png@300");
+  CHECK(inl("![a|b](x.png)") == "!a|b|x.png");  // not a size: the alt text as written
+  CHECK(inl("![|120x80](x.png)") == "!|x.png@120");
+  CHECK(inl("see ![[cat.png|200]] here") == "see !cat.png|cat.png@200~ here");
+  CHECK(inl("![[Photo.JPG]]") == "!Photo.JPG|Photo.JPG~");
+  CHECK(inl("![[a.png|подпись]]") == "!a.png|a.png~");
+  CHECK(inl("![[Note]]") == "![[Note|Note]]");  // an embed of a note: a [[link]] after '!'
+}
+
+TEST_CASE("markdown: the images of a text outside code, with lines, alt text, size and kind") {
+  std::string t = "![a](x.png) and ![[y.png|40]]\n`![c](code.png)`\n```\n![f](f.png)\n```\n![[Note]] [l](z.md) ![b|64](<my pic.png>)";
+  auto im = md::images(t);
+  REQUIRE(im.size() == 3);
+  CHECK(im[0].src == "x.png");
+  CHECK(im[0].alt == "a");
+  CHECK_FALSE(im[0].wiki);
+  CHECK(im[0].line == 1);
+  CHECK(im[1].src == "y.png");
+  CHECK(im[1].wiki);
+  CHECK(im[1].width == 40);
+  CHECK(im[2].src == "my pic.png");
+  CHECK(im[2].alt == "b");
+  CHECK(im[2].width == 64);
+  CHECK(im[2].line == 6);
+  CHECK(md::links(t).size() == 1);  // [l](z.md) only
+  CHECK(md::is_image_file("a/B.PNG"));
+  CHECK(md::is_image_file("x.jpeg"));
+  CHECK(md::is_image_file("x.webp"));
+  CHECK_FALSE(md::is_image_file("x.md"));
+  CHECK_FALSE(md::is_image_file("png"));
 }

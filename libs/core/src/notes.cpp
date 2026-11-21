@@ -4,6 +4,7 @@
 #include <filesystem>
 
 #include "kk/core/markdown.hpp"
+#include "kk/core/paths.hpp"
 #include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
 
@@ -93,9 +94,69 @@ std::optional<std::string> note_link_file(std::string_view from, std::string_vie
 
 namespace {
 
-// Calls f(begin, end, name, inner, line) for each [[link]]: [begin, end) spans the brackets.
-template <typename F>
-void each_ref(std::string_view text, F f) {
+// Folders that hold no files of the user's notes: hidden ones, build trees, downloaded sources.
+bool skipped_folder(const std::string& name) {
+  return name.starts_with(".") || name.starts_with("build") || name == "node_modules" || name == "third_party" || name == "_deps";
+}
+
+}  // namespace
+
+MediaFinder::MediaFinder(std::filesystem::path root) : root_(std::move(root)) {}
+
+std::optional<std::string> MediaFinder::find(std::string_view note_file, std::string_view src, bool wiki) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const fs::path dir = fs::path(std::string(note_file)).parent_path();
+  auto here = [&](const fs::path& rel) -> std::optional<std::string> {
+    auto n = rel.lexically_normal();
+    if (n.empty() || !fs::is_regular_file(root_ / n, ec)) return std::nullopt;
+    return n.generic_string();
+  };
+  if (!wiki) {
+    if (src.empty() || md::is_url(src)) return std::nullopt;
+    auto dest = md::percent_decode(src.substr(0, src.find_first_of("#?")));
+    if (dest.empty()) return std::nullopt;
+    return here(dest.starts_with('/') ? fs::path(dest.substr(1)) : dir / dest);
+  }
+  // ![[name]]: the note's folder, the project root, else the file of that name nearest to the note.
+  const auto name = std::string(src);
+  if (auto r = here(dir / name)) return r;
+  if (auto r = here(fs::path(name))) return r;
+  if (!by_name_) {
+    by_name_.emplace();
+    for (auto it = fs::recursive_directory_iterator(root_, fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+      std::error_code fec;
+      if (it->is_directory(fec)) {
+        if (skipped_folder(it->path().filename().string())) it.disable_recursion_pending();
+        continue;
+      }
+      if (md::is_image_file(it->path().filename().string())) {
+        by_name_->emplace(it->path().filename().string(), rel_str(root_, it->path()));
+      }
+    }
+  }
+  auto [first, last] = by_name_->equal_range(fs::path(name).filename().string());
+  std::optional<std::string> best;
+  std::size_t best_common = 0;
+  const auto d = dir.generic_string();
+  for (auto it = first; it != last; ++it) {
+    std::size_t common = 0;
+    while (common < d.size() && common < it->second.size() && d[common] == it->second[common]) ++common;
+    if (!best || common > best_common || (common == best_common && it->second < *best)) {
+      best = it->second;
+      best_common = common;
+    }
+  }
+  return best;
+}
+
+namespace {
+
+// Calls f(begin, end, name, inner, line) for each [[link]]: [begin, end) spans the brackets. An Obsidian
+// embed of an image file, ![[file.png]], is no link (docs/adr/0041): it goes to `embed(begin, end)`.
+template <typename F, typename E>
+void each_ref(std::string_view text, F f, E embed) {
   int line = 1;
   for (std::size_t i = 0; i < text.size(); ++i) {
     if (text[i] == '\n') {
@@ -110,9 +171,18 @@ void each_ref(std::string_view text, F f) {
     auto name = std::string(trim(inner));
     // [[name|shown text]]: the part before '|' names the note.
     if (auto bar = name.find('|'); bar != std::string::npos) name = std::string(trim(std::string_view(name).substr(0, bar)));
-    if (!name.empty()) f(i, end + 2, name, inner, line);
+    if (i > 0 && text[i - 1] == '!' && md::is_image_file(name)) {
+      embed(i - 1, end + 2);
+    } else if (!name.empty()) {
+      f(i, end + 2, name, inner, line);
+    }
     i = end + 1;
   }
+}
+
+template <typename F>
+void each_ref(std::string_view text, F f) {
+  each_ref(text, f, [](std::size_t, std::size_t) {});
 }
 
 }  // namespace
@@ -202,7 +272,9 @@ std::vector<std::size_t> find_mentions(std::string_view text, std::string_view t
   if (letters < 3) return out;
   auto low = lower_text(text);
   std::vector<std::pair<std::size_t, std::size_t>> links;
-  each_ref(text, [&](std::size_t b, std::size_t e, const std::string&, const std::string&, int) { links.emplace_back(b, e); });
+  each_ref(
+      text, [&](std::size_t b, std::size_t e, const std::string&, const std::string&, int) { links.emplace_back(b, e); },
+      [&](std::size_t b, std::size_t e) { links.emplace_back(b, e); });
   for (const auto& l : md::links(text)) links.emplace_back(l.begin, l.end);
   for (auto at = low.find(t); at != std::string::npos; at = low.find(t, at + 1)) {
     std::size_t end = at + t.size();

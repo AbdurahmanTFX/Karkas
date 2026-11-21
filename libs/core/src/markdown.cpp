@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <tuple>
 #include <utility>
 
 #include "kk/core/text.hpp"
@@ -163,6 +164,48 @@ std::optional<LinkAt> link_at(std::string_view s, std::size_t i) {
   return out;
 }
 
+// "300" or "300x200" → 300; anything else → 0.
+int width_of(std::string_view s) {
+  s = trim(s);
+  std::size_t k = 0;
+  int w = 0;
+  while (k < s.size() && is_digit(s[k]) && k < 5) w = w * 10 + (s[k++] - '0');
+  if (k == 0) return 0;
+  if (k < s.size()) {
+    if (s[k] != 'x') return 0;
+    for (std::size_t j = k + 1; j < s.size(); ++j) {
+      if (!is_digit(s[j])) return 0;
+    }
+  }
+  return w;
+}
+
+// An image's alt text with an Obsidian size after '|' ("diagram|300"): the text and the width.
+std::pair<std::string, int> alt_and_width(std::string alt) {
+  if (auto bar = alt.rfind('|'); bar != std::string::npos) {
+    if (int w = width_of(std::string_view(alt).substr(bar + 1)); w > 0) return {std::string(trim(alt.substr(0, bar))), w};
+  }
+  return {std::move(alt), 0};
+}
+
+// An Obsidian embed at s[i] == '!' ("![[file.png|300]]") of an image file: the name, the width, the end.
+struct Embed {
+  std::string name;
+  int width = 0;
+  std::size_t end = 0;
+};
+std::optional<Embed> image_embed_at(std::string_view s, std::size_t i) {
+  if (i + 2 >= s.size() || s[i] != '!' || s[i + 1] != '[' || s[i + 2] != '[') return std::nullopt;
+  auto e = s.find("]]", i + 3);
+  auto nl = s.find('\n', i + 3);
+  if (e == npos || (nl != npos && nl < e)) return std::nullopt;
+  auto inner = s.substr(i + 3, e - i - 3);
+  auto bar = inner.find('|');
+  auto name = trim(bar == npos ? inner : inner.substr(0, bar));
+  if (name.empty() || !is_image_file(name)) return std::nullopt;
+  return Embed{std::string(name), bar == npos ? 0 : width_of(inner.substr(bar + 1)), e + 2};
+}
+
 struct Style {
   bool bold = false;
   bool italic = false;
@@ -274,6 +317,18 @@ void inline_into(std::string_view s, const Style& st, std::vector<Run>& out) {
       i = e;
       continue;
     }
+    if (auto em = image_embed_at(s, i)) {
+      flush();
+      Run r;
+      r.text = em->name;
+      r.image = true;
+      r.wiki = true;
+      r.href = em->name;
+      r.width = em->width;
+      out.push_back(std::move(r));
+      i = em->end;
+      continue;
+    }
     if (c == '[' && i + 1 < n && s[i + 1] == '[') {
       auto e = s.find("]]", i + 2);
       auto nl = s.find('\n', i + 2);
@@ -303,7 +358,7 @@ void inline_into(std::string_view s, const Style& st, std::vector<Run>& out) {
         std::vector<Run> alt;
         inline_into(l->label, Style{}, alt);
         Run r;
-        r.text = plain(alt);
+        std::tie(r.text, r.width) = alt_and_width(plain(alt));
         r.image = true;
         r.href = l->href;
         out.push_back(std::move(r));
@@ -770,8 +825,12 @@ std::vector<Block> parse(std::string_view text) {
   return out;
 }
 
-std::vector<Link> links(std::string_view text) {
-  std::vector<Link> out;
+namespace {
+
+// Calls on_link(label, href, line, begin, end) for each [label](href) and on_image(Image) for each image of
+// the text's lines outside fenced code, code spans and front matter.
+template <typename OnLink, typename OnImage>
+void scan_inline(std::string_view text, OnLink on_link, OnImage on_image) {
   auto lines = split_lines(text);
   std::size_t skip_to = 0;  // front matter: its lines hold no links
   if (!lines.empty() && trim_right(lines[0].text) == "---") {
@@ -798,6 +857,7 @@ std::vector<Link> links(std::string_view text) {
       continue;
     }
     const auto base = static_cast<std::size_t>(line.data() - text.data());
+    const int no = lines[li].no;
     for (std::size_t k = 0; k < line.size();) {
       char c = line[k];
       if (c == '\\') {
@@ -809,15 +869,25 @@ std::vector<Link> links(std::string_view text) {
         } else {
           while (k < line.size() && line[k] == '`') ++k;
         }
+      } else if (auto em = image_embed_at(line, k)) {
+        on_image(Image{em->name, em->name, true, em->width, no});
+        k = em->end;
       } else if (c == '[' && k + 1 < line.size() && line[k + 1] == '[') {
         auto e = line.find("]]", k + 2);
         k = e == npos ? k + 2 : e + 2;
       } else if (c == '!' && k + 1 < line.size() && line[k + 1] == '[') {
-        auto l = link_at(line, k + 1);
-        k = l ? l->end : k + 2;
+        if (auto l = link_at(line, k + 1)) {
+          std::vector<Run> alt;
+          inline_into(l->label, Style{}, alt);
+          auto [a, w] = alt_and_width(plain(alt));
+          on_image(Image{std::move(a), l->href, false, w, no});
+          k = l->end;
+        } else {
+          k += 2;
+        }
       } else if (c == '[') {
         if (auto l = link_at(line, k)) {
-          out.push_back({std::string(l->label), l->href, lines[li].no, base + k, base + l->end});
+          on_link(l->label, l->href, no, base + k, base + l->end);
           k = l->end;
         } else {
           ++k;
@@ -827,7 +897,34 @@ std::vector<Link> links(std::string_view text) {
       }
     }
   }
+}
+
+}  // namespace
+
+std::vector<Link> links(std::string_view text) {
+  std::vector<Link> out;
+  scan_inline(
+      text,
+      [&](std::string_view label, const std::string& href, int line, std::size_t b, std::size_t e) {
+        out.push_back({std::string(label), href, line, b, e});
+      },
+      [](const Image&) {});
   return out;
+}
+
+std::vector<Image> images(std::string_view text) {
+  std::vector<Image> out;
+  scan_inline(
+      text, [](std::string_view, const std::string&, int, std::size_t, std::size_t) {}, [&](const Image& im) { out.push_back(im); });
+  return out;
+}
+
+bool is_image_file(std::string_view path) {
+  auto l = to_lower(path);
+  for (const char* ext : {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".avif"}) {
+    if (l.ends_with(ext)) return true;
+  }
+  return false;
 }
 
 std::string plain(const std::vector<Run>& runs) {

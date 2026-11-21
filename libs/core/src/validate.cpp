@@ -61,6 +61,12 @@ struct Checker {
                                            : fmt::format("[[{}]] names {} notes: write the id (topic.note)", r.name, r.matches);
         out.push_back(Issue{"W08", 'W', b.id, std::move(msg), SourceLoc{note_file(b), r.line, 1}});
       }
+      // W09: an image whose file is not there (docs/adr/0041).
+      for (const auto& im : b.media) {
+        if (!im.file.empty()) continue;
+        out.push_back(Issue{"W09", 'W', b.id, fmt::format("image {} not found", im.wiki ? "![[" + im.src + "]]" : im.src),
+                            SourceLoc{note_file(b), im.line, 1}});
+      }
     }
     files();
   }

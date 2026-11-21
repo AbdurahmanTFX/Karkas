@@ -4,7 +4,9 @@
 // Markdown, docs/adr/0040), or the file its card lists (notes that were in the folder before Karkas).
 // Notes link to each other by [[name]] in their text, Markdown notes also by [text](file.md); the schema
 // loader reads those links, the schema draws them as "ref" lines. Nothing is generated or built.
+#include <filesystem>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -30,7 +32,22 @@ inline constexpr std::string_view kOldNoteFileName = "note.txt";
 // "#part" dropped. nullopt for URLs, anchors and other files.
 std::optional<std::string> note_link_file(std::string_view from, std::string_view href);
 
-// The [[links]] of a text, in order (names trimmed; empty ones and ones spanning lines skipped).
+// The file an image of a note shows (docs/adr/0041), from the project root, when it is there:
+// ![alt](src) relative to the note's folder ("/…" from the project root, "%20" decoded); ![[name]] (an
+// Obsidian embed) in the note's folder, at the project root, else the file of that name anywhere in the
+// project (hidden folders and build trees skipped) nearest to the note. URLs give nullopt (never fetched).
+class MediaFinder {
+ public:
+  explicit MediaFinder(std::filesystem::path root);
+  std::optional<std::string> find(std::string_view note_file, std::string_view src, bool wiki);
+
+ private:
+  std::filesystem::path root_;
+  std::optional<std::multimap<std::string, std::string>> by_name_;  // file name → files, made at the first need
+};
+
+// The [[links]] of a text, in order (names trimmed; empty ones, ones spanning lines and embeds of image
+// files, ![[file.png]], skipped).
 std::vector<NoteRef> parse_note_refs(std::string_view text);
 
 // The text with each [[link]] replaced by what `f` returns for it, the brackets included (nullopt keeps it).
