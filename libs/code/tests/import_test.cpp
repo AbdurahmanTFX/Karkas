@@ -144,6 +144,64 @@ TEST_CASE("import: modules called builder or build_steps are cards like any othe
   CHECK(std::none_of(drift.begin(), drift.end(), [](const core::Issue& i) { return i.code == "D06"; }));
 }
 
+TEST_CASE("import: test programs next to the code stay in the project's suite and are no orphans (ADR 0048)") {
+  for (const char* f : {"db/c_test.c", "a/foo_unittest.cc", "foo-test.cpp", "foo.test.cpp", "test_foo.cpp", "tst_foo.cpp",
+                        "FooTest.cpp", "src/test.cpp"}) {
+    CHECK_MESSAGE(code::is_test_source(f), f);
+  }
+  for (const char* f : {"db/builder.cc", "latest.cpp", "contest.cpp", "util/testutil.cc", "foo_test.h", "attestation.cpp"}) {
+    CHECK_FALSE_MESSAGE(code::is_test_source(f), f);
+  }
+  test::TempDir d{"tests"};
+  test::write(d / "project.ksl", "@project calc\nlang cpp\nbuild cmake-ninja\nstd c++20\ntest doctest\n");
+  test::write(d / "src/calc.h", "#pragma once\nint add(int a, int b);\n");
+  test::write(d / "src/calc.cpp", "#include \"calc.h\"\nint add(int a, int b) { return a + b; }\n");
+  test::write(d / "src/main.cpp", "#include \"calc.h\"\nint main() { return add(1, 2); }\n");
+  // Sorted first and with its own main(): it took the entry away from main.cpp.
+  test::write(d / "src/calc_test.cpp", "#include \"calc.h\"\nint main() { return add(2, 2) == 4 ? 0 : 1; }\n");
+  test::write(d / "tests/more.cpp", "#include \"../src/calc.h\"\nint main() { return add(1, 1) == 2 ? 0 : 1; }\n");
+  // A test helper with a header of its own is code with an api: it stays.
+  test::write(d / "src/fixture_test.h", "#pragma once\nint fixture();\n");
+  test::write(d / "src/fixture_test.cpp", "#include \"fixture_test.h\"\nint fixture() { return 1; }\n");
+  auto plan = code::plan_import(d.path());
+  REQUIRE_MESSAGE(plan, (plan ? "" : plan.error().str()));
+  CHECK(plan->tests == std::vector<std::string>{"src/calc_test.cpp"});
+  CHECK(plan->skipped == std::vector<std::string>{"tests"});
+  CHECK(find(*plan, "calc_test") == nullptr);
+  REQUIRE(find(*plan, "fixture_test") != nullptr);
+  REQUIRE(find(*plan, "main") != nullptr);
+  CHECK(find(*plan, "main")->kind == core::BlockKind::Entry);
+  CHECK(core::contains(code::describe_plan(*plan), "test programs left to the project's own suite: 1 (src/calc_test.cpp)"));
+  write_cards(d.path(), *plan);
+  auto s = core::load_schema(d.path());
+  REQUIRE(s);
+  auto drift = code::check_drift(*s);
+  for (const auto& i : drift) MESSAGE(i.str());
+  CHECK(std::none_of(drift.begin(), drift.end(), [](const core::Issue& i) { return i.code == "D06"; }));
+}
+
+TEST_CASE("import: a lone source joins the header that declares its names with the same class (ADR 0048)") {
+  // leveldb: util/cache_test.cc defines CacheTest::Insert, db/skiplist.h declares SkipList::Insert, and the
+  // two became one block. A source defining SkipList<K>::Insert out of its class does belong to skiplist.h.
+  test::TempDir d{"scope"};
+  test::write(d / "project.ksl", "@project lv\nlang cpp\nbuild cmake-ninja\nstd c++20\ntest doctest\n");
+  test::write(d / "db/skiplist.h",
+              "#pragma once\nnamespace lv {\ntemplate <typename K>\nclass SkipList {\n public:\n  void Insert(const K& k);\n"
+              "  bool Contains(const K& k) const;\n};\n}\n");
+  test::write(d / "db/skiplist_impl.cc",
+              "#include \"db/skiplist.h\"\nnamespace lv {\ntemplate <typename K>\nvoid SkipList<K>::Insert(const K& k) {}\n}\n");
+  test::write(d / "util/cache_bench.cc",
+              "namespace lv {\nclass CacheBench {\n public:\n  void Insert(int k) {}\n};\nint Run() { CacheBench b; b.Insert(1); return 0; }\n}\n");
+  auto plan = code::plan_import(d.path());
+  REQUIRE_MESSAGE(plan, (plan ? "" : plan.error().str()));
+  const auto* skiplist = find(*plan, "db.skiplist");
+  REQUIRE(skiplist != nullptr);
+  CHECK(skiplist->file_list() == std::vector<std::string>{"db/skiplist.h", "db/skiplist_impl.cc"});
+  const auto* bench = find(*plan, "util.cache_bench");
+  REQUIRE(bench != nullptr);
+  CHECK(bench->file_list() == std::vector<std::string>{"util/cache_bench.cc"});
+}
+
 TEST_CASE("import: a library without main() gets an empty entry, --exclude skips folders") {
   test::TempDir dir("imp");
   test::write(dir / "project.ksl", "@project lib\nidea    a library\n");

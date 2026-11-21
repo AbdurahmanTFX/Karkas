@@ -14,6 +14,7 @@
 #include <set>
 
 #include "kk/code/gen.hpp"
+#include "kk/code/import.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 
@@ -676,6 +677,9 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
   {
     std::error_code ec;
     auto root = schema.root;
+    // An imported project: what import leaves out on purpose (test folders, test programs, vendored code)
+    // is no orphan (docs/adr/0048).
+    const bool imported = std::any_of(schema.blocks.begin(), schema.blocks.end(), [](const core::Block& b) { return b.external(); });
     for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
          it != fs::recursive_directory_iterator(); it.increment(ec)) {
       if (ec) break;
@@ -685,7 +689,8 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
         auto rel = core::rel_str(root, p);
         bool other_project = p != root && fs::exists(p / "project.ksl");
         if (name.starts_with(".") || core::is_build_dir(p) || name == "_deps" || name == "third_party" ||
-            name == "external" || name == "node_modules" || rel == "cmake" || rel == "tests/integration" || other_project) {
+            name == "external" || name == "node_modules" || rel == "cmake" || rel == "tests/integration" || other_project ||
+            (imported && import_skips_dir(name))) {
           it.disable_recursion_pending();
           continue;
         }
@@ -697,7 +702,7 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
       }
       if (!it->is_regular_file(ec) || !core::is_code_file(p)) continue;
       auto rel = core::rel_str(root, p);
-      if (known.contains(rel)) continue;
+      if (known.contains(rel) || (imported && is_test_source(p))) continue;
       issue("D06", 'W', "", "code file outside the block folders (orphan)", rel, 0);
     }
   }

@@ -44,6 +44,19 @@ bool is_foreign_dir(const std::string& name) {
   return names.contains(core::to_lower(name));
 }
 
+// The class or namespace path of a symbol without template arguments: "leveldb::SkipList<Key, Cmp>" →
+// "leveldb::SkipList". A definition out of its class (SkipList<Key, Cmp>::Insert) then matches its declaration.
+std::string plain_scope(std::string_view scope) {
+  std::string out;
+  int depth = 0;
+  for (char c : scope) {
+    if (c == '<') ++depth;
+    if (depth == 0 && c != ' ') out += c;
+    if (c == '>' && depth > 0) --depth;
+  }
+  return out;
+}
+
 std::string area_of(const std::string& rel) {
   std::vector<std::string> parts;
   for (const auto& c : fs::path(rel).parent_path()) parts.push_back(c.string());
@@ -186,6 +199,29 @@ std::string cmake_std(const fs::path& root) {
 
 }  // namespace
 
+bool import_skips_dir(std::string_view name) { return is_foreign_dir(std::string(name)); }
+
+bool is_test_source(const fs::path& p) {
+  if (!core::is_code_file(p) || is_header(p)) return false;
+  const auto stem = p.stem().string();
+  const auto low = core::to_lower(stem);
+  if (low == "test" || low == "tests" || low == "unittest" || low == "unittests") return true;
+  for (std::string_view s : {"_test", "_tests", "_unittest", "_unittests", "-test", "-tests", ".test", ".tests"}) {
+    if (low.ends_with(s)) return true;
+  }
+  for (std::string_view s : {"test_", "tests_", "tst_"}) {
+    if (low.starts_with(s)) return true;
+  }
+  // CamelCase: FooTest, FooTests (not "Latest" or "Contest": the T is a capital after a small letter).
+  for (std::string_view s : {"Test", "Tests"}) {
+    if (stem.size() > s.size() && stem.ends_with(s)) {
+      char before = stem[stem.size() - s.size() - 1];
+      if (before >= 'a' && before <= 'z') return true;
+    }
+  }
+  return false;
+}
+
 kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions& opts) {
   auto root = core::normalize(root_in);
   auto schema = core::load_schema(root);
@@ -231,6 +267,18 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
     if (it->is_regular_file(ec) && core::is_code_file(p) && !claimed.contains(rel)) paths.push_back(p);
   }
   std::sort(paths.begin(), paths.end());
+  // Test programs next to the code stay in the project's own suite, like test folders (docs/adr/0048).
+  {
+    std::set<std::string> header_stems;
+    for (const auto& p : paths) {
+      if (is_header(p)) header_stems.insert(p.stem().string());
+    }
+    std::erase_if(paths, [&](const fs::path& p) {
+      if (!is_test_source(p) || header_stems.contains(p.stem().string())) return false;
+      plan.tests.push_back(core::rel_str(root, p));
+      return true;
+    });
+  }
   CppAnalyzer analyzer;
   for (const auto& p : paths) {
     auto text = core::read_file(p);
@@ -285,10 +333,12 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
   };
   for (std::size_t s = 0; s < mods.size(); ++s) {
     if (mods[s].merged || has(mods[s], true) || defines_main(mods[s])) continue;
+    // Names with their class or namespace: CacheTest::Insert is not SkipList::Insert.
+    auto key = [](const index::SymbolFact& sym) { return plain_scope(sym.scope) + "::" + sym.name; };
     std::set<std::string> defined;
     for (auto i : mods[s].files) {
       for (const auto& sym : files[i].facts.symbols) {
-        if (sym.kind == "function" || sym.kind == "method") defined.insert(sym.name);
+        if (sym.kind == "function" || sym.kind == "method") defined.insert(key(sym));
       }
     }
     std::vector<std::size_t> owners;
@@ -296,7 +346,7 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
       if (m == s || mods[m].merged || !has(mods[m], true)) continue;
       bool declares = std::any_of(mods[m].files.begin(), mods[m].files.end(), [&](std::size_t i) {
         return files[i].header && std::any_of(files[i].facts.symbols.begin(), files[i].facts.symbols.end(),
-                                               [&](const index::SymbolFact& sym) { return defined.contains(sym.name); });
+                                               [&](const index::SymbolFact& sym) { return defined.contains(key(sym)); });
       });
       if (declares) owners.push_back(m);
     }
@@ -660,6 +710,11 @@ std::string describe_plan(const ImportPlan& plan) {
                        core::join(b.file_list(), " "));
   }
   if (!plan.skipped.empty()) out += "\nskipped folders: " + core::join(plan.skipped, ", ") + "\n";
+  if (!plan.tests.empty()) {
+    std::vector<std::string> shown(plan.tests.begin(), plan.tests.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(plan.tests.size(), 4)));
+    out += fmt::format("\ntest programs left to the project's own suite: {} ({}{})\n", plan.tests.size(), core::join(shown, ", "),
+                       plan.tests.size() > shown.size() ? ", ..." : "");
+  }
   if (!plan.warnings.empty()) {
     out += "\nwarnings:\n";
     for (const auto& w : plan.warnings) out += "  " + w + "\n";

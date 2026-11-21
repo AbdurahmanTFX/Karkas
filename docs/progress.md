@@ -810,3 +810,8 @@
   `core::is_build_dir_name` / `is_build_dir` (build, build-*, build_*, build.*, build64, buildRelease; not builder;
   never a folder with a block.ksl), in the loader, import, the analyzer, init, notes, the watcher, bench and brief.
   leveldb: 101 blocks, 0 errors.
+- Import leaves test programs next to the code (foo_test.cc, foo_unittest.cc, test_foo.cpp, FooTest.cpp) to the
+  project's own suite like test folders, pairs a lone source with a header only when names match with their class
+  (CacheTest::Insert is not SkipList::Insert), and the D06 check of an imported project does not call skipped test
+  or vendored code orphans (docs/adr/0048). leveldb: 71 blocks (was 101), 31 test programs left out, 0 errors.
+- Tests 433.
