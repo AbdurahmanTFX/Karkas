@@ -18,6 +18,7 @@
 #include "kk/agents/notes_agent.hpp"
 #include "kk/code/notes.hpp"
 #include "kk/core/config.hpp"
+#include "kk/core/markdown.hpp"
 #include "kk/core/model.hpp"
 #include "kk/index/index.hpp"
 #include "kk/layout/layout.hpp"
@@ -64,9 +65,13 @@ struct RunInfo {
   std::vector<std::string> candidates;  // programs in the build folder, newest first
 };
 
-// A note of a notes project (ADR 0038): its file (from the project root) and text.
+// A note of a notes project (ADR 0038): its file (from the project root) and text; the first lines shown
+// on the schema, and a Markdown note's text parsed (ADR 0040), worked out off the UI thread.
 struct NoteText {
   std::string file, text;
+  bool markdown = false;
+  std::vector<std::string> preview;
+  std::shared_ptr<const std::vector<core::md::Block>> doc;
 };
 
 struct Request {
@@ -156,6 +161,9 @@ class Worker {
   // note's text saved, links added or removed in a note's text, a new title (links by it follow).
   void apply_now(MakeEdit make);
   void save_note(const std::string& rel_file, std::string text);
+  // A link of a note that leads out of the notes (ADR 0040): a web or mail address in the browser, a file
+  // (relative to the note `from_file`) in its program; xdg-open, without a shell.
+  void open_link(const std::string& from_file, const std::string& href);
   void link_notes(const std::string& src, const std::string& dst);
   void unlink_notes(const std::string& src, const std::string& dst);
   void retitle_note(const std::string& id, const std::string& title);

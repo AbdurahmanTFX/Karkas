@@ -69,6 +69,7 @@ GuiSettings load_settings() {
     s.show_inspector = j.value("show_inspector", true);
     s.show_bottom = j.value("show_bottom", true);
     s.chat_steps = j.value("chat_steps", true);
+    s.note_view = std::clamp(j.value("note_view", 0), 0, 2);
     s.show_activity = j.value("show_activity", true);
     s.show_status = j.value("show_status", true);
     // 0.08 was the floor of a size read while the layout was being rebuilt: not a user's size.
@@ -137,6 +138,7 @@ bool save_settings(const GuiSettings& s) {
             {"show_bottom", s.show_bottom},
             {"hidden_tabs", s.hidden_tabs},
             {"chat_steps", s.chat_steps},
+            {"note_view", s.note_view},
             {"show_activity", s.show_activity},
             {"show_status", s.show_status},
             {"side_frac", s.side_frac},

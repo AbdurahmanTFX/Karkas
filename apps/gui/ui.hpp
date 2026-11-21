@@ -21,6 +21,7 @@
 #include "kk/agents/prototype.hpp"
 #include "kk/core/config.hpp"
 #include "kk/llm/mcp_bridge.hpp"
+#include "markdown_view.hpp"
 #include "picker.hpp"
 #include "run.hpp"
 #include "selectable.hpp"
@@ -41,6 +42,11 @@ void reset_canvas_caches();
 }  // namespace kk::gui
 
 class TextEditor;
+namespace kk::gui {
+// The text of an editor as it is: TextEditor::GetText() puts a '\n' after the last line too, and a note
+// saved with it would grow a blank line at each save.
+std::string editor_text(const TextEditor& ed);
+}  // namespace kk::gui
 
 namespace kk::gui {
 // What the prototype check needs of the index snapshot (ui_prototype.cpp, ADR 0035).
@@ -207,6 +213,28 @@ class Ui {
   std::string note_title_buf_;
   bool note_dialog_focus_ = false;
   std::shared_ptr<const std::map<std::string, NoteText>> note_texts_;  // of the last model (saving at exit)
+  // Markdown notes (ADR 0040): a note's tab shows its text, the text rendered, or both side by side; its
+  // links lead to notes (a tab), web addresses and files (their programs).
+  enum class NoteView { Edit = 0, Split = 1, Preview = 2 };
+  std::map<std::string, NoteView> note_view_;  // note file → how its tab shows it
+  struct NotePreview {
+    std::vector<core::md::Block> doc;
+    bool stale = true;  // the editor's text changed since it was parsed
+  };
+  std::map<std::string, NotePreview> note_preview_;  // note file → its editor's text, parsed
+  std::string note_jump_file_;  // a double click on a rendered note: its editor goes to that line
+  int note_jump_line_ = 0;
+  NoteView note_view_of(const std::string& file);
+  void set_note_view(const std::string& file, NoteView v);
+  void note_view_buttons(const std::string& file);
+  void note_preview(const Model& m, const std::string& file, TextEditor& ed, ImVec2 size);
+  // The note a link of note file `from_file` names ("" for none): a [[name]], or a Markdown link's file.
+  [[nodiscard]] std::string note_link_target(const Model& m, const std::string& from_file, const std::string& href, bool wiki) const;
+  [[nodiscard]] MdLinkKind note_link_kind(const Model& m, const std::string& from_file) const;
+  // A link clicked: a note is selected (and opened in a tab when `in_tab`), the rest goes to its program.
+  void follow_note_link(const Model& m, const std::string& from_file, const MdClick& c, bool in_tab);
+  mutable std::map<std::string, std::string> link_cache_;  // "<from>\n<href>\n<wiki>" → the note it names
+  mutable const void* link_cache_key_[2] = {nullptr, nullptr};  // the snapshot and note texts it was made of
   std::unique_ptr<RunSession> run_;
   bool run_restart_ = false;      // stopped to start again
   bool run_restart_build_ = true;

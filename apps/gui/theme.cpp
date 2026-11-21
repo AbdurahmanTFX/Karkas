@@ -13,6 +13,8 @@ ImFont* g_heading = nullptr;
 ImFont* g_mono = nullptr;
 ImFont* g_icons_big = nullptr;
 ImFont* g_display = nullptr;
+ImFont* g_md[4] = {};  // Markdown: [bold + 2 * italic], [0] unused (the UI font)
+ImFont* g_md_h[3] = {};  // Markdown headings of levels 1..3
 
 std::string first_existing(const std::vector<std::string>& candidates) {
   for (const auto& c : candidates) {
@@ -163,6 +165,23 @@ void load_fonts(float scale, const std::string& configured_ui_font) {
   g_mono = add(mono, 14.0f * scale, cyr, false);
   if (g_mono == nullptr) g_mono = g_ui;
   add(symbols, 14.0f * scale, extra, true);
+  // Markdown of notes (ADR 0040): bold, italic and larger bold headings of the same family, with the
+  // punctuation, arrows and math signs notes use.
+  static const ImWchar md_ranges[] = {0x0020, 0x024F, 0x0370, 0x03FF, 0x0400, 0x052F, 0x2000, 0x206F, 0x20A0, 0x20CF,
+                                      0x2100, 0x214F, 0x2190, 0x21FF, 0x2200, 0x22FF, 0};
+  auto bold = first_existing({"/usr/share/fonts/noto/NotoSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+                              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/liberation/LiberationSans-Bold.ttf"});
+  auto italic = first_existing({"/usr/share/fonts/noto/NotoSans-Italic.ttf", "/usr/share/fonts/TTF/DejaVuSans-Oblique.ttf",
+                                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
+                                "/usr/share/fonts/liberation/LiberationSans-Italic.ttf"});
+  auto bold_italic = first_existing({"/usr/share/fonts/noto/NotoSans-BoldItalic.ttf", "/usr/share/fonts/TTF/DejaVuSans-BoldOblique.ttf",
+                                     "/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf",
+                                     "/usr/share/fonts/liberation/LiberationSans-BoldItalic.ttf"});
+  g_md[1] = add(bold, size, md_ranges, false);
+  g_md[2] = add(italic, size, md_ranges, false);
+  g_md[3] = add(bold_italic.empty() ? bold : bold_italic, size, md_ranges, false);
+  const float heading_scale[3] = {1.55f, 1.3f, 1.12f};
+  for (int i = 0; i < 3; ++i) g_md_h[i] = add(bold, size * heading_scale[i], md_ranges, false);
   io.FontDefault = g_ui;
   io.Fonts->Build();
   rasterize_icon_glyphs();
@@ -173,5 +192,16 @@ ImFont* heading_font() { return g_heading; }
 ImFont* display_font() { return g_display != nullptr ? g_display : g_heading; }
 ImFont* mono_font() { return g_mono; }
 ImFont* icon_font_big() { return g_icons_big != nullptr ? g_icons_big : g_ui; }
+
+ImFont* md_font(bool bold, bool italic) {
+  ImFont* f = g_md[(bold ? 1 : 0) + (italic ? 2 : 0)];
+  if (f == nullptr && bold && italic) f = g_md[1];
+  return f != nullptr ? f : g_ui;
+}
+
+ImFont* md_heading_font(int level) {
+  if (level >= 1 && level <= 3 && g_md_h[level - 1] != nullptr) return g_md_h[level - 1];
+  return md_font(true, false);
+}
 
 }  // namespace kk::gui::theme

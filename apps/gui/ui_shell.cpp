@@ -15,11 +15,13 @@
 #include <tuple>
 
 #include "i18n.hpp"
-#include "kk/agents/edit.hpp"
 #include "icons.hpp"
+#include "kk/agents/edit.hpp"
+#include "kk/core/markdown.hpp"
 #include "kk/core/notes.hpp"
 #include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
+#include "markdown_lang.hpp"
 #include "theme.hpp"
 #include "ui.hpp"
 #include "viewports.hpp"
@@ -1478,7 +1480,7 @@ void Ui::draw_editor(const Model& m) {
       }
       if (!open && note_dirty(f)) {  // a closed note keeps what was typed
         if (auto it = editors_.find(f); it != editors_.end() && it->second) {
-          auto text = it->second->GetText();
+          auto text = editor_text(*it->second);
           w_.save_note(f, text);
           note_saved_text_[f] = text;
         }
@@ -1570,6 +1572,7 @@ void Ui::draw_file_header(const Model& m, const std::string& file) {
     ImGui::BeginDisabled(!dirty);
     if (ui::icon_button("note_save", Icon::Check, tr("Save now (Ctrl+S); a note saves itself after a pause"), false, tr("Save"))) autosave_notes(true);
     ImGui::EndDisabled();
+    if (core::md::is_markdown_file(file)) note_view_buttons(file);
     ImGui::Dummy(ImVec2(1, 2));
     return;
   }
@@ -1588,9 +1591,14 @@ void Ui::draw_file_header(const Model& m, const std::string& file) {
 void Ui::draw_file_body(const Model& m, const std::string& file) {
   auto& ed = editors_[file];
   const bool note = notes_ && !note_id_of_file(m, file).empty();  // a note's text is written here (ADR 0038)
+  const bool md = note && core::md::is_markdown_file(file);      // and shown rendered (ADR 0040)
   if (!ed) {
     ed = std::make_unique<TextEditor>();
-    if (!file.ends_with(".ksl") && !note) ed->SetLanguageDefinition(TextEditor::LanguageDefinition::CPlusPlus());
+    if (md) {
+      ed->SetLanguageDefinition(markdown_language());
+    } else if (!file.ends_with(".ksl") && !note) {
+      ed->SetLanguageDefinition(TextEditor::LanguageDefinition::CPlusPlus());
+    }
     ed->SetReadOnly(!note);
     ed->SetShowWhitespaces(false);
     auto pal = TextEditor::GetDarkPalette();
@@ -1599,6 +1607,7 @@ void Ui::draw_file_body(const Model& m, const std::string& file) {
     pal[static_cast<int>(TextEditor::PaletteIndex::CurrentLineFill)] = IM_COL32(255, 255, 255, 10);
     pal[static_cast<int>(TextEditor::PaletteIndex::CurrentLineEdge)] = IM_COL32(255, 255, 255, 20);
     if (note) pal[static_cast<int>(TextEditor::PaletteIndex::Default)] = IM_COL32(215, 215, 215, 255);  // prose, not code
+    if (md) pal = markdown_palette(pal);
     ed->SetPalette(pal);
   }
   // The file as it is on disk, unless the text is being edited or a save has not reached the model yet.
@@ -1613,9 +1622,24 @@ void Ui::draw_file_body(const Model& m, const std::string& file) {
   if (m.req.open_file == file && editor_loaded_[file] != m.code_text && !note_dirty(file) && !waiting) {
     ed->SetText(m.code_text);
     editor_loaded_[file] = m.code_text;
+    note_preview_[file].stale = true;
   }
+  // A double click on the rendered text (or in the inspector) asked to edit at a line.
+  if (md && note_jump_file_ == file && m.req.open_file == file && editor_loaded_[file] == m.code_text) {
+    if (note_view_of(file) == NoteView::Preview) set_note_view(file, NoteView::Split);
+    ed->SetCursorPosition(TextEditor::Coordinates(std::max(0, note_jump_line_ - 1), 0));
+    note_focus_file_ = file;
+    note_jump_file_.clear();
+  }
+  NoteView view = md ? note_view_of(file) : NoteView::Edit;
+  if (view == NoteView::Preview && note_focus_file_ == file) view = NoteView::Split;  // a new note: type at once
+  if (view == NoteView::Preview) {
+    note_preview(m, file, *ed, ImVec2(0, 0));
+    return;
+  }
+  const float split_w = view == NoteView::Split ? std::floor(ImGui::GetContentRegionAvail().x * 0.5f) : 0.0f;
   ImGui::PushFont(theme::mono_font());
-  ed->Render("##code");
+  ed->Render("##code", ImVec2(split_w, 0));
   ImGui::PopFont();
   if (note && note_focus_file_ == file) {
     // A note just opened: type at once. The editor's own child window (the last one made in this
@@ -1628,7 +1652,14 @@ void Ui::draw_file_body(const Model& m, const std::string& file) {
       note_focus_until_ = 0;
     }
   }
-  if (note && ed->IsTextChanged()) note_edited_at_[file] = ImGui::GetTime();
+  if (note && ed->IsTextChanged()) {
+    note_edited_at_[file] = ImGui::GetTime();
+    if (md) note_preview_[file].stale = true;
+  }
+  if (view == NoteView::Split) {
+    ImGui::SameLine(0, 4);
+    note_preview(m, file, *ed, ImVec2(0, 0));
+  }
 }
 
 // --- inspector ------------------------------------------------------------------------------------

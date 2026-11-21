@@ -27,5 +27,9 @@ ImFont* heading_font();  // small medium-weight font for section titles
 ImFont* display_font();  // the same, rasterized large (names of blocks drawn as cards)
 ImFont* mono_font();     // code
 ImFont* icon_font_big(); // icons only, large (activity bar)
+// Markdown of notes (ADR 0040): the text font bold, italic or both (the UI font when none is found), and
+// headings — levels 1..3 bold and larger, 4..6 bold.
+ImFont* md_font(bool bold, bool italic);
+ImFont* md_heading_font(int level);
 
 }  // namespace kk::gui::theme

@@ -1,8 +1,9 @@
 // Notes projects in karkas-gui (docs/adr/0038): "Programming | Notes" in the Karkas menu (two workspaces,
 // each with its last project and its recent ones); in a notes project the schema holds topics and
-// notes, a note's text is edited in an editor tab (saved by itself after a pause, Ctrl+S, on closing),
-// [[links]] are the lines between notes (drawn on the schema they are written into the text), and the
-// inspector shows a note's text, its links and the notes that link to it.
+// notes, a note's text is edited in an editor tab (saved by itself after a pause, Ctrl+S, on closing;
+// a Markdown note is also shown rendered, docs/adr/0040), [[links]] are the lines between notes (drawn
+// on the schema they are written into the text), and the inspector shows a note's text, its links and
+// the notes that link to it.
 #include <cstdint>
 #include <TextEditor.h>
 #include <fmt/format.h>
@@ -12,10 +13,12 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <limits>
 
 #include "i18n.hpp"
 #include "icons.hpp"
 #include "kk/agents/edit.hpp"
+#include "kk/core/markdown.hpp"
 #include "kk/core/notes.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/schema.hpp"
@@ -36,6 +39,12 @@ const ImVec4 kNoteColor = rgb(120, 170, 240);
 const ImVec4 kTopicColor = rgb(220, 182, 122);
 
 }  // namespace
+
+std::string editor_text(const TextEditor& ed) {
+  auto text = ed.GetText();
+  if (text.ends_with('\n')) text.pop_back();
+  return text;
+}
 
 // --- the two workspaces --------------------------------------------------------------------------
 
@@ -117,12 +126,129 @@ void Ui::autosave_notes(bool all) {
       ++it;
       continue;
     }
-    auto text = ed->second->GetText();
+    auto text = editor_text(*ed->second);
     w_.save_note(it->first, text);
     editor_loaded_[it->first] = text;
     note_saved_text_[it->first] = text;
     it = note_edited_at_.erase(it);
   }
+}
+
+// --- Markdown notes (ADR 0040) ------------------------------------------------------------------------
+
+Ui::NoteView Ui::note_view_of(const std::string& file) {
+  auto [it, made] = note_view_.try_emplace(file, static_cast<NoteView>(std::clamp(settings_.note_view, 0, 2)));
+  return it->second;
+}
+
+void Ui::set_note_view(const std::string& file, NoteView v) {
+  note_view_[file] = v;
+  if (settings_.note_view != static_cast<int>(v)) {
+    settings_.note_view = static_cast<int>(v);  // the next note opens the same way
+    settings_changed();
+  }
+}
+
+void Ui::note_view_buttons(const std::string& file) {
+  NoteView v = note_view_of(file);
+  ImGui::SameLine(0, 14);
+  if (ui::icon_button("nv_edit", Icon::Pencil, tr("The text as written (Markdown)"), v == NoteView::Edit, tr("Text"))) {
+    set_note_view(file, NoteView::Edit);
+  }
+  ImGui::SameLine(0, 2);
+  if (ui::icon_button("nv_split", Icon::Windows, tr("The text and the view side by side: the view follows the typing"), v == NoteView::Split,
+                      tr("Both"))) {
+    set_note_view(file, NoteView::Split);
+  }
+  ImGui::SameLine(0, 2);
+  if (ui::icon_button("nv_view", Icon::Eye, tr("The note rendered: links open, a double click edits that place"), v == NoteView::Preview,
+                      tr("Rendered"))) {
+    set_note_view(file, NoteView::Preview);
+  }
+}
+
+void Ui::note_preview(const Model& m, const std::string& file, TextEditor& ed, ImVec2 size) {
+  auto& pv = note_preview_[file];
+  if (pv.stale) {
+    pv.doc = core::md::parse(editor_text(ed));
+    pv.stale = false;
+  }
+  const float em = ImGui::GetFontSize();
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::col(theme::kEditorBg));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 1.4f, em * 0.9f));
+  if (ImGui::BeginChild("##note_view", size, ImGuiChildFlags_AlwaysUseWindowPadding)) {
+    // A column one can read: centered when the tab is wide.
+    const float column = em * 46;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    if (avail > column) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - column) * 0.5f);
+    if (pv.doc.empty()) {
+      ui::muted("%s", tr("(empty: Text writes it)"));
+    } else if (auto click = markdown_view("note_md", pv.doc, note_link_kind(m, file), std::numeric_limits<std::size_t>::max(), column)) {
+      if (click->dbl) {
+        note_jump_file_ = file;
+        note_jump_line_ = click->line;
+      } else {
+        follow_note_link(m, file, *click, true);
+      }
+    }
+    ImGui::Dummy(ImVec2(1, em * 2));
+  }
+  ImGui::EndChild();
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor();
+}
+
+std::string Ui::note_link_target(const Model& m, const std::string& from_file, const std::string& href, bool wiki) const {
+  if (link_cache_key_[0] != m.snap.get() || link_cache_key_[1] != m.note_texts.get()) {
+    link_cache_.clear();
+    link_cache_key_[0] = m.snap.get();
+    link_cache_key_[1] = m.note_texts.get();
+  }
+  auto key = from_file + "\n" + href + (wiki ? "\nw" : "\nm");
+  if (auto it = link_cache_.find(key); it != link_cache_.end()) return it->second;
+  std::string found;
+  if (!wiki) {
+    if (auto f = core::note_link_file(from_file, href)) found = note_id_of_file(m, *f);
+  } else if (auto id = core::replace_all(std::string(core::trim(href)), "/", "."); m.snap->block(id) != nullptr) {
+    found = id;  // as resolve_note: an id, else the one note or topic of that title or last id part
+  } else {
+    auto folded = core::fold_title(href);
+    int n = 0;
+    for (const auto& b : m.snap->blocks) {
+      if (core::fold_title(b.purpose) == folded || core::fold_title(core::last_segment(b.id)) == folded) {
+        found = b.id;
+        ++n;
+      }
+    }
+    if (n != 1) found.clear();
+  }
+  link_cache_[key] = found;
+  return found;
+}
+
+MdLinkKind Ui::note_link_kind(const Model& m, const std::string& from_file) const {
+  return [this, &m, from_file](const std::string& href, bool wiki) {
+    if (!note_link_target(m, from_file, href, wiki).empty()) return kMdNote;
+    if (wiki || core::note_link_file(from_file, href)) return kMdNowhere;  // names a note that is not there
+    return kMdOut;
+  };
+}
+
+void Ui::follow_note_link(const Model& m, const std::string& from_file, const MdClick& c, bool in_tab) {
+  if (c.href.empty()) return;
+  if (auto id = c.image ? std::string() : note_link_target(m, from_file, c.href, c.wiki); !id.empty()) {
+    const auto* b = m.snap->block(id);
+    if (!in_tab || b == nullptr || b->kind == "group") {
+      go_to(m, id);
+    } else {
+      enter(core::parent_id(id));
+      select(id);
+      open_note(m, id);
+    }
+    return;
+  }
+  if (c.wiki || c.href.starts_with('#') || core::note_link_file(from_file, c.href)) return;  // no such note
+  w_.open_link(from_file, c.href);
 }
 
 // --- toolbar and dialogs ------------------------------------------------------------------------------
@@ -408,6 +534,18 @@ void Ui::inspector_note(const Model& m, const index::BlockRow& b) {
     std::string text = n != nullptr ? n->text : "";
     if (core::trim(text).empty()) {
       ui::muted("%s", tr("(empty: Open writes it)"));
+    } else if (n->markdown && n->doc) {
+      // Markdown rendered (ADR 0040): links go to their notes, a double click edits that place.
+      constexpr std::size_t kShownBlocks = 80;
+      if (auto click = markdown_view("nt_md", *n->doc, note_link_kind(m, n->file), kShownBlocks)) {
+        if (click->dbl) {
+          open_note(m, b.id);
+          note_jump_file_ = n->file;
+          note_jump_line_ = click->line;
+        } else {
+          follow_note_link(m, n->file, *click, false);
+        }
+      }
     } else {
       constexpr std::size_t kShown = 4000;
       ImGui::PushTextWrapPos(0);
@@ -416,7 +554,7 @@ void Ui::inspector_note(const Model& m, const index::BlockRow& b) {
     }
     ImGui::EndChild();
     ImGui::PopStyleColor();
-    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) open_note(m, b.id);
+    if (!(n != nullptr && n->markdown) && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) open_note(m, b.id);
   }
   // Its [[links]], the ones that name nothing, and the notes that link to it.
   std::vector<std::string> out, in;
@@ -431,7 +569,11 @@ void Ui::inspector_note(const Model& m, const index::BlockRow& b) {
   }
   if (!topic && ui::section(fmt::format("{} ({})###nt_out", tr("LINKS"), out.size() + broken.size()).c_str())) {
     for (const auto& id : out) link_row(id, "out");
-    for (const auto& msg : broken) ImGui::TextColored(rgb(230, 160, 60), "%s %s", icon(Icon::Warning), msg.c_str());
+    for (const auto& msg : broken) {
+      ImGui::PushTextWrapPos(0);
+      ImGui::TextColored(rgb(230, 160, 60), "%s %s", icon(Icon::Warning), msg.c_str());
+      ImGui::PopTextWrapPos();
+    }
     if (out.empty() && broken.empty()) ui::muted("%s", tr("none: write [[title of a note]] in the text, or draw a line on the schema"));
   }
   if (ui::section(fmt::format("{} ({})###nt_in", tr("LINKED FROM"), in.size()).c_str())) {

@@ -16,9 +16,10 @@ struct GuiSettings {
   bool links_by_block = true;   // link color: of the block it starts at (else: by link kind, 14.5)
   bool blocks_by_block = true;  // block background: its own color (else: by status, 14.5)
   std::vector<std::string> recent;  // recently opened project roots, newest first (both kinds)
-  // The two workspaces (ADR 0038): the last project opened of each kind; the mode switch of the menu
-  // bar opens it.
+  // The two workspaces (ADR 0038): the last project opened of each kind; the mode switch of the Karkas
+  // menu opens it.
   std::string last_code, last_notes;
+  int note_view = 0;  // how a Markdown note's tab opens (ADR 0040): 0 its text, 1 text and view side by side, 2 the view
   // Layout of the panels (ADR 0021): sizes of the split areas, windows and tabs shown.
   float tickets_list_w = 0.0f;  // width of the ticket list in the bottom panel (0 = half)
   float changes_list_h = 0.0f;  // height of the change list in the side bar (0 = a third)

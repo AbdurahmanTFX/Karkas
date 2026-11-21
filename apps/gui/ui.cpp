@@ -137,7 +137,7 @@ Ui::~Ui() {
   for (const auto& [file, at] : note_edited_at_) {
     (void)at;
     if (auto it = editors_.find(file); it != editors_.end() && it->second && !root_.empty()) {
-      (void)core::write_file(root_ / file, it->second->GetText());
+      (void)core::write_file(root_ / file, editor_text(*it->second));
     }
   }
   ed::DestroyEditor(ed_);
@@ -1180,13 +1180,8 @@ void Ui::draw_graph(const Model& m) {
         }
       } else {
         const auto* n = note_of(m, unit);
-        std::vector<std::string> lines;
-        if (n != nullptr) {
-          for (const auto& l : core::split(n->text, '\n')) {
-            if (!core::trim(l).empty()) lines.emplace_back(core::trim(l));
-            if (lines.size() >= 12) break;
-          }
-        }
+        // Its first lines, a Markdown note's without their marks (worked out by the worker, ADR 0040).
+        std::vector<std::string> lines = n != nullptr ? n->preview : std::vector<std::string>{};
         if (lines.empty()) lines.emplace_back(tr("(empty)"));
         for (const auto& l : lines) {
           if (y + lh > o.y + inner_h) break;

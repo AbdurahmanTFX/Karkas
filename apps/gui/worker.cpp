@@ -15,6 +15,7 @@
 #include "kk/agents/engine.hpp"
 #include "kk/agents/run.hpp"
 #include "kk/code/notes.hpp"
+#include "kk/core/markdown.hpp"
 #include "kk/core/notes.hpp"
 #include "kk/code/analyzer.hpp"
 #include "kk/core/paths.hpp"
@@ -159,7 +160,21 @@ void Worker::load_notes() {
   for (const auto& b : s->blocks) {
     auto file = core::note_file(b);
     if (file.empty()) continue;
-    (*texts)[b.id] = NoteText{file, core::read_file(root_ / file).value_or("")};
+    NoteText n;
+    n.file = file;
+    n.text = core::read_file(root_ / file).value_or("");
+    n.markdown = core::md::is_markdown_file(file);
+    constexpr std::size_t kPreviewLines = 12;
+    if (n.markdown) {
+      n.preview = core::md::plain_lines(n.text, kPreviewLines);
+      n.doc = std::make_shared<const std::vector<core::md::Block>>(core::md::parse(n.text));
+    } else {
+      for (const auto& l : core::split(n.text, '\n')) {
+        if (n.preview.size() >= kPreviewLines) break;
+        if (!core::trim(l).empty()) n.preview.emplace_back(core::trim(l));
+      }
+    }
+    (*texts)[b.id] = std::move(n);
   }
   note_texts_ = std::move(texts);
 }
@@ -522,6 +537,31 @@ void Worker::open_block_folder(const std::string& block) {
     }
     auto dir = root_ / rel;
     message_ = spawn_detached({"xdg-open", dir.string()}) ? tr("folder: ") + dir.string() : tr("cannot open the folder: ") + dir.string();
+  });
+}
+
+void Worker::open_link(const std::string& from_file, const std::string& href) {
+  post([this, from_file, href] {
+    std::string target;
+    if (core::md::is_url(href)) {
+      auto l = core::to_lower(href);
+      if (!l.starts_with("http://") && !l.starts_with("https://") && !l.starts_with("mailto:") && !l.starts_with("www.")) {
+        message_ = tr("not opened (only web and mail addresses): ") + href;
+        return;
+      }
+      target = l.starts_with("www.") ? "https://" + href : href;
+    } else {
+      auto dest = core::md::percent_decode(href.substr(0, href.find_first_of("#?")));
+      if (dest.empty()) return;
+      fs::path p = dest.starts_with('/') ? root_ / dest.substr(1) : root_ / fs::path(from_file).parent_path() / dest;
+      target = p.lexically_normal().string();
+      std::error_code ec;
+      if (!fs::exists(target, ec)) {
+        message_ = tr("no such file: ") + target;
+        return;
+      }
+    }
+    message_ = spawn_detached({"xdg-open", target}) ? tr("opened: ") + target : tr("cannot open: ") + target;
   });
 }
 
