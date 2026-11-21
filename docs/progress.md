@@ -762,3 +762,11 @@
 - "Schema only" (F11): side bar, inspector, bottom panel and bars hidden, brought back as they were.
 - "Arrange" leaves wider gaps: parallel lines 30 px, tracks 20 px.
 - karkas-gui `--size WxH`, script `key f11`. Tests 422; checked under Xvfb.
+
+## GUI addition — the "all levels" view routes its lines, wraps long chains (docs/adr/0044)
+
+- kk_layout `route_around`: orthogonal lines around the blocks of a fixed picture (Hanan grid, shortest paths
+  with costs for turns, frame borders and shared pieces, then pieces on one line spread apart).
+- karkas-gui: in "All levels" and groups opened in place the bends of levels are not applied, lines are routed
+  around the blocks between side sockets; a group's layout much wider than high is wrapped into rows.
+- Tests 426; checked under Xvfb (wavkit, a dense notes project).
