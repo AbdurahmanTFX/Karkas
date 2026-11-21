@@ -739,3 +739,16 @@
   images/paste-<time>.png (wl-paste or xclip) and links it.
 - Not done: undo of an inserted link, drops on desktop-window tiles, animated GIF, WebP/SVG.
 - Tests 417; checked under Xvfb (PNG/JPEG/embed, warnings, a file dropped, an image pasted from the clipboard).
+
+## Addition — "Arrange": a better layered layout, lines routed orthogonally on tracks (docs/adr/0042)
+
+- kk_layout: the built-in engine improved — pairs linked both ways as one edge, the greedy cycle order of Eades,
+  Lin and Smyth, ranks pulled to shorten lines, long lines concentrated into trunks, median sweeps with
+  transposition (crossings by a Fenwick tree), heights by weighted isotonic regression with attach points, long
+  lines straight, connected parts on shelves and single blocks in rows; every edge gets an orthogonal route on
+  tracks of its own in the gaps between ranks. Cached layouts carry the engine's version.
+- karkas-gui: "Arrange" on the schema's toolbar (both modes) and its menu lays the level out, saves the positions
+  and draws every line on its route with right angles and rounded corners; one step back; a line whose corners
+  lose their right angles (a block moved alone) becomes a smooth curve.
+- Not done: sockets spread along a block side; routes kept up to date when blocks move (Arrange again).
+- Tests 422; checked under Xvfb (wavkit top level and dsp, a dense notes project, undo, a block moved after).
