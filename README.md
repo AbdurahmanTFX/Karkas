@@ -26,6 +26,8 @@
 
 <p align="center"><i>Full video (1080p, 80 s): <a href="https://github.com/AbdurahmanTFX/Karkas/releases/download/v0.1.1/karkas-demo.mp4">karkas-demo.mp4</a></i></p>
 
+**Security and trust:**[![M8ven Score](https://m8ven.ai/badge/mcp/abdurahmantfx-karkas-wvxva9?v=b5c516e707dda52992478b88c06f6bca)](https://m8ven.ai/mcp/abdurahmantfx-karkas-wvxva9?s=readme)
+
 ## Why
 
 AI coding agents re-learn a project on every task: they search files, read code and rebuild its structure
