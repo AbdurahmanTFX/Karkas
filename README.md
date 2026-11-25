@@ -9,7 +9,7 @@
   Deterministic index, drift control, tickets, an MCP server for Claude Code, a node-graph GUI.
 </p>
 
-vp align="center">
+<p align="center">
   <a href="https://github.com/AbdurahmanTFX/Karkas/releases/latest"><img src="https://img.shields.io/github/v/release/AbdurahmanTFX/Karkas?label=release" alt="Release"></a>
   <img src="https://img.shields.io/badge/C%2B%2B-23-blue" alt="C++23">
   <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-lightgrey" alt="Linux | Windows">
