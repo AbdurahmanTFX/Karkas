@@ -9,11 +9,12 @@
   Deterministic index, drift control, tickets, an MCP server for Claude Code, a node-graph GUI.
 </p>
 
-<p align="center">
+vp align="center">
   <a href="https://github.com/AbdurahmanTFX/Karkas/releases/latest"><img src="https://img.shields.io/github/v/release/AbdurahmanTFX/Karkas?label=release" alt="Release"></a>
   <img src="https://img.shields.io/badge/C%2B%2B-23-blue" alt="C++23">
   <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-lightgrey" alt="Linux | Windows">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="AGPL-3.0"></a>
+  <a href="https://m8ven.ai/mcp/abdurahmantfx-karkas-wvxva9?s=readme"><img src="https://m8ven.ai/badge/mcp/abdurahmantfx-karkas-wvxva9?v=b5c516e707dda52992478b88c06f6bca" alt="M8ven Score"></a>
 </p>
 
 <p align="center">
@@ -26,7 +27,7 @@
 
 <p align="center"><i>Full video (1080p, 80 s): <a href="https://github.com/AbdurahmanTFX/Karkas/releases/download/v0.1.1/karkas-demo.mp4">karkas-demo.mp4</a></i></p>
 
-**Security and trust:**[![M8ven Score](https://m8ven.ai/badge/mcp/abdurahmantfx-karkas-wvxva9?v=b5c516e707dda52992478b88c06f6bca)](https://m8ven.ai/mcp/abdurahmantfx-karkas-wvxva9?s=readme)
+<!-- **Security and trust:**[![M8ven Score](https://m8ven.ai/badge/mcp/abdurahmantfx-karkas-wvxva9?v=b5c516e707dda52992478b88c06f6bca)](https://m8ven.ai/mcp/abdurahmantfx-karkas-wvxva9?s=readme) -->
 
 ## Why
 
