@@ -72,7 +72,7 @@ if(KARKAS_TESTS)
 endif()
 
 # Libraries bottom-up (6.1): core → index → code/runner/llm/metrics → agents/mcp/layout.
-foreach(lib core index code runner llm metrics agents mcp layout)
+foreach(lib core index code runner llm metrics hsgm agents mcp layout)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libs/${lib}/CMakeLists.txt")
     add_subdirectory(libs/${lib})
   endif()

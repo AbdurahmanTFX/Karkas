@@ -1,6 +1,6 @@
 # 0049 — HSGM measurements: what the checks can find, how true the views are, how far a change spreads
 
-Status: proposed (branch nightly; experimental, outside the SPEC)
+Status: accepted (branch nightly; experimental, outside the SPEC)
 
 ## Context
 
@@ -115,8 +115,8 @@ covers is broken.
 
 ### `views` — how true the lifted views are
 
-- For each depth `i` from 0 to the deepest code block's depth minus one: `a_i(v)` = the ancestor of `v`
-  at depth `i`, or `v` itself when it is not deeper.
+- For each level `i` from 0 (the top level, `BlockRow.depth − 1`) to the deepest code block's level minus
+  one: `a_i(v)` = the ancestor of `v` on level `i`, or `v` itself when it is not deeper.
 - Leaf graph: code blocks, links of kinds data, event, call, state in drawn direction (`use` stays out,
   as the views hide it, 3.7). Lifted graph `G_i`: an edge `a_i(u) → a_i(v)` for each such link with
   `a_i(u) ≠ a_i(v)`.
@@ -206,9 +206,10 @@ Each step builds, its tests pass, and it is committed on `nightly`.
   - `diag`: blocks 11 of 13 identifiable alone (the 9 tested leaves, `shared.probe`, and
     `shared.types`, which is also in every suite); `app` and `shared.log` undetectable; links: 0 of 8
     identifiable — the 3 calls of `dsp.chain` in one class, the 5 data links undetectable; `k = 0`,
-    witness: a call of `dsp.chain` is covered only by a suite that also covers `dsp.chain`; now: surely
-    broken `stream.ring`;
-  - `views`: depth 0 precision 9/12, false cycle `io → stream → dsp → mix → io`;
+    5 items dominated (`stream.pump` and `stream.ring` inside `shared.probe`, the 3 calls of `dsp.chain`
+    inside the dsp leaves), first witness `stream.pump inside shared.probe`; now: surely broken
+    `stream.ring`;
+  - `views`: level 0 precision 9/12, false cycle `io → stream → dsp → mix → io`;
   - `propagation`: transitive 54/169, direct 35/169, self 13/169.
 
 ### Self-description
