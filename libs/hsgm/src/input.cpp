@@ -23,6 +23,9 @@ kk::Result<Input> gather(index::Index& idx) {
   in.snap = idx.snapshot();
   in.files = index::collect_code_files(*schema);
   in.runs = idx.runs();
+  for (const auto& b : schema->blocks) {
+    if (b.external()) in.external.insert(b.id);
+  }
   for (const auto& f : in.files) {
     if (f.role != "test" || f.path.starts_with("tests/integration/") || f.path.find("/contract/") == std::string::npos) {
       continue;

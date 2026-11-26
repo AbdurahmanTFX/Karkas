@@ -1,6 +1,7 @@
 #pragma once
 // diag (ADR 0049): what the tests of a project can detect and tell apart, by group testing — a suite
 // fails when at least one item it covers is broken (Aldridge, Johnson, Scarlett 2019, ch. 1–2).
+#include <cstdint>
 #include <map>
 #include <string>
 #include <utility>
@@ -25,14 +26,19 @@ struct Diag {
   std::map<std::string, std::vector<std::string>> support;  // suite → the items it covers, in item order
   std::vector<DiagItem> items;                              // blocks by id, then links by id
   int k = 0;                  // largest k ≤ 2: up to k broken items among the detectable ones not in every suite are found exactly
+  int k_items = 0;            // how many items k is about; fewer than two: k = 2 holds vacuously
   bool k_computed = true;     // false: too many items, the k = 2 pass was skipped
   int dominated = 0;          // items whose column is inside the column of one other item
   std::string witness;        // first item that breaks k + 1: "<i> inside <j>" or "<i> inside <j> + <l>"
   std::vector<std::string> passed, failed, unknown;           // suites by their fresh outcome
   std::vector<std::string> surely, possibly, cannot_rule_out;  // items (DD, COMP, undetectable)
+  std::vector<std::string> unexplained;  // failed suites whose every item passed another suite: a passing suite missed a fault
 };
 
 inline constexpr int kMaxItemsForK = 400;
+
+// Rows of one test run are written within a second of each other.
+inline constexpr std::int64_t kSameRunSeconds = 1;
 
 Diag diag(const Input& in);
 std::string to_text(const Diag& d);

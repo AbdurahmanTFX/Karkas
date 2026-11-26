@@ -62,3 +62,14 @@ TEST_CASE("views: wavkit level 0 is 9 of 12 with one false cycle and matches gol
   CHECK(v.levels[0].false_cycles == Cycles{{"dsp", "io", "mix", "stream"}});
   CHECK(kk::test::matches_golden("hsgm/wavkit_views.txt", to_text(v)));
 }
+
+TEST_CASE("views: a real cycle away from the first node of the lifted cycle stays real") {
+  Make m;
+  m.block("p", "group").block("p.a", "leaf").block("p.b", "leaf");
+  m.block("q", "group").block("q.b", "leaf").block("r", "group").block("r.d", "leaf");
+  m.link("data", "p.a", "q.b").link("call", "q.b", "r.d", "", "f").link("call", "r.d", "q.b", "", "g").link("data", "r.d", "p.b");
+  auto v = views(m.in);
+  REQUIRE(v.levels.size() == 1);
+  CHECK(v.levels[0].real_cycles == Cycles{{"p", "q", "r"}});
+  CHECK(v.levels[0].false_cycles.empty());
+}

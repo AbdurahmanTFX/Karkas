@@ -843,4 +843,9 @@
 - Found in wavkit while checking the model: `mix` adds tracks frame by frame and the composition root opens
   the writer at the sample rate of the last track read; no card states that all tracks share one rate, and
   no test covers it (left as it is: a reference project).
-- Tests: 29 in kk_hsgm_tests; golden files in tests/golden/hsgm. `ctest --preset dev-fast`: 458 passed.
+- Fixes from the final review of the branch: a lifted cycle is real when any of its nodes holds a real cycle
+  between blocks (it looked only at the first node); an integration outcome counts only when no block under
+  its group changed since (a group's freshness hash does not see its blocks); a failed suite that no item
+  explains is listed as unexplained; a vacuous k is printed as vacuous; imported leaves and entries are not
+  asked for contract tests; the summary points to the assumptions.
+- Tests: 36 in kk_hsgm_tests; golden files in tests/golden/hsgm.

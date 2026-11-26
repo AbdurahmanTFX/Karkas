@@ -19,8 +19,9 @@ struct Make {
   // A test file of `block`: kind "contract" | "unit" | "integration" (then `block` is a group).
   Make& suite(const std::string& block, const std::string& kind);
   Make& result(const std::string& block, index::TestCounts contract, index::TestCounts unit = {},
-               index::TestCounts integration = {}, bool fresh = true, bool build_failed = false);
+               index::TestCounts integration = {}, bool fresh = true, bool build_failed = false, std::int64_t ts = 0);
   Make& drift(const std::string& block, const std::string& code);
+  Make& external(const std::string& block);  // an imported block
   Make& inv(const std::string& block, const std::string& text);
   Make& test_case(const std::string& block, const std::string& name);
   Make& run(const std::string& role, const std::string& block, double cost_usd, std::int64_t input_tokens = 0,

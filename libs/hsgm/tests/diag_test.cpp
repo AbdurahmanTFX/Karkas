@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -115,4 +117,36 @@ TEST_CASE("diag: wavkit counts follow the research and match golden") {
   CHECK(d.witness == "stream.pump inside shared.probe");
   CHECK(d.surely == std::vector<std::string>{"stream.ring"});
   CHECK(kk::test::matches_golden("hsgm/wavkit_diag.txt", to_text(d)));
+}
+
+TEST_CASE("diag: an integration result older than a change under its group is unknown") {
+  auto make = [](bool a_fresh, std::int64_t a_ts) {
+    Make m;
+    m.block("g", "group").block("g.a", "leaf").block("g.b", "leaf");
+    m.suite("g.a", "contract").suite("g.b", "contract").suite("g", "integration");
+    m.result("g.a", {1, 1}, {}, {}, a_fresh, false, a_ts).result("g.b", {1, 1}, {}, {}, true, false, 50);
+    m.result("g", {}, {}, {1, 1}, true, false, 100);
+    return diag(m.in);
+  };
+  auto has = [](const std::vector<std::string>& v, const std::string& s) { return std::find(v.begin(), v.end(), s) != v.end(); };
+  CHECK(has(make(false, 50).unknown, "integration:g"));  // g.a changed since its own run
+  CHECK(has(make(true, 200).unknown, "integration:g"));  // g.a tested again after the integration run
+  CHECK(has(make(true, 50).passed, "integration:g"));    // nothing under g changed since
+}
+
+TEST_CASE("diag: a vacuous k says so") {
+  Make m;
+  m.block("a", "leaf").block("b", "leaf").link("call", "a", "b", "", "f");
+  auto d = diag(m.in);
+  CHECK(d.k == 2);
+  CHECK(to_text(d).find("k 2 (vacuous: fewer than two items to tell apart)") != std::string::npos);
+}
+
+TEST_CASE("diag: a failed suite whose items all passed another suite is reported as unexplained") {
+  Make m;
+  m.block("a", "leaf").suite("a", "contract").suite("a", "unit").result("a", {0, 1}, {1, 1});
+  auto d = diag(m.in);
+  CHECK(d.possibly.empty());
+  CHECK(d.unexplained == std::vector<std::string>{"contract:a"});
+  CHECK(to_text(d).find("unexplained contract:a") != std::string::npos);
 }

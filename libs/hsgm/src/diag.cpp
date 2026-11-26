@@ -205,6 +205,7 @@ Diag diag(const Input& in) {
     for (const auto& s : items[k].suites) c.push_back(suite_at.at(s));
     cols.push_back(std::move(c));
   }
+  d.k_items = static_cast<int>(det.size());
   if (det.size() <= 1) {
     d.k = 2;
   } else {
@@ -233,10 +234,24 @@ Diag diag(const Input& in) {
   for (const auto& s : d.suites) {
     auto colon = s.find(':');
     std::string kind = s.substr(0, colon);
-    const auto* row = snap.test(s.substr(colon + 1));
+    const std::string block = s.substr(colon + 1);
+    const auto* row = snap.test(block);
     if (row == nullptr || !row->fresh || row->build_failed) {
       d.unknown.push_back(s);
       continue;
+    }
+    // A group's own freshness does not see changes in its blocks: its integration outcome counts only
+    // when every code block under it has a fresh row no newer than the group's row.
+    if (kind == "integration") {
+      bool current = std::all_of(code.begin(), code.end(), [&](const std::string& c) {
+        if (!index::Snapshot::under(block, c)) return true;
+        const auto* r = snap.test(c);
+        return r != nullptr && r->fresh && r->ts <= row->ts + kSameRunSeconds;
+      });
+      if (!current) {
+        d.unknown.push_back(s);
+        continue;
+      }
     }
     const auto& c = kind == "contract" ? row->contract : kind == "unit" ? row->unit : row->integration;
     if (c.total == 0) {
@@ -269,6 +284,11 @@ Diag diag(const Input& in) {
         break;
       }
     }
+  }
+
+  for (const auto& s : d.failed) {
+    const auto& sup = d.support.at(s);
+    if (std::none_of(sup.begin(), sup.end(), [&](const auto& id) { return possible.contains(id); })) d.unexplained.push_back(s);
   }
 
   d.items = std::move(items);
@@ -324,6 +344,7 @@ std::string to_text(const Diag& d) {
   }
 
   std::string k = fmt::format("k {}", d.k);
+  if (d.k_items <= 1) k += " (vacuous: fewer than two items to tell apart)";
   if (!d.k_computed) k += fmt::format(" (k 2 not checked: more than {} items)", kMaxItemsForK);
   if (d.dominated > 0) k += fmt::format("  dominated {}", d.dominated);
   if (!d.witness.empty()) k += "  witness " + d.witness;
@@ -337,6 +358,9 @@ std::string to_text(const Diag& d) {
     if (!d.surely.empty()) out += "surely " + capped(d.surely, " | ") + "\n";
     if (!d.possibly.empty()) out += "possibly " + capped(d.possibly, " | ") + "\n";
     if (!d.cannot_rule_out.empty()) out += "cannot rule out " + capped(d.cannot_rule_out, " | ") + "\n";
+    if (!d.unexplained.empty()) {
+      out += "unexplained " + capped(d.unexplained, " | ") + "  (each item it covers passed another suite: a passing suite missed a fault)\n";
+    }
   }
 
   out += "--- summary\n";

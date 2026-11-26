@@ -76,7 +76,7 @@ Make& Make::suite(const std::string& block, const std::string& kind) {
 }
 
 Make& Make::result(const std::string& block, index::TestCounts contract, index::TestCounts unit,
-                   index::TestCounts integration, bool fresh, bool build_failed) {
+                   index::TestCounts integration, bool fresh, bool build_failed, std::int64_t ts) {
   index::TestRow r;
   r.block = block;
   r.contract = contract;
@@ -84,6 +84,7 @@ Make& Make::result(const std::string& block, index::TestCounts contract, index::
   r.integration = integration;
   r.fresh = fresh;
   r.build_failed = build_failed;
+  r.ts = ts;
   auto& tests = in.snap.tests;
   std::erase_if(tests, [&](const auto& t) { return t.block == block; });
   tests.push_back(r);
@@ -97,6 +98,11 @@ Make& Make::drift(const std::string& block, const std::string& code) {
   d.code = code;
   d.severity = "E";
   in.snap.drift.push_back(d);
+  return *this;
+}
+
+Make& Make::external(const std::string& block) {
+  in.external.insert(block);
   return *this;
 }
 

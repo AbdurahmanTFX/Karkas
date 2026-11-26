@@ -32,8 +32,10 @@ std::string summary(const Input& in) {
       blocks_alone += i.alone ? 1 : 0;
     }
   }
-  out += line("diag", fmt::format("blocks alone {}/{}, links alone {}/{} ({} in classes, {} undetectable), k {}", blocks_alone, blocks,
-                                  links_alone, links, links_class, links_none, d.k));
+  std::string k = d.k_items <= 1 ? "k 2 (vacuous)" : fmt::format("k {}", d.k);
+  if (!d.k_computed) k += " (k 2 not checked)";
+  out += line("diag", fmt::format("blocks alone {}/{}, links alone {}/{} ({} in classes, {} undetectable), {}", blocks_alone, blocks,
+                                  links_alone, links, links_class, links_none, k));
 
   auto v = views(in);
   if (v.levels.empty()) {
@@ -59,6 +61,7 @@ std::string summary(const Input& in) {
   auto first = w.find('\n');
   auto second = first == std::string::npos ? std::string::npos : w.find('\n', first + 1);
   out += line("width", second == std::string::npos ? std::string() : w.substr(first + 1, second - first - 1));
+  out += "assume every line rests on the assumptions of its measurement: karkas hsgm <measurement> prints them\n";
   return out;
 }
 

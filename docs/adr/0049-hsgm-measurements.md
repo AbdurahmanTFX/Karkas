@@ -88,7 +88,8 @@ covers is broken.
   or on the boundary between two). `use` links are not items: a fault there is a fault of the shared
   block.
 - Suites, from code files with role `test`:
-  - a file of block `v` under a `contract/` folder → `contract:v`; under `unit/` → `unit:v`;
+  - a file of block `v` under a `contract/` folder → `contract:v`; any other test file of `v` (under `unit/`
+    or right in its `tests/`, as Karkas's own libraries keep them) → `unit:v`;
   - a file of group `g` from `tests/integration/<g>/` → `integration:g`.
   One suite per kind and block, however many files and cases: the cases of a suite share its support.
 - Support `S(t)`:
@@ -105,13 +106,18 @@ covers is broken.
 - Global `k`: the largest `k ∈ {0, 1, 2}` such that the matrix over the detectable items that are not
   in every suite is k-disjunct — for every set `L` of at most `k` of them and every other item `i`,
   `C(i)` is not inside the union of the columns of `L`. With at most `k` broken items among them, COMP
-  finds exactly those. When `k < 2`, one witness (`i`, `L`) is printed.
+  finds exactly those. When `k < 2`, one witness (`i`, `L`) is printed. With fewer than two such items
+  `k = 2` holds vacuously, and the output says so.
 - Now, when there are fresh results: a suite failed if the fresh `TestRow` of its block has
   `pass < total` in that kind; it passed if `total > 0` and `pass == total`; otherwise (not run, stale,
-  build failed) it is left out and counted.
+  build failed) it is left out and counted. A group's own freshness does not see changes in its blocks, so
+  `integration:g` counts only when every code block under `g` has a fresh row no newer than the group's
+  row (one second of slack for the rows of one run); otherwise it is unknown.
   - COMP: possibly broken = items in no passed suite. Undetectable items always stay; they are listed
     apart as "cannot be ruled out".
   - DD: surely broken = a possibly broken detectable item that is the only such item in a failed suite.
+  - Unexplained: a failed suite none of whose items is possibly broken — each passed another suite, so
+    some passing suite missed a fault (the noiseless assumption failed there). Listed, never dropped.
 - Summary: blocks and links identifiable alone, in classes, undetectable.
 
 ### `views` — how true the lifted views are
@@ -153,6 +159,8 @@ For leaf and entry blocks. The forms: card `c` (the anchor: the human approves i
   - `c–a`: drift D03, D04 or D05 on the block;
   - `c–t`: D08 on the block, or an `inv` with no contract test case named after it (names from
     `TEST_CASE("…")` in the block's contract test files, compared the way the tester names them, 12.1);
+    the second rule only for native leaves: entries get no tester, imported leaves keep their tests in the
+    project's own suite (D08 skips them too);
   - build `{a, t, i}`: fresh results with the build failed;
   - `t–i`: fresh contract or unit failures;
   - `c–i`: no check exists; always reported as unchecked.
@@ -174,7 +182,8 @@ For leaf and entry blocks. The forms: card `c` (the anchor: the human approves i
 ### Output
 
 Compact text like the views: a header `@hsgm <measurement> key=value …`, lines, `--- <section>` blocks,
-ids sorted, long lists capped with "… (N more)". Every measurement ends with `assume …` lines, e.g.
+ids sorted, long lists capped with "… (N more)". The summary ends with a line that points to the
+assumptions of each measurement. Every measurement ends with `assume …` lines, e.g.
 `assume contract suites isolate their block with mocks (12.2)`, `assume a failed suite saw every broken
 item it covers`.
 

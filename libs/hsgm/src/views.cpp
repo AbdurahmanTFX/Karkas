@@ -67,7 +67,9 @@ Views views(const Input& in) {
       if (c.size() < 2) continue;
       std::vector<std::string> ids;
       for (int v : c) ids.push_back(lifted.nodes[static_cast<std::size_t>(v)]);
-      (real_nodes.contains(c.front()) ? lv.real_cycles : lv.false_cycles).push_back(std::move(ids));
+      // The image of a leaf cycle that spans two nodes lies inside one lifted cycle: any of its nodes decides.
+      bool real = std::any_of(c.begin(), c.end(), [&](int v) { return real_nodes.contains(v); });
+      (real ? lv.real_cycles : lv.false_cycles).push_back(std::move(ids));
     }
     std::sort(lv.real_cycles.begin(), lv.real_cycles.end());
     std::sort(lv.false_cycles.begin(), lv.false_cycles.end());

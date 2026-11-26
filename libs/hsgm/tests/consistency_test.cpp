@@ -59,3 +59,9 @@ TEST_CASE("consistency: wavkit has stream.ring failing t-i and matches golden") 
   CHECK(c.disagree[0].regenerate == Sets{"{t}", "{i}"});
   CHECK(kk::test::matches_golden("hsgm/wavkit_consistency.txt", to_text(c)));
 }
+
+TEST_CASE("consistency: imported leaves and entries are not asked for contract tests") {
+  Make m;
+  m.block("a", "leaf").external("a").inv("a", "keeps order").block("e", "entry").inv("e", "starts once");
+  CHECK(consistency(m.in).disagree.empty());
+}

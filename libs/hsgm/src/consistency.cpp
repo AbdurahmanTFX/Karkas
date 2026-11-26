@@ -94,7 +94,10 @@ Consistency consistency(const Input& in) {
     if (auto it = in.test_cases.find(b.id); it != in.test_cases.end()) {
       for (const auto& n : it->second) names.insert(normalize_name(n));
     }
-    if (auto it = in.snap.invariants.find(b.id); it != in.snap.invariants.end()) {
+    // Contract tests are the tester's, who works on native leaves only: entries get none, imported leaves keep
+    // their tests in the project's own suite (D08 skips them too).
+    const bool owns_contract_tests = b.kind == "leaf" && !in.external.contains(b.id);
+    if (auto it = in.snap.invariants.find(b.id); owns_contract_tests && it != in.snap.invariants.end()) {
       for (const auto& inv : it->second) {
         if (!names.contains(normalize_name(inv))) f.untested.push_back(inv);
       }

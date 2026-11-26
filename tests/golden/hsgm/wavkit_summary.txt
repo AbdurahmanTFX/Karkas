@@ -4,3 +4,4 @@ views        level 0 precision 9/12, false cycles 1
 propagation  transitive 0.32, direct 0.21, self 0.08
 consistency  1 of 10 disagree
 width        not enough data: 0 runs, 0 widths
+assume every line rests on the assumptions of its measurement: karkas hsgm <measurement> prints them
