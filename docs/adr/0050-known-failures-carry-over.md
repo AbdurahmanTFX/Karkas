@@ -128,7 +128,8 @@ Measured on 2026-11-27 (bench/results/compare-2026-11-27-known; one run, Release
 | sessions 2–5 (can use the tickets) | $0.412–0.449 | $0.398–0.427 | $0.369 |
 | session 1 (no tickets yet) | $0.109–0.158 | $0.163–0.197 | $0.210 |
 | time | 688 s [535–917] | 795–1192 s | 671 s |
-| model calls / Karkas calls | 56–59 / 25–26 | 65 / 28–29 | 53 / 22 |
+| API calls / Karkas calls | 39–41 / 25–26 | 43–45 / 28–29 | 39 / 22 |
+| turns (Claude Code `num_turns`, the bench's "model calls") | 56–59 | 65 | 53 |
 | `kk_note_bug` calls, of them repeats | 7–11, 3–7 (31 of 51 in all 5 runs) | 11–12, 7–8 | 6, 0 |
 | shell output that reads only other blocks | 40% | 50% | 24% |
 | hidden tests | 11/11 ×3 | 11/11 ×2 | 11/11 |
