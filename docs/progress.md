@@ -864,6 +864,11 @@
 - The first attempt of the measurement ran into the subscription's 5-hour limit: every session ended with an
   API error, and `karkas bench run` still reported the run as valid (exit 0, "hidden 1/11"); not counted.
   The bench does not yet mark such runs as failed.
+- For reference, the same s3 without Karkas (method A: Claude Code alone on the copy without `.karkas`, cards
+  and the MCP server), one run: $0.809 and 1652 s against method B's $0.558–0.595 and 535–1192 s; 37 API calls
+  (B 39–45); 208k characters of code read through the shell (B 86–92k), so 140k tokens written to the cache
+  (B 88–96k); hidden 11/11 in both. Every session but the first cost more than in B; the first two took ~11
+  minutes each (the agent built the project itself and its runs of all tests waited on the hanging ring test).
 - Fixes from the final review: a path inside a longer one and the files of imported blocks name a block;
   the answer of `kk_note_bug` lists every open ticket of the block; the sections end with "Any of them that
   started failing after your change is yours to fix."; the test of "other kinds are never known" now checks
