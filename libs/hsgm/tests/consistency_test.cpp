@@ -57,5 +57,5 @@ TEST_CASE("consistency: wavkit has stream.ring failing t-i and matches golden") 
   REQUIRE(c.disagree.size() == 1);
   CHECK(c.disagree[0].block == "stream.ring");
   CHECK(c.disagree[0].regenerate == Sets{"{t}", "{i}"});
-  CHECK(kk::test::matches_golden("hsgm/wavkit_consistency.txt", format(c)));
+  CHECK(kk::test::matches_golden("hsgm/wavkit_consistency.txt", to_text(c)));
 }

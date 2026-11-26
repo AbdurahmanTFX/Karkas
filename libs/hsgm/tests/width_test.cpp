@@ -69,5 +69,5 @@ TEST_CASE("width: a flat project has no groups and not enough data") {
 
 TEST_CASE("width: wavkit has no runs and matches golden") {
   test::Wavkit w;
-  CHECK(kk::test::matches_golden("hsgm/wavkit_width.txt", format(width(w.in))));
+  CHECK(kk::test::matches_golden("hsgm/wavkit_width.txt", to_text(width(w.in))));
 }

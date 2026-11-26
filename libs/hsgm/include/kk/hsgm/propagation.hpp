@@ -19,6 +19,6 @@ struct Propagation {
 };
 
 Propagation propagation(const Input& in);
-std::string format(const Propagation& p);
+std::string to_text(const Propagation& p);
 
 }  // namespace kk::hsgm

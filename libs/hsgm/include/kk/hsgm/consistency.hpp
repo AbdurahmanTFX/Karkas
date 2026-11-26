@@ -27,7 +27,7 @@ struct Consistency {
 };
 
 Consistency consistency(const Input& in);
-std::string format(const Consistency& c);
+std::string to_text(const Consistency& c);
 
 // Test name ↔ invariant: whitespace runs as one space, trimmed, ';' read as ',' (CMake cuts test names at ';').
 std::string normalize_name(std::string_view s);

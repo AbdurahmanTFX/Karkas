@@ -46,5 +46,5 @@ TEST_CASE("propagation: wavkit is 54, 35 and 13 of 169 and matches golden") {
   CHECK(p.n == 13);
   CHECK(p.transitive == 54);
   CHECK(p.direct == 35);
-  CHECK(kk::test::matches_golden("hsgm/wavkit_propagation.txt", format(p)));
+  CHECK(kk::test::matches_golden("hsgm/wavkit_propagation.txt", to_text(p)));
 }

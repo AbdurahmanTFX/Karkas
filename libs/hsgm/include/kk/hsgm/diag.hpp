@@ -35,7 +35,7 @@ struct Diag {
 inline constexpr int kMaxItemsForK = 400;
 
 Diag diag(const Input& in);
-std::string format(const Diag& d);
+std::string to_text(const Diag& d);
 
 // Largest k in 0..max_k such that no column is inside the union of k other columns (k-disjunct).
 // When a pass fails, `witness` gets (i, L) of its first violation in index order.

@@ -820,3 +820,27 @@
 
 - Version 0.1.1: the fixes above (doctest carried in the binary, builder folders, import of tests), packages for
   Linux and Windows rebuilt; README links point to v0.1.1.
+
+## Nightly — HSGM measurements (docs/adr/0049)
+
+- `kk::hsgm` and `karkas hsgm [diag|views|propagation|consistency|width]` (no argument: a summary): read-only
+  measurements of a code project from its index; every output ends with its assumptions. diag — group testing
+  over the suites (items are blocks and links; classes, k-disjunctness, COMP/DD over fresh results); views —
+  precision of lifted views and false cycles; propagation — visibility matrix (MacCormack et al. 2012);
+  consistency — forms of a leaf and what to regenerate; width — the tree width that minimizes the navigator's
+  cost, fitted on navigator runs.
+- wavkit (recorded state of the view tests):
+  `diag blocks alone 11/13, links alone 0/8 (3 in classes, 5 undetectable), k 0`;
+  `views level 0 precision 9/12, false cycles 1` (io -> stream -> dsp -> mix -> io exists only in the view);
+  `propagation transitive 0.32, direct 0.21, self 0.08`; `consistency 1 of 10 disagree` (stream.ring t-i);
+  `width not enough data: 0 runs, 0 widths`.
+- Karkas itself: `diag blocks alone 11/12, links alone 0/19 (0 in classes, 19 undetectable), k 2`;
+  `views level 0 precision 1/1, false cycles 0`; `propagation transitive 0.28, direct 0.26, self 0.08`;
+  `consistency 10 of 11 disagree` (the libraries' tests are not contract tests named after their inv, D08;
+  D04 on `Result<T>` against `kk::Result<T>`); `width not enough data: 0 runs, 0 widths`.
+- The formatters are `to_text(...)`: a free `format(...)` in a library made the D09 heuristic take every
+  `fmt::format` call in the repository for a call into it (645 warnings).
+- Found in wavkit while checking the model: `mix` adds tracks frame by frame and the composition root opens
+  the writer at the sample rate of the last track read; no card states that all tracks share one rate, and
+  no test covers it (left as it is: a reference project).
+- Tests: 29 in kk_hsgm_tests; golden files in tests/golden/hsgm. `ctest --preset dev-fast`: 458 passed.

@@ -114,5 +114,5 @@ TEST_CASE("diag: wavkit counts follow the research and match golden") {
   CHECK(d.dominated == 5);
   CHECK(d.witness == "stream.pump inside shared.probe");
   CHECK(d.surely == std::vector<std::string>{"stream.ring"});
-  CHECK(kk::test::matches_golden("hsgm/wavkit_diag.txt", format(d)));
+  CHECK(kk::test::matches_golden("hsgm/wavkit_diag.txt", to_text(d)));
 }

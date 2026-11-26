@@ -21,6 +21,6 @@ struct Views {
 };
 
 Views views(const Input& in);
-std::string format(const Views& v);
+std::string to_text(const Views& v);
 
 }  // namespace kk::hsgm

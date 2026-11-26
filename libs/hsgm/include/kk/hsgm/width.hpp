@@ -20,7 +20,7 @@ struct Width {
 };
 
 Width width(const Input& in);
-std::string format(const Width& w);
+std::string to_text(const Width& w);
 
 // The root of ln b − 1 − c0 / (c1 b) on [2, 64] by bisection; 2 or 64 when it lies outside.
 double optimal_width(double c0, double c1);

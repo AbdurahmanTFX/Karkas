@@ -59,7 +59,8 @@ Inside approach 1:
 - `libs/hsgm` → target `kk_hsgm`, namespace `kk::hsgm`, depends on `karkas::index` (and so on
   `karkas::core`). The input is gathered once into one struct (the snapshot, the code files, the runs,
   and the `TEST_CASE` names that one helper reads from the contract test files); each measurement is
-  then a pure function of it that returns a result struct, and a formatter prints the result.
+  then a pure function of it that returns a result struct, and a formatter `to_text(result)` prints it (not
+  `format`: the D09 heuristic would take every `fmt::format` call in the repository for a call into it).
 - `karkas hsgm [diag|views|propagation|consistency|width]`: updates the index like `karkas query`, runs
   one measurement and prints it; without an argument prints a summary, one line per measurement. Exit
   code 0 whatever the findings: these are measurements, not checks.

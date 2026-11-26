@@ -6,6 +6,7 @@ est     L
 fn      update(UpdateOptions) -> Result<UpdateStats>
 fn      view(block, level, options) -> Result<string>
 fn      overview(options) -> string
+fn      snapshot() -> Snapshot
 fn      runs(since) -> RunRow[]
 use     libs.core
 inv     deleting index.db loses no information

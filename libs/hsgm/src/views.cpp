@@ -76,7 +76,7 @@ Views views(const Input& in) {
   return out;
 }
 
-std::string format(const Views& v) {
+std::string to_text(const Views& v) {
   std::string out = fmt::format("@hsgm views levels={}\n", v.levels.size());
   if (v.levels.empty()) out += "nothing lifted: every code block is on the top level\n";
   for (const auto& l : v.levels) {

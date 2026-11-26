@@ -6,6 +6,7 @@
 #include "kk/hsgm/consistency.hpp"
 #include "kk/hsgm/diag.hpp"
 #include "kk/hsgm/propagation.hpp"
+#include "kk/hsgm/summary.hpp"
 #include "kk/hsgm/views.hpp"
 #include "kk/hsgm/width.hpp"
 #include "kk/index/index.hpp"
@@ -27,24 +28,28 @@ AutoRegister reg([](CLI::App& cli, App& app) {
       std::cout << "hsgm: not a code project\n";
       return;
     }
+    if (what.empty()) {
+      std::cout << hsgm::summary(*in);
+      return;
+    }
     if (what == "diag") {
-      std::cout << hsgm::format(hsgm::diag(*in));
+      std::cout << hsgm::to_text(hsgm::diag(*in));
       return;
     }
     if (what == "views") {
-      std::cout << hsgm::format(hsgm::views(*in));
+      std::cout << hsgm::to_text(hsgm::views(*in));
       return;
     }
     if (what == "propagation") {
-      std::cout << hsgm::format(hsgm::propagation(*in));
+      std::cout << hsgm::to_text(hsgm::propagation(*in));
       return;
     }
     if (what == "consistency") {
-      std::cout << hsgm::format(hsgm::consistency(*in));
+      std::cout << hsgm::to_text(hsgm::consistency(*in));
       return;
     }
     if (what == "width") {
-      std::cout << hsgm::format(hsgm::width(*in));
+      std::cout << hsgm::to_text(hsgm::width(*in));
       return;
     }
     die("unknown measurement '" + what + "': diag views propagation consistency width");

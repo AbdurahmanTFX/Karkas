@@ -31,7 +31,7 @@ Propagation propagation(const Input& in) {
   return p;
 }
 
-std::string format(const Propagation& p) {
+std::string to_text(const Propagation& p) {
   std::string out = fmt::format("@hsgm propagation blocks={}\n", p.n);
   if (p.n == 0) {
     out += "no code blocks\n";

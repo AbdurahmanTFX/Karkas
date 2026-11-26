@@ -275,7 +275,7 @@ Diag diag(const Input& in) {
   return d;
 }
 
-std::string format(const Diag& d) {
+std::string to_text(const Diag& d) {
   using detail::capped;
   using detail::table;
   struct Counts {

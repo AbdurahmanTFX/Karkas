@@ -1,0 +1,16 @@
+@block libs.hsgm
+purpose experimental HSGM measurements of a code project from its index (ADR 0049)
+kind    leaf
+thread  any
+est     M
+fn      gather(Index) -> Result<Input>
+fn      diag(Input) -> Diag
+fn      views(Input) -> Views
+fn      propagation(Input) -> Propagation
+fn      consistency(Input) -> Consistency
+fn      width(Input) -> Width
+fn      summary(Input) -> string
+call    libs.index:snapshot
+use     libs.core
+inv     the same index gives the same text
+inv     a measurement never writes a project file

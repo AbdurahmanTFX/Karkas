@@ -118,7 +118,7 @@ Consistency consistency(const Input& in) {
   return out;
 }
 
-std::string format(const Consistency& c) {
+std::string to_text(const Consistency& c) {
   std::string out = fmt::format("@hsgm consistency checked={} disagree={}\n", c.checked, c.disagree.size());
   for (const auto& f : c.disagree) {
     std::vector<std::string> edges;

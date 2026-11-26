@@ -85,7 +85,7 @@ Width width(const Input& in) {
   return w;
 }
 
-std::string format(const Width& w) {
+std::string to_text(const Width& w) {
   std::string out = fmt::format("@hsgm width runs={} widths={} unit={}\n", w.runs, w.widths, w.unit);
   if (!w.enough) {
     out += fmt::format("not enough data: {} runs, {} widths\n", w.runs, w.widths);

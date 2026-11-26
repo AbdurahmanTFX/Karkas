@@ -50,7 +50,7 @@ TEST_CASE("views: a flat project has nothing lifted") {
   m.block("a", "leaf").block("b", "leaf").link("data", "a", "b");
   auto v = views(m.in);
   CHECK(v.levels.empty());
-  CHECK(format(v).find("nothing lifted") != std::string::npos);
+  CHECK(to_text(v).find("nothing lifted") != std::string::npos);
 }
 
 TEST_CASE("views: wavkit level 0 is 9 of 12 with one false cycle and matches golden") {
@@ -60,5 +60,5 @@ TEST_CASE("views: wavkit level 0 is 9 of 12 with one false cycle and matches gol
   CHECK(v.levels[0].true_pairs == 9);
   CHECK(v.levels[0].pairs == 12);
   CHECK(v.levels[0].false_cycles == Cycles{{"dsp", "io", "mix", "stream"}});
-  CHECK(kk::test::matches_golden("hsgm/wavkit_views.txt", format(v)));
+  CHECK(kk::test::matches_golden("hsgm/wavkit_views.txt", to_text(v)));
 }
