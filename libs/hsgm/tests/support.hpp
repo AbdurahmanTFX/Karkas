@@ -1,9 +1,12 @@
 #pragma once
-// Test helpers of kk_hsgm: an Input made by hand.
+// Test helpers of kk_hsgm: an Input made by hand, and wavkit with recorded test results.
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include "kk/hsgm/input.hpp"
+#include "kk/index/index.hpp"
+#include "kk/test/support.hpp"
 
 namespace kk::hsgm::test {
 
@@ -22,6 +25,15 @@ struct Make {
   Make& test_case(const std::string& block, const std::string& name);
   Make& run(const std::string& role, const std::string& block, double cost_usd, std::int64_t input_tokens = 0,
             bool session_cost = false);
+};
+
+// wavkit with the recorded state of libs/index/tests/views_test.cpp: every code block passes its inv
+// count, stream.ring fails one of its three contract tests, blocks without inv pass one unit test.
+struct Wavkit {
+  kk::test::FixtureCopy p{"wavkit"};
+  std::unique_ptr<index::Index> idx;
+  Input in;  // gather(*idx) after update()
+  Wavkit();
 };
 
 }  // namespace kk::hsgm::test

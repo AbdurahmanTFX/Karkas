@@ -92,3 +92,27 @@ TEST_CASE("diag: a link whose end is not a code block is no item") {
 TEST_CASE("input: TEST_CASE names are read in order and unescaped") {
   CHECK(test_case_names("TEST_CASE(\"x \\\"q\\\"\") {}\nTEST_CASE( \"y\" ) {}") == std::vector<std::string>{"x \"q\"", "y"});
 }
+
+TEST_CASE("diag: wavkit counts follow the research and match golden") {
+  test::Wavkit w;
+  auto d = diag(w.in);
+  int blocks_alone = 0, links_alone = 0, links_class = 0, links_none = 0;
+  for (const auto& i : d.items) {
+    if (!i.link && i.alone) ++blocks_alone;
+    if (i.link) {
+      links_alone += i.alone ? 1 : 0;
+      links_class += i.cls > 0 ? 1 : 0;
+      links_none += i.undetectable ? 1 : 0;
+    }
+  }
+  CHECK(d.suites.size() == 11);
+  CHECK(blocks_alone == 11);
+  CHECK(links_alone == 0);
+  CHECK(links_class == 3);
+  CHECK(links_none == 5);
+  CHECK(d.k == 0);
+  CHECK(d.dominated == 5);
+  CHECK(d.witness == "stream.pump inside shared.probe");
+  CHECK(d.surely == std::vector<std::string>{"stream.ring"});
+  CHECK(kk::test::matches_golden("hsgm/wavkit_diag.txt", format(d)));
+}

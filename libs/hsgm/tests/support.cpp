@@ -1,6 +1,12 @@
 #include "support.hpp"
 
+#include <doctest/doctest.h>
+
 #include <algorithm>
+#include <vector>
+
+#include "kk/core/schema.hpp"
+#include "kk/index/state.hpp"
 
 namespace kk::hsgm::test {
 
@@ -115,6 +121,34 @@ Make& Make::run(const std::string& role, const std::string& block, double cost_u
   r.session_cost = session_cost;
   in.runs.push_back(r);
   return *this;
+}
+
+Wavkit::Wavkit() {
+  auto schema = core::load_schema(p.path());
+  REQUIRE(schema);
+  auto files = index::collect_code_files(*schema);
+  std::vector<index::TestResult> results;
+  for (const auto& b : schema->blocks) {
+    if (!b.has_code()) continue;
+    index::TestResult r;
+    r.block = b.id;
+    r.code_hash = index::block_test_hash(*schema, files, b.id);
+    r.contract = {static_cast<int>(b.invs.size()), static_cast<int>(b.invs.size())};
+    if (b.id == "stream.ring") {
+      r.contract = {2, 3};
+      r.failures = {"contract: never loses or duplicates frames, including at wraparound"};
+    }
+    if (r.contract.total == 0) r.unit = {1, 1};
+    results.push_back(r);
+  }
+  REQUIRE(index::StateStore(p.path()).record_tests(results));
+  auto i = index::Index::open(p.path());
+  REQUIRE(i);
+  idx = std::move(*i);
+  REQUIRE(idx->update());
+  auto g = gather(*idx);
+  REQUIRE(g);
+  in = std::move(*g);
 }
 
 }  // namespace kk::hsgm::test

@@ -1,8 +1,12 @@
 #include "kk/hsgm/diag.hpp"
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <cstdint>
 #include <set>
+
+#include "text.hpp"
 
 namespace kk::hsgm {
 
@@ -269,6 +273,80 @@ Diag diag(const Input& in) {
 
   d.items = std::move(items);
   return d;
+}
+
+std::string format(const Diag& d) {
+  using detail::capped;
+  using detail::table;
+  struct Counts {
+    int n = 0, alone = 0, in_class = 0, undetectable = 0;
+  };
+  Counts blocks, links;
+  for (const auto& i : d.items) {
+    auto& c = i.link ? links : blocks;
+    ++c.n;
+    c.alone += i.alone ? 1 : 0;
+    c.in_class += i.cls > 0 ? 1 : 0;
+    c.undetectable += i.undetectable ? 1 : 0;
+  }
+  std::string out = fmt::format("@hsgm diag suites={} blocks={} links={}\n", d.suites.size(), blocks.n, links.n);
+
+  if (!d.suites.empty()) {
+    std::vector<std::vector<std::string>> rows;
+    for (const auto& s : d.suites) rows.push_back({s, capped(d.support.at(s), " | ")});
+    out += "--- suites\n" + table(rows);
+  }
+  auto status = [](const DiagItem& i) {
+    std::string s = i.undetectable ? "undetectable" : i.alone ? "alone" : fmt::format("class {}", i.cls);
+    if (i.everywhere) s += " everywhere";
+    return s;
+  };
+  auto column = [](const DiagItem& i) -> std::string {
+    if (i.undetectable) return "";
+    if (i.everywhere) return "all suites";
+    return capped(i.suites, " ");
+  };
+  std::vector<std::vector<std::string>> block_rows, link_rows;
+  std::map<int, std::vector<std::string>> classes;
+  for (const auto& i : d.items) {
+    if (i.link) {
+      link_rows.push_back({i.id, status(i), column(i)});
+    } else {
+      block_rows.push_back({i.id, i.kind, status(i), column(i)});
+    }
+    if (i.cls > 0) classes[i.cls].push_back(i.id);
+  }
+  if (!block_rows.empty()) out += "--- blocks\n" + table(block_rows);
+  if (!link_rows.empty()) out += "--- links\n" + table(link_rows);
+  if (!classes.empty()) {
+    out += "--- classes\n";
+    for (const auto& [n, members] : classes) out += fmt::format("class {}  {}\n", n, capped(members, " | "));
+  }
+
+  std::string k = fmt::format("k {}", d.k);
+  if (!d.k_computed) k += fmt::format(" (k 2 not checked: more than {} items)", kMaxItemsForK);
+  if (d.dominated > 0) k += fmt::format("  dominated {}", d.dominated);
+  if (!d.witness.empty()) k += "  witness " + d.witness;
+  out += "--- disjunct\n" + k + "\n";
+
+  out += "--- now\n";
+  if (d.passed.empty() && d.failed.empty()) {
+    out += "no fresh results\n";
+  } else {
+    out += fmt::format("passed {} failed {} unknown {}\n", d.passed.size(), d.failed.size(), d.unknown.size());
+    if (!d.surely.empty()) out += "surely " + capped(d.surely, " | ") + "\n";
+    if (!d.possibly.empty()) out += "possibly " + capped(d.possibly, " | ") + "\n";
+    if (!d.cannot_rule_out.empty()) out += "cannot rule out " + capped(d.cannot_rule_out, " | ") + "\n";
+  }
+
+  out += "--- summary\n";
+  out += fmt::format("blocks alone {}/{}, in classes {}, undetectable {}\n", blocks.alone, blocks.n, blocks.in_class,
+                     blocks.undetectable);
+  out += fmt::format("links alone {}/{}, in classes {}, undetectable {}\n", links.alone, links.n, links.in_class,
+                     links.undetectable);
+  out += "assume a suite fails when it covers a broken item and passes otherwise\n";
+  out += "assume contract and unit suites isolate their block with mocks (12.2)\n";
+  return out;
 }
 
 }  // namespace kk::hsgm
