@@ -1,0 +1,3 @@
+@hsgm width runs=0 widths=0 unit=tokens
+not enough data: 0 runs, 0 widths
+assume one navigator run per level of a descent, its cost c0 + c1 × children
