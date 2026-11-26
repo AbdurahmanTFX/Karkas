@@ -878,3 +878,13 @@
   the answer of `kk_note_bug` lists every open ticket of the block; the sections end with "Any of them that
   started failing after your change is yours to fix."; the test of "other kinds are never known" now checks
   a feature and a change that name a block.
+
+## Beta 0.2.0-beta.1 (nightly, pre-release)
+
+- Version 0.2.0 with the pre-release label `-beta.1` (`KARKAS_VERSION_LABEL` in CMakeLists.txt; empty for a
+  release): `--version`, the package names and the Windows resource strings carry it, the resource's numeric
+  version stays 0.2.0.0.
+- Packages for Linux and Windows rebuilt and checked: Linux as 0.1.1 (needs libcurl, libsqlite3 and glibc 2.38+,
+  C++ runtime static), `check` and `hsgm` on wavkit; Windows under wine (`--version`, `hsgm`).
+- Pre-release v0.2.0-beta.1 on GitHub from nightly (ADR 0049, ADR 0050 and the s3 measurements); v0.1.1 stays
+  the latest release.
