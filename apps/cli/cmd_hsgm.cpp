@@ -4,6 +4,7 @@
 
 #include "app.hpp"
 #include "kk/hsgm/diag.hpp"
+#include "kk/hsgm/views.hpp"
 #include "kk/index/index.hpp"
 
 namespace kk::cli {
@@ -25,6 +26,10 @@ AutoRegister reg([](CLI::App& cli, App& app) {
     }
     if (what == "diag") {
       std::cout << hsgm::format(hsgm::diag(*in));
+      return;
+    }
+    if (what == "views") {
+      std::cout << hsgm::format(hsgm::views(*in));
       return;
     }
     die("unknown measurement '" + what + "': diag views propagation consistency width");
