@@ -450,10 +450,20 @@ std::optional<std::string> Server::handle(std::string_view line) {
               auto bugs = core::open_bugs(store, *schema);
               if (bugs) {
                 if (auto it = bugs->find(block); it != bugs->end() && !it->second.empty()) {
-                  const auto& known = it->second.front();
-                  return response(id, text_result(fmt::format("already noted as {} ({}). Name it in your report. If this is a "
-                                                              "different bug in {}, call again with distinct=true.\n",
-                                                              known.id, known.symptom.value, block),
+                  const auto& noted = it->second;
+                  if (noted.size() == 1) {
+                    return response(id, text_result(fmt::format("already noted as {} ({}). Name it in your report. If this is "
+                                                                "a different bug in {}, call again with distinct=true.\n",
+                                                                noted[0].id, noted[0].symptom.value, block),
+                                                    false));
+                  }
+                  // Every open ticket of the block, so a repeat of the second one is recognised too.
+                  std::string list;
+                  for (const auto& t : noted) list += fmt::format("{}{} ({})", list.empty() ? "" : "; ", t.id, t.symptom.value);
+                  return response(id, text_result(fmt::format("already noted in {}: {}. If one of them is yours, name it in "
+                                                              "your report; if this is a different bug, call again with "
+                                                              "distinct=true.\n",
+                                                              block, list),
                                                   false));
                 }
               }

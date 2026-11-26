@@ -484,12 +484,21 @@ bool occurs(std::string_view text, std::string_view needle, Before before_ok, Af
 }  // namespace
 
 std::string block_named_in(std::string_view text, const Schema& schema) {
-  // A folder of a block as a path: "blocks/dsp/echo/impl/echo.cpp" names dsp.echo, not the group dsp.
+  // A path in a block: under its folder ("blocks/dsp/echo/impl/echo.cpp" names dsp.echo, not the group
+  // dsp) or one of the files an imported block lists (docs/adr/0009); also inside a longer path (absolute,
+  // "./"). The longest matching path wins.
+  const auto edge = [](char c) { return c == '/' || !path_char(c); };
   const Block* best = nullptr;
+  std::size_t best_len = 0;
+  const auto consider = [&](const Block& b, std::string_view path) {
+    if (path.size() > best_len && occurs(text, path, edge, edge)) {
+      best = &b;
+      best_len = path.size();
+    }
+  };
   for (const auto& b : schema.blocks) {
-    bool found = occurs(
-        text, b.dir, [](char c) { return !path_char(c); }, [](char c) { return c == '/' || c == ':' || !path_char(c); });
-    if (found && (best == nullptr || b.dir.size() > best->dir.size())) best = &b;
+    consider(b, b.dir);
+    for (const auto& f : b.file_list()) consider(b, f);
   }
   if (best != nullptr) return best->id;
   // A block id as a whole word outside a path; the longest wins (stream.ring over stream).
@@ -556,6 +565,7 @@ std::string known_failures_text(const std::vector<std::string>& failing,
   if (!known.empty()) out += "--- known: these failures already have an open ticket\n" + known;
   if (!none.empty()) out += "--- no ticket: investigate them only if they are your task\n" + none;
   if (!known.empty()) out += "If one of the known failures is the bug of your task, fix it; otherwise leave it.\n";
+  if (!out.empty()) out += "Any of them that started failing after your change is yours to fix.\n";
   return out;
 }
 

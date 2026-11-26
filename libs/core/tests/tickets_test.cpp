@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 #include <fmt/format.h>
 
+#include <algorithm>
+
 #include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/tickets.hpp"
@@ -277,7 +279,8 @@ TEST_CASE("tickets: open bugs by block leave out closed tickets and other kinds"
   TicketStore store(d.path());
   REQUIRE(store.create(TicketKind::Bug, "agent", "bytes swapped", {"found at blocks/io/writer/impl/writer.cpp:40"}));
   REQUIRE(store.create(TicketKind::Bug, "agent", "ring drops frames", {"block stream.ring"}));
-  REQUIRE(store.create(TicketKind::Feature, "human", "add reverb to dsp.chain", {}));
+  REQUIRE(store.create(TicketKind::Feature, "human", "add reverb to dsp.chain", {"block dsp.chain"}));
+  REQUIRE(store.create(TicketKind::Change, "human", "rename the gain port", {"block dsp.gain"}));
   auto closed = store.create(TicketKind::Bug, "agent", "mix not clipped", {"found at mix"});
   REQUIRE(closed);
   closed->status.value = "closed";
@@ -289,6 +292,8 @@ TEST_CASE("tickets: open bugs by block leave out closed tickets and other kinds"
   CHECK(bugs->at("io.writer")[0].symptom.value == "bytes swapped");
   CHECK(bugs->contains("stream.ring"));
   CHECK_FALSE(bugs->contains("mix"));
+  CHECK_FALSE(bugs->contains("dsp.chain"));
+  CHECK_FALSE(bugs->contains("dsp.gain"));
 }
 
 TEST_CASE("tickets: known failures name their tickets and the rest stay unexplained") {
@@ -306,7 +311,11 @@ TEST_CASE("tickets: known failures name their tickets and the rest stay unexplai
   CHECK(text.find("dsp  T-0002  gain applied twice\n") != std::string::npos);  // a group: the tickets under it
   CHECK(text.find("--- no ticket: investigate them only if they are your task\ndsp.echo\n") != std::string::npos);
   CHECK(text.find("If one of the known failures is the bug of your task, fix it; otherwise leave it.") != std::string::npos);
+  CHECK(text.ends_with("Any of them that started failing after your change is yours to fix.\n"));
   CHECK(known_failures_text({}, *bugs, *s).empty());
+  CHECK(known_failures_text({"dsp.echo"}, {}, *s) ==
+        "--- no ticket: investigate them only if they are your task\ndsp.echo\n"
+        "Any of them that started failing after your change is yours to fix.\n");
 }
 
 TEST_CASE("tickets: other facts name the block when nothing before them does") {
@@ -317,4 +326,21 @@ TEST_CASE("tickets: other facts name the block when nothing before them does") {
   auto t = store.create(TicketKind::Bug, "human", "crackle after 10 s", {"contract stream.ring/no_drop FAIL"});
   REQUIRE(t);
   CHECK(ticket_block(*t, *s) == "stream.ring");
+}
+
+TEST_CASE("tickets: an absolute or ./ path names its block") {
+  auto s = load_schema(kk::test::fixture("wavkit"));
+  REQUIRE(s);
+  CHECK(block_named_in("/home/u/work/wavkit/blocks/io/writer/impl/writer.cpp:40", *s) == "io.writer");
+  CHECK(block_named_in("./blocks/dsp/echo/impl/echo.cpp", *s) == "dsp.echo");
+}
+
+TEST_CASE("tickets: a file listed by an imported block names that block") {
+  auto s = load_schema(kk::test::fixture("wavkit"));
+  REQUIRE(s);
+  auto it = std::find_if(s->blocks.begin(), s->blocks.end(), [](const Block& b) { return b.id == "io.writer"; });
+  REQUIRE(it != s->blocks.end());
+  it->files.push_back(FilesDecl{{"src/wav/writer.cpp", "include/wav/writer.hpp"}});
+  CHECK(block_named_in("src/wav/writer.cpp:40", *s) == "io.writer");
+  CHECK(block_named_in("/home/u/proj/include/wav/writer.hpp", *s) == "io.writer");
 }

@@ -206,6 +206,11 @@ TEST_CASE("mcp: kk_note_bug answers with the open ticket of the block instead of
   CHECK_FALSE(core::TicketStore(f.p.path()).load("T-0002"));
   auto again = call({{"summary", "fill() can exceed capacity"}, {"where", "stream.ring"}, {"distinct", true}});
   CHECK(again["content"][0]["text"].get<std::string>().starts_with("noted T-0002"));
+  // Two open tickets in the block: the answer names both, so a repeat of the second is recognised.
+  auto third = call({{"summary", "fill() can exceed capacity"}, {"where", "blocks/stream/ring/impl/ring.cpp:12"}});
+  CHECK(third["content"][0]["text"].get<std::string>().starts_with(
+      "already noted in stream.ring: T-0001 (crackle after 10 s); T-0002 (fill() can exceed capacity)."));
+  CHECK_FALSE(core::TicketStore(f.p.path()).load("T-0003"));
 }
 
 TEST_CASE("mcp: kk_note_bug without a known block still records the bug") {

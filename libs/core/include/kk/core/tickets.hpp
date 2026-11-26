@@ -80,9 +80,10 @@ int trail_level(std::string_view at);
 
 struct Schema;
 
-// The block a free text names: the deepest block whose folder (Block::dir) occurs as a path in the
-// text; else the longest block id that occurs as a whole word outside a path (the character before
-// is not [a-z0-9_./], the one after is not [a-z0-9_]); "" when none.
+// The block a free text names: the block whose folder (Block::dir) or listed file (an imported block,
+// docs/adr/0009) occurs as a path in the text, also inside a longer one (absolute, "./"), the longest
+// match winning; else the longest block id that occurs as a whole word outside a path (the character
+// before is not [a-z0-9_./], the one after is not [a-z0-9_]); "" when none.
 std::string block_named_in(std::string_view text, const Schema& schema);
 // The block a ticket is about: a fact "block <id>" of an existing block; else block_named_in of each
 // "found at ..." fact in order, then of the symptom, then of the other facts; "" when none.

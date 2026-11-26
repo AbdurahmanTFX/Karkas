@@ -60,8 +60,9 @@ Anti-goals
 
 `core::ticket_block(const Ticket&, const Schema&) -> std::string` (empty when none):
 1. a fact `block <id>` (written by `kk_note_bug` from now on);
-2. otherwise, in the facts `found at …` and then the symptom: a path under a block's folder (`dir`), the
-   deepest such block;
+2. otherwise, in the facts `found at …` and then the symptom: a path under a block's folder (`dir`) or one
+   of the files an imported block lists (`files`, ADR 0009), also inside a longer path (absolute, `./…`);
+   the longest such path wins;
 3. otherwise the longest block id of the schema that occurs as a whole word outside a path (`io.writer`,
    `stream.ring`). Paths come first because `blocks/dsp/echo/…` contains the id `dsp` of the group.
 4. when neither the `found at` facts nor the symptom name a block, the other facts in order (a human's
@@ -78,12 +79,15 @@ After the summary, when at least one block fails:
 ```
 --- known: these failures already have an open ticket
 io.writer  T-0003  PCM16 output samples are written with bytes swapped
---- the rest have no ticket: investigate them only if they are your task
+--- no ticket: investigate them only if they are your task
 dsp.echo
+If one of the known failures is the bug of your task, fix it; otherwise leave it.
+Any of them that started failing after your change is yours to fix.
 ```
 A failing block with several open tickets lists each. A block of a failing integration test (a group) uses
-the tickets of the blocks under it. The text after the sections: "If one of the known failures is the bug of
-your task, fix it; otherwise leave it."
+the tickets of the blocks under it. The line "If one of the known failures…" comes with the known section;
+the last line always comes (added after the final review: a regression the agent's own change causes must
+not be left as "not my task", the reason approach 3 was rejected).
 
 ### `kk_note_bug`
 
@@ -92,6 +96,10 @@ your task, fix it; otherwise leave it."
 - When the block already has an open bug ticket and the call does not set `distinct: true`: nothing is
   created; the answer is "already noted as T-0003 (<symptom>). Name it in your report. If this is a
   different bug in io.writer, call again with distinct=true."
+- When the block has several open bug tickets (after a `distinct: true`), the answer lists all of them:
+  "already noted in stream.ring: T-0001 (…); T-0002 (…). If one of them is yours, name it in your report; if
+  this is a different bug, call again with distinct=true." (added after the final review: naming only the
+  first would make a repeat of the second look like a new bug).
 - `where` that names no block: created as today (cannot be deduplicated).
 
 ### Texts
