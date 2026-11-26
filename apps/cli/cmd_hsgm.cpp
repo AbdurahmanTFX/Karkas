@@ -3,6 +3,7 @@
 #include <iostream>
 
 #include "app.hpp"
+#include "kk/hsgm/consistency.hpp"
 #include "kk/hsgm/diag.hpp"
 #include "kk/hsgm/propagation.hpp"
 #include "kk/hsgm/views.hpp"
@@ -35,6 +36,10 @@ AutoRegister reg([](CLI::App& cli, App& app) {
     }
     if (what == "propagation") {
       std::cout << hsgm::format(hsgm::propagation(*in));
+      return;
+    }
+    if (what == "consistency") {
+      std::cout << hsgm::format(hsgm::consistency(*in));
       return;
     }
     die("unknown measurement '" + what + "': diag views propagation consistency width");

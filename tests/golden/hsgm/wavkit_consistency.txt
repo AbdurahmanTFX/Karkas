@@ -1,0 +1,6 @@
+@hsgm consistency checked=10 disagree=1
+stream.ring  t-i  regenerate {t} | {i}
+--- unchecked
+c-i: no check compares a card's invariants with its code
+assume the card is the anchor: it is never regenerated
+assume only fresh test results count
