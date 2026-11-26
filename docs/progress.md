@@ -869,6 +869,11 @@
   (B 39–45); 208k characters of code read through the shell (B 86–92k), so 140k tokens written to the cache
   (B 88–96k); hidden 11/11 in both. Every session but the first cost more than in B; the first two took ~11
   minutes each (the agent built the project itself and its runs of all tests waited on the hanging ring test).
+- Time without build and test runs (from the session logs: the build and test calls while the model is idle are
+  taken out): method A 152 s, method B 128–142 s on main, 144–225 s on nightly, 119 s with this ADR; the model
+  itself 147 s against 112–137 s. Build and tests are 80–92% of the wall time in every variant, mostly the hanging
+  ring test of the injected bug: kk_run_tests stops it at its timeout, while the agent alone ran ctest without one
+  and twice waited for the shell's 10-minute limit.
 - Fixes from the final review: a path inside a longer one and the files of imported blocks name a block;
   the answer of `kk_note_bug` lists every open ticket of the block; the sections end with "Any of them that
   started failing after your change is yours to fix."; the test of "other kinds are never known" now checks
