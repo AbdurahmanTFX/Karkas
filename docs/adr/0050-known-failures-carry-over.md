@@ -110,14 +110,44 @@ them only if they are your task; `kk_note_bug` answers with the existing ticket.
 
 ### Measurement
 
-`karkas bench run --scenario s3 --method B --model sonnet --auth subscription --reps 3` with the nightly
-build, the same hidden tests and settings as the baseline; compared with the 3 runs of main:
+`karkas bench run --scenario s3 --method B --model sonnet --auth subscription` with the nightly build, the
+same hidden tests and settings as the baseline. Planned with 3 runs; measured with one (`--reps 1`, the
+author's decision of 2026-11-26) against the existing data: 3 runs of main and 2 of nightly
+(bench/results/compare-2026-11-26). One run is indicative, not a median. Compared:
 - cost, time, model calls, Karkas calls, `kk_note_bug` calls and repeats, the share of shell reads that
   touch only other blocks (the analysis script of the baseline);
 - hidden tests: 11/11 in every run (the anti-goal).
 
 ## Consequences
 
+Measured on 2026-11-27 (bench/results/compare-2026-11-27-known; one run, Release build of b167bb8):
+
+| | main, 3 runs | nightly, 2 runs | this ADR, 1 run |
+|---|---|---|---|
+| cost of the run | $0.558 [0.551–0.596] | $0.590–0.595 | $0.579 |
+| sessions 2–5 (can use the tickets) | $0.412–0.449 | $0.398–0.427 | $0.369 |
+| session 1 (no tickets yet) | $0.109–0.158 | $0.163–0.197 | $0.210 |
+| time | 688 s [535–917] | 795–1192 s | 671 s |
+| model calls / Karkas calls | 56–59 / 25–26 | 65 / 28–29 | 53 / 22 |
+| `kk_note_bug` calls, of them repeats | 7–11, 3–7 (31 of 51 in all 5 runs) | 11–12, 7–8 | 6, 0 |
+| shell output that reads only other blocks | 40% | 50% | 24% |
+| hidden tests | 11/11 ×3 | 11/11 ×2 | 11/11 |
+
+- Where it can act, it works: sessions 2–5 cost less than in any of the five baseline runs (−14% against
+  their median $0.427), and none of them recorded a known bug again (baseline sessions 2–4: 1–4 notes each,
+  mostly repeats). Session 5 fixed its own bug although it was known (T-0002, recorded by session 1). It also
+  found a different bug of the same block (`WavWriter::close` ignores write errors — real, latent in wavkit):
+  the first call got T-0002 as the answer, the second, with `distinct: true`, recorded it — the price of
+  deduplicating by block is one more call for a second bug.
+- The run as a whole is not cheaper: session 1 cannot use tickets (none exist yet) and cost $0.210, above the
+  baseline's sessions 1; with one run this is not separable from noise. It still reads other blocks' code to
+  describe the bugs it records (35k characters of shell output; sessions 2–5: 9–18k) — the target of the next
+  step (precise context for the bug's block).
+- Changed after the measurement (from the final review), not measured: paths inside longer paths and files
+  of imported blocks name a block; the answer of `kk_note_bug` lists every open ticket of the block; the
+  last line of the `kk_run_tests` sections. The first two do not occur in s3; the third adds one line.
+- Limit: in projects with their own build (imported, ADR 0009) `kk_run_tests` has no results per block, so
+  the sections do not appear there; `kk_note_bug` deduplicates there through the listed files.
 - Expected on s3: most repeated notes disappear and most reads of other blocks' code go; the exact gain is
   what the measurement shows. In everyday work the gain depends on how often known failing tests and several
   sessions on one project occur; on s3 they are maximal (five injected bugs at once).

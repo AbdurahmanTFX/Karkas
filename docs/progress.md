@@ -849,3 +849,22 @@
   explains is listed as unexplained; a vacuous k is printed as vacuous; imported leaves and entries are not
   asked for contract tests; the summary points to the assumptions.
 - Tests: 36 in kk_hsgm_tests; golden files in tests/golden/hsgm.
+
+## Nightly — known failures carry over between agent sessions (docs/adr/0050)
+
+- `kk_run_tests` (MCP) ends with the failing blocks that already have an open bug ticket (with the ticket)
+  and those without one; `karkas test` prints what it printed before. `kk_note_bug` records the block of the
+  bug (`block <id>`) and answers with the open tickets of that block instead of creating another;
+  `distinct: true` records a different bug of the same block. Deterministic: the block comes from a path
+  (folder or listed file, also inside an absolute path), else from the longest block id in the text.
+- Measured on s3, method B, sonnet, one run (the author's decision) against the runs of 2026-11-26: cost
+  $0.579 (main $0.558 [0.551–0.596]), sessions 2–5 $0.369 (baseline $0.398–0.449), session 1 $0.210
+  (baseline $0.109–0.197); notes 6, no repeats (baseline 7–12 per run, 61% repeats); shell
+  output that reads only other blocks 24% (baseline 44%); hidden 11/11. Details in the ADR.
+- The first attempt of the measurement ran into the subscription's 5-hour limit: every session ended with an
+  API error, and `karkas bench run` still reported the run as valid (exit 0, "hidden 1/11"); not counted.
+  The bench does not yet mark such runs as failed.
+- Fixes from the final review: a path inside a longer one and the files of imported blocks name a block;
+  the answer of `kk_note_bug` lists every open ticket of the block; the sections end with "Any of them that
+  started failing after your change is yours to fix."; the test of "other kinds are never known" now checks
+  a feature and a change that name a block.
