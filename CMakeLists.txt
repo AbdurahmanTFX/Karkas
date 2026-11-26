@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.29)
-project(karkas VERSION 0.1.1 LANGUAGES C CXX)
+project(karkas VERSION 0.2.0 LANGUAGES C CXX)
+# The version shown by --version and in package names: PROJECT_VERSION plus a pre-release label
+# ("-beta.1"); the label is empty for a release.
+set(KARKAS_VERSION_LABEL "-beta.1")
+set(KARKAS_VERSION "${PROJECT_VERSION}${KARKAS_VERSION_LABEL}")
 if(WIN32)
   enable_language(RC)  # icons, version and manifest of the .exe files (docs/adr/0046)
 endif()

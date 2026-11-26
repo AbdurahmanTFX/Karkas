@@ -6,7 +6,7 @@ add_executable(karkas-gui main.cpp worker.cpp ui.cpp png.cpp i18n.cpp settings.c
 target_link_libraries(karkas-gui PRIVATE kk_core kk_index kk_code kk_agents kk_layout kk_metrics
                       kk_imgui kk_imgui_node_editor kk_imgui_text_edit kk_stb_image spdlog::spdlog Threads::Threads
                       nlohmann_json::nlohmann_json)
-target_compile_definitions(karkas-gui PRIVATE KARKAS_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(karkas-gui PRIVATE KARKAS_VERSION="${KARKAS_VERSION}")
 kk_set_warnings(karkas-gui)
 
 # The application icon in the window's title and task bar (ADR 0046): PNGs embedded, set through GLFW.
