@@ -158,7 +158,8 @@ std::vector<Tool> make_tools(const ServerOptions& o) {
                  {{"type", "object"}, {"properties", {{"block", str_prop("block whose work you review")}}}, {"required", {"block"}}}});
   }
   if (o.run_tests) {
-    t.push_back({"kk_run_tests", "Build and run the tests of a block subtree (no model involved); returns a compact summary.",
+    t.push_back({"kk_run_tests", "Build and run the tests of a block subtree (no model involved); returns a compact summary; failures that "
+                 "already have an open bug ticket are listed as known.",
                  {{"type", "object"}, {"properties", {{"block", str_prop("block id; empty = all")}}}}});
   }
   // The program's own agents (ADR 0024): the same protocol as `karkas task`; in mode "mcp" this

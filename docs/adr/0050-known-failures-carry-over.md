@@ -1,6 +1,6 @@
 # 0050 — Known failures carry over between agent sessions
 
-Status: proposed (branch nightly)
+Status: accepted (branch nightly)
 
 ## Context
 

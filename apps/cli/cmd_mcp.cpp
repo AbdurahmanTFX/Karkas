@@ -37,6 +37,7 @@ namespace kk::cli {
 
 // Provided by cmd_test.cpp when the test pipeline is available.
 std::string run_tests_text(const fs::path& root, const std::string& block);
+std::string mcp_run_tests_text(const fs::path& root, const std::string& block);
 bool have_test_pipeline();
 // Provided by cmd_check.cpp: the text `karkas check` prints.
 std::string check_text(const fs::path& root, bool drift, int* errors);
@@ -111,7 +112,7 @@ AutoRegister reg([](CLI::App& cli, App& app) {
     o.version = KARKAS_VERSION;
     o.analyzer = analyzer();
     if (have_test_pipeline()) {
-      o.run_tests = [root](const std::string& block) { return run_tests_text(root, block); };
+      o.run_tests = [root](const std::string& block) { return mcp_run_tests_text(root, block); };
     }
     o.check = [root] { return check_summary(root); };
     o.propose_change = [root](const std::string& reason, const std::string& diff) -> kk::Result<std::string> {

@@ -138,7 +138,10 @@ kk_model_for <block> explains it.
 Do only the task you were given. A bug you notice on the way that is not your task: do not fix
 it. Record it with kk_note_bug (what is wrong, where, the evidence), name it in your report, and
 go on. It becomes an open ticket; the user (or the session that gave you the task) decides when
-and by whom it is fixed. A subagent reports such finds to its main session the same way.
+and by whom it is fixed. A subagent reports such finds to its main session the same way. When the
+block already has an open bug ticket, kk_note_bug answers with it instead of a second one; and
+kk_run_tests lists the failures that have open tickets as known — investigate one only if it is
+your task.
 
 ## Bugs
 Descend from the symptom: kk_overview, the suspect group (kk_view), its children, down to a
