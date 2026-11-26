@@ -513,7 +513,14 @@ std::string ticket_block(const Ticket& t, const Schema& schema) {
     if (!x.starts_with("found at ")) continue;
     if (auto b = block_named_in(x.substr(9), schema); !b.empty()) return b;
   }
-  return block_named_in(t.symptom.value, schema);
+  if (auto b = block_named_in(t.symptom.value, schema); !b.empty()) return b;
+  // Other facts (a human's "contract stream.ring/no_drop FAIL", karkas debug --fact ...).
+  for (const auto& f : t.facts) {
+    std::string_view x = f.text;
+    if (x.starts_with("block ") || x.starts_with("found at ")) continue;
+    if (auto b = block_named_in(x, schema); !b.empty()) return b;
+  }
+  return {};
 }
 
 Result<std::map<std::string, std::vector<Ticket>>> open_bugs(const TicketStore& store, const Schema& schema) {

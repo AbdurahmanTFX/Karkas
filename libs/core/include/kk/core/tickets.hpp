@@ -85,7 +85,7 @@ struct Schema;
 // is not [a-z0-9_./], the one after is not [a-z0-9_]); "" when none.
 std::string block_named_in(std::string_view text, const Schema& schema);
 // The block a ticket is about: a fact "block <id>" of an existing block; else block_named_in of each
-// "found at ..." fact in order, then of the symptom; "" when none.
+// "found at ..." fact in order, then of the symptom, then of the other facts; "" when none.
 std::string ticket_block(const Ticket& t, const Schema& schema);
 // Bug tickets whose status is not "closed", by ticket_block; tickets without a block are left out;
 // each list in id order.

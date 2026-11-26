@@ -64,6 +64,8 @@ Anti-goals
    deepest such block;
 3. otherwise the longest block id of the schema that occurs as a whole word outside a path (`io.writer`,
    `stream.ring`). Paths come first because `blocks/dsp/echo/…` contains the id `dsp` of the group.
+4. when neither the `found at` facts nor the symptom name a block, the other facts in order (a human's
+   `karkas debug --fact "contract stream.ring/no_drop FAIL"`).
 
 ### Open bug tickets of a block
 

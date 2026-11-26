@@ -308,3 +308,13 @@ TEST_CASE("tickets: known failures name their tickets and the rest stay unexplai
   CHECK(text.find("If one of the known failures is the bug of your task, fix it; otherwise leave it.") != std::string::npos);
   CHECK(known_failures_text({}, *bugs, *s).empty());
 }
+
+TEST_CASE("tickets: other facts name the block when nothing before them does") {
+  kk::test::TempDir d{"tk"};
+  auto s = load_schema(kk::test::fixture("wavkit"));
+  REQUIRE(s);
+  TicketStore store(d.path());
+  auto t = store.create(TicketKind::Bug, "human", "crackle after 10 s", {"contract stream.ring/no_drop FAIL"});
+  REQUIRE(t);
+  CHECK(ticket_block(*t, *s) == "stream.ring");
+}
