@@ -5,6 +5,7 @@
 #include <csignal>
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <map>
 #include <set>
@@ -458,6 +459,96 @@ std::string path_view(const Ticket& t, std::string_view at, std::size_t token_bu
     }
     out = render(slim, folded);
   }
+  return out;
+}
+
+// --- known failures (docs/adr/0050) -------------------------------------------------------
+
+namespace {
+
+bool id_char(char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'; }
+bool path_char(char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '.' || c == '/' || c == '-'; }
+
+// `needle` occurs in `text` where `before_ok` accepts the character before it (or it starts the text)
+// and `after_ok` the character after it (or it ends the text).
+template <class Before, class After>
+bool occurs(std::string_view text, std::string_view needle, Before before_ok, After after_ok) {
+  if (needle.empty()) return false;
+  for (auto pos = text.find(needle); pos != std::string_view::npos; pos = text.find(needle, pos + 1)) {
+    const auto end = pos + needle.size();
+    if ((pos == 0 || before_ok(text[pos - 1])) && (end >= text.size() || after_ok(text[end]))) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+std::string block_named_in(std::string_view text, const Schema& schema) {
+  // A folder of a block as a path: "blocks/dsp/echo/impl/echo.cpp" names dsp.echo, not the group dsp.
+  const Block* best = nullptr;
+  for (const auto& b : schema.blocks) {
+    bool found = occurs(
+        text, b.dir, [](char c) { return !path_char(c); }, [](char c) { return c == '/' || c == ':' || !path_char(c); });
+    if (found && (best == nullptr || b.dir.size() > best->dir.size())) best = &b;
+  }
+  if (best != nullptr) return best->id;
+  // A block id as a whole word outside a path; the longest wins (stream.ring over stream).
+  for (const auto& b : schema.blocks) {
+    bool found = occurs(
+        text, b.id, [](char c) { return !(id_char(c) || c == '.' || c == '/'); }, [](char c) { return !id_char(c); });
+    if (found && (best == nullptr || b.id.size() > best->id.size())) best = &b;
+  }
+  return best != nullptr ? best->id : std::string();
+}
+
+std::string ticket_block(const Ticket& t, const Schema& schema) {
+  for (const auto& f : t.facts) {
+    std::string_view x = f.text;
+    if (!x.starts_with("block ")) continue;
+    auto id = trim(x.substr(6));
+    if (schema.find(id) != nullptr) return std::string(id);
+  }
+  for (const auto& f : t.facts) {
+    std::string_view x = f.text;
+    if (!x.starts_with("found at ")) continue;
+    if (auto b = block_named_in(x.substr(9), schema); !b.empty()) return b;
+  }
+  return block_named_in(t.symptom.value, schema);
+}
+
+Result<std::map<std::string, std::vector<Ticket>>> open_bugs(const TicketStore& store, const Schema& schema) {
+  auto all = store.list();
+  if (!all) return std::unexpected(all.error());
+  std::map<std::string, std::vector<Ticket>> out;
+  for (auto& t : *all) {
+    if (t.kind_enum() != TicketKind::Bug || t.status_enum() == TicketStatus::Closed) continue;
+    auto b = ticket_block(t, schema);
+    if (!b.empty()) out[b].push_back(std::move(t));
+  }
+  return out;
+}
+
+std::string known_failures_text(const std::vector<std::string>& failing,
+                                const std::map<std::string, std::vector<Ticket>>& bugs, const Schema& schema) {
+  (void)schema;
+  std::vector<std::string> blocks = failing;
+  std::sort(blocks.begin(), blocks.end());
+  blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+  std::string known, none;
+  for (const auto& f : blocks) {
+    std::vector<const Ticket*> tickets;
+    for (const auto& [b, list] : bugs) {
+      if (!Schema::is_under(f, b)) continue;
+      for (const auto& t : list) tickets.push_back(&t);
+    }
+    std::sort(tickets.begin(), tickets.end(), [](const Ticket* a, const Ticket* b) { return a->id < b->id; });
+    if (tickets.empty()) none += f + "\n";
+    for (const auto* t : tickets) known += fmt::format("{}  {}  {}\n", f, t->id, t->symptom.value);
+  }
+  std::string out;
+  if (!known.empty()) out += "--- known: these failures already have an open ticket\n" + known;
+  if (!none.empty()) out += "--- no ticket: investigate them only if they are your task\n" + none;
+  if (!known.empty()) out += "If one of the known failures is the bug of your task, fix it; otherwise leave it.\n";
   return out;
 }
 

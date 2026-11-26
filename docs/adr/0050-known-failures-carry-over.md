@@ -60,10 +60,10 @@ Anti-goals
 
 `core::ticket_block(const Ticket&, const Schema&) -> std::string` (empty when none):
 1. a fact `block <id>` (written by `kk_note_bug` from now on);
-2. otherwise, in the facts `found at …` and then the symptom: the longest block id of the schema that occurs
-   as a whole word (`io.writer`, `stream.ring`);
-3. otherwise a path `blocks/<dir>/…` (or the block's own `dir`) mapped to the block whose folder contains it
-   (the deepest one).
+2. otherwise, in the facts `found at …` and then the symptom: a path under a block's folder (`dir`), the
+   deepest such block;
+3. otherwise the longest block id of the schema that occurs as a whole word outside a path (`io.writer`,
+   `stream.ring`). Paths come first because `blocks/dsp/echo/…` contains the id `dsp` of the group.
 
 ### Open bug tickets of a block
 

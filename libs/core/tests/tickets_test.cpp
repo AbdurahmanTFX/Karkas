@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include <fmt/format.h>
 
+#include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/tickets.hpp"
 #include "kk/test/support.hpp"
@@ -255,4 +256,55 @@ TEST_CASE("tickets: a human edits the whole ticket, the id stays, a locked ticke
   REQUIRE_FALSE(busy);
   CHECK(busy.error().message.find("being worked on") != std::string::npos);
   CHECK_FALSE(store.edit_by_human("T-0042", before));
+}
+
+// --- known failures (ADR 0050) -------------------------------------------------------------
+
+TEST_CASE("tickets: a path names the deepest block, not an id inside the path") {
+  auto s = load_schema(kk::test::fixture("wavkit"));
+  REQUIRE(s);
+  CHECK(block_named_in("blocks/dsp/echo/impl/echo.cpp:24", *s) == "dsp.echo");
+  CHECK(block_named_in("io.writer, blocks/io/writer/impl (WavWriter::write)", *s) == "io.writer");
+  CHECK(block_named_in("Ring buffer corrupts frames in stream.ring at wraparound", *s) == "stream.ring");
+  CHECK(block_named_in("contract stream.ring/no_drop FAIL", *s) == "stream.ring");
+  CHECK(block_named_in("the output sounds wrong", *s).empty());
+}
+
+TEST_CASE("tickets: open bugs by block leave out closed tickets and other kinds") {
+  kk::test::TempDir d{"tk"};
+  auto s = load_schema(kk::test::fixture("wavkit"));
+  REQUIRE(s);
+  TicketStore store(d.path());
+  REQUIRE(store.create(TicketKind::Bug, "agent", "bytes swapped", {"found at blocks/io/writer/impl/writer.cpp:40"}));
+  REQUIRE(store.create(TicketKind::Bug, "agent", "ring drops frames", {"block stream.ring"}));
+  REQUIRE(store.create(TicketKind::Feature, "human", "add reverb to dsp.chain", {}));
+  auto closed = store.create(TicketKind::Bug, "agent", "mix not clipped", {"found at mix"});
+  REQUIRE(closed);
+  closed->status.value = "closed";
+  REQUIRE(store.save(*closed));
+  auto bugs = open_bugs(store, *s);
+  REQUIRE(bugs);
+  CHECK(bugs->size() == 2);
+  REQUIRE(bugs->contains("io.writer"));
+  CHECK(bugs->at("io.writer")[0].symptom.value == "bytes swapped");
+  CHECK(bugs->contains("stream.ring"));
+  CHECK_FALSE(bugs->contains("mix"));
+}
+
+TEST_CASE("tickets: known failures name their tickets and the rest stay unexplained") {
+  kk::test::TempDir d{"tk"};
+  auto s = load_schema(kk::test::fixture("wavkit"));
+  REQUIRE(s);
+  TicketStore store(d.path());
+  REQUIRE(store.create(TicketKind::Bug, "agent", "bytes swapped", {"block io.writer"}));
+  REQUIRE(store.create(TicketKind::Bug, "agent", "gain applied twice", {"block dsp.chain"}));
+  auto bugs = open_bugs(store, *s);
+  REQUIRE(bugs);
+  auto text = known_failures_text({"io.writer", "dsp", "dsp.echo"}, *bugs, *s);
+  CHECK(text.find("--- known: these failures already have an open ticket\n") != std::string::npos);
+  CHECK(text.find("io.writer  T-0001  bytes swapped\n") != std::string::npos);
+  CHECK(text.find("dsp  T-0002  gain applied twice\n") != std::string::npos);  // a group: the tickets under it
+  CHECK(text.find("--- no ticket: investigate them only if they are your task\ndsp.echo\n") != std::string::npos);
+  CHECK(text.find("If one of the known failures is the bug of your task, fix it; otherwise leave it.") != std::string::npos);
+  CHECK(known_failures_text({}, *bugs, *s).empty());
 }
