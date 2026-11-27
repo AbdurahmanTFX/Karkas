@@ -23,7 +23,8 @@ VoidResult append_file(const fs::path& p, std::string_view content);
 // "stream.ring" → "stream_ring" (CMake target names, 5.5).
 std::string target_name(std::string_view block_id);
 
-bool is_code_file(const fs::path& p);  // .cpp .cc .cxx .c .hpp .hh .h .hxx .ipp .inl
+// A file of a language Karkas knows (core::languages(): C/C++, Python, Go, Rust, shell, ...; ADR 0051).
+bool is_code_file(const fs::path& p);
 
 // A build tree by its folder name: build, build-debug, build_linux, build.x, build64, buildRelease — not
 // builder or buildings ("build" then a lowercase letter is a word of its own: leveldb's db/builder).

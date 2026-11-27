@@ -24,6 +24,7 @@
 #include "kk/code/gen.hpp"
 #include "kk/core/cancel.hpp"
 #include "kk/core/notes.hpp"
+#include "kk/core/lang.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/validate.hpp"
@@ -134,7 +135,7 @@ std::vector<std::string> own_sources(const core::Block& b) {
   std::vector<std::string> out;
   for (const auto& f : b.file_list()) {
     fs::path p(f);
-    if (core::is_code_file(p) && p.extension().string().starts_with(".c")) out.push_back(f);
+    if (core::language_of(p) != nullptr && core::language_of(p)->id == "cpp" && !core::is_interface_file(p)) out.push_back(f);
   }
   return out;
 }
@@ -520,7 +521,7 @@ struct Engine::Impl {
     std::set<std::string> out;
     for (const auto& f : b->file_list()) {
       fs::path p = s.root / f;
-      if (!core::is_code_file(p) || !p.extension().string().starts_with(".c")) continue;
+      if (core::language_of(p) == nullptr || core::is_contract_file(p)) continue;  // the sources: C/C++ files that are no header
       auto text = core::read_file(p);
       if (!text) continue;
       for (const auto& fn : wanted) {
@@ -908,7 +909,7 @@ struct Engine::Impl {
             }
             for (const auto& f : nb->file_list()) {
               fs::path p = s->root / f;
-              if (!core::is_code_file(p) || p.extension().string().starts_with(".c")) continue;
+              if (!core::is_contract_file(p)) continue;  // headers, or the files of a language without them (ADR 0051)
               if (!add_used_declarations(out, p, f, used, neighbor_budget)) more.push_back(f);
             }
           }
@@ -1030,10 +1031,11 @@ struct Engine::Impl {
         api_note = imported_unfrozen_note;
       } else {
         api_access = ApiAccess::Imported;
-        api_note = "--- headers of this block\ntheir public part is the contract: keep every public or protected declaration "
-                   "as it is. Free: private members (fields, helper methods, types), inline bodies, initial values, "
-                   "comments, new #include lines and new public constants. A new or changed public function, type or "
-                   "field is a card change: report needs_contract_change with the card line in proposal.\n";
+        api_note = "--- headers of this block (in a language without headers: its files)\ntheir public part is the contract: "
+                   "keep every public or protected declaration as it is. Free: private members (fields, helper methods, "
+                   "types), bodies, initial values, comments, new #include or import lines and new public constants (C/C++). "
+                   "A new or changed public function, type, field or shell subcommand is a card change: report "
+                   "needs_contract_change with the card line in proposal.\n";
       }
     } else if (!tid.empty() && prompt_name == "worker") {
       auto st = index::StateStore(root).load();

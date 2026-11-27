@@ -1,5 +1,7 @@
 #include "kk/core/paths.hpp"
 
+#include "kk/core/lang.hpp"
+
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -103,12 +105,7 @@ std::string target_name(std::string_view block_id) {
   return s;
 }
 
-bool is_code_file(const fs::path& p) {
-  static constexpr std::array<std::string_view, 10> kExt = {".cpp", ".cc",  ".cxx", ".c",   ".hpp",
-                                                            ".hh",  ".h",   ".hxx", ".ipp", ".inl"};
-  auto ext = p.extension().string();
-  return std::find(kExt.begin(), kExt.end(), ext) != kExt.end();
-}
+bool is_code_file(const fs::path& p) { return language_of(p) != nullptr; }
 
 bool is_build_dir_name(std::string_view name) {
   if (!name.starts_with("build")) return false;

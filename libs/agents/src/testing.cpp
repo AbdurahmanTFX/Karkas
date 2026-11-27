@@ -12,6 +12,7 @@
 #include <set>
 
 #include "kk/code/gen.hpp"
+#include "kk/core/lang.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/platform.hpp"
 #include "kk/core/text.hpp"
@@ -302,7 +303,12 @@ kk::Result<TestRun> TestService::build_and_test(const std::vector<std::string>& 
   auto schema = core::load_schema(root_);
   if (!schema) return std::unexpected(schema.error());
   // An imported project keeps its own CMakeLists.txt: build it as it is (ADR 0016).
-  const bool own = code::has_own_cmake(root_);
+  // A project without C++ (ADR 0051) has nothing Karkas could generate: it builds with its own command.
+  const auto langs = core::project_languages(schema->project);
+  const bool cpp = std::any_of(langs.begin(), langs.end(), [](const core::Language* l) { return l->id == "cpp"; });
+  const bool own = code::has_own_cmake(root_) || !cpp;
+  // Without a build command such a project has no build step (a script language): its tests still run.
+  const bool nothing_to_build = !cpp && !code::has_own_cmake(root_) && cfg_.build_command.empty() && cfg_.verify_command.empty();
   if (!own) {
     if (auto g = code::write_cmake(*schema); !g) return std::unexpected(g.error());
   }
@@ -319,7 +325,9 @@ kk::Result<TestRun> TestService::build_and_test(const std::vector<std::string>& 
   // by Karkas would start a second, full build next to it (ADR 0027). The quicker verify_command, when
   // there is one, checks the agents' work instead of the release build (ADR 0029).
   const std::string& own_command = cfg_.verify_command.empty() ? cfg_.build_command : cfg_.verify_command;
-  auto b = own && !own_command.empty() ? runner::build_command(own_command, root_, bo.timeout) : runner::build(bo);
+  auto b = nothing_to_build                ? kk::Result<runner::BuildResult>(runner::BuildResult{true, false, "", "", "", {}})
+           : own && !own_command.empty() ? runner::build_command(own_command, root_, bo.timeout)
+                                         : runner::build(bo);
   if (!b) return std::unexpected(b.error());
   out.build_ok = b->ok;
   out.build_summary = b->summary;
@@ -347,6 +355,12 @@ kk::Result<TestRun> TestService::build_and_test(const std::vector<std::string>& 
   if (build_only) {
     out.ok = true;
     out.text = "build ok\n";
+    return out;
+  }
+  if (own && !cpp && cfg_.test_command.empty()) {
+    out.ok = true;
+    out.text = fmt::format("build ok; no tests: a project in {} runs its tests with [test] command in karkas.toml\n",
+                           schema->project.lang.value);
     return out;
   }
   if (own) {

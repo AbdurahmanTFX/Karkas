@@ -26,6 +26,8 @@ source of truth and the code follows them. MCP server "karkas" (without it: `kar
   [fill] line with concrete numbers and checks, and accept the work only after kk_review (visual
   work: a visual spec in numbers, and you look at the preview image it delivers). Fixes of a few
   lines you do yourself (kk_guide: Models and delegation).
+- Any language: `lang` of project.ksl names the project's languages (`lang cpp python bash`). Outside
+  C/C++ a file is its own api: its public names (shell: its subcommands) are the contract.
 - Imported project (own CMakeLists.txt): add new files to its build yourself; kk_run_tests builds
   with `[project] build_command` (when set) and runs `[test] command` of karkas.toml.
 - Mode mcp (`[agents] mode = "mcp"`): Karkas's own agents do the work and you are their model —

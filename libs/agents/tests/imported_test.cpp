@@ -798,3 +798,22 @@ TEST_CASE("imported ticket: a worker's done with no file of its block changed is
   CHECK_FALSE(core::contains(t, "fix     game.world:"));
   CHECK_MESSAGE(core::contains(t, "status  closed"), t);
 }
+
+TEST_CASE("imported blocks: a file of a language without headers keeps its public names (ADR 0051)") {
+  using kk::agents::contract_kept;
+  const std::string py = "def push(frame):\n    return _wrap(frame)\n\n\ndef _wrap(frame):\n    return frame\n";
+  std::string why;
+  // Bodies and private names are free.
+  CHECK(contract_kept("app/ring.py", py, "def push(frame):\n    return frame\n", &why));
+  // A public function gone, a changed parameter count or a new public function is a card change.
+  CHECK_FALSE(contract_kept("app/ring.py", py, "def _wrap(frame):\n    return frame\n", &why));
+  CHECK(kk::core::contains(why, "push"));
+  CHECK_FALSE(contract_kept("app/ring.py", py, "def push(frame, n):\n    return frame\n", &why));
+  CHECK_FALSE(contract_kept("app/ring.py", py, py + "\ndef reset():\n    pass\n", &why));
+  CHECK(kk::core::contains(why, "new public"));
+  // A shell script's subcommands are its contract; data files have none.
+  const std::string sh = "#!/bin/bash\ncase \"$1\" in\n  start) echo s ;;\n  stop) echo t ;;\nesac\n";
+  CHECK(contract_kept("run.sh", sh, core::replace_all(sh, "echo s", "echo started"), &why));
+  CHECK_FALSE(contract_kept("run.sh", sh, core::replace_all(sh, "  stop) echo t ;;\n", ""), &why));
+  CHECK(contract_kept("conf/idle.conf", "a = 1\n", "b = 2\n", &why));
+}

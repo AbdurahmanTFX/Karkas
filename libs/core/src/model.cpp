@@ -253,7 +253,7 @@ const std::vector<DirectiveSpec>& directive_table() {
       {"block", "hist", static_cast<int>(kMaxHistEntries) + 1, "<T-NNNN> <text>", "leaf,entry"},
       // @project (4.3)
       {"project", "idea", 1, "<text>", ""},
-      {"project", "lang", 1, "<ident>", ""},
+      {"project", "lang", 1, "<ident> [<ident>...]", ""},
       {"project", "build", 1, "<word>", ""},
       {"project", "std", 1, "<word>", ""},
       {"project", "test", 1, "<word>", ""},
@@ -364,6 +364,21 @@ Result<Scalar> scalar_word(const Record& rec, const Line& l,
                 loc_of(rec, l, (*t)[0].col));
   }
   return Scalar{w, l.trivia, l.line, l.col, true};
+}
+
+// One or more identifiers kept as one space-separated value: "lang cpp python lua" (docs/adr/0051).
+Result<Scalar> scalar_words(const Record& rec, const Line& l) {
+  auto t = toks(rec, l);
+  if (!t) return std::unexpected(t.error());
+  if (t->empty()) return fail("S04", fmt::format("'{}' takes one or more words", l.directive), loc_of(rec, l, l.text_col));
+  std::vector<std::string> words;
+  for (const auto& w : *t) {
+    if (w.kind != Token::Kind::Word || !is_ident(w.text)) {
+      return fail("S04", fmt::format("'{}' takes identifiers [a-z][a-z0-9_]*, got '{}'", l.directive, w.text), loc_of(rec, l, w.col));
+    }
+    words.push_back(w.text);
+  }
+  return Scalar{join(words, " "), l.trivia, l.line, l.col, true};
 }
 
 // One block id (ident(.ident)*): the scope of a ticket (docs/adr/0034).
@@ -718,7 +733,7 @@ Result<Project> parse_project(const Record& rec) {
     if (d == "idea") {
       r = assign(scalar_text(rec, l), p.idea);
     } else if (d == "lang") {
-      r = assign(scalar_word(rec, l, {}, true), p.lang);
+      r = assign(scalar_words(rec, l), p.lang);
     } else if (d == "build") {
       r = assign(scalar_word(rec, l), p.build);
     } else if (d == "std") {

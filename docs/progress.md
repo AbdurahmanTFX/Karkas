@@ -888,3 +888,27 @@
   C++ runtime static), `check` and `hsgm` on wavkit; Windows under wine (`--version`, `hsgm`).
 - Pre-release v0.2.0-beta.1 on GitHub from nightly (ADR 0049, ADR 0050 and the s3 measurements); v0.1.1 stays
   the latest release.
+
+## ADR 0051 — any language (2026-11-28)
+
+- `kk/core/lang.hpp`: 28 languages as data (extensions, comments, strings, interface files, whether the
+  interface lives in headers); `is_code_file` is "a known language", `is_interface_file` / `is_contract_file`
+  replace the header checks of the index, import, sandbox, brief and engine.
+- `lang` of project.ksl takes several words (`lang cpp bash lua python`); D06, import and init take the code of
+  these languages; an empty or unknown `lang` is C/C++ as before. `karkas init` writes the languages it finds,
+  most files first, and the C++ build lines only where there is C++.
+- `kk/code/lexical.hpp`: facts of every other language without a new dependency — masking by the language's
+  syntax (heredocs, Lua long brackets, triple quotes), declarations with scope (braces or indentation),
+  parameter counts without the receiver, visibility by the language's rule, imports, calls; shell subcommands
+  (`case "$1" in` labels) are public symbols of kind `command`; entries (`__main__`, `static void main`) are
+  `main`. `resolve_import` per language (Python, JS/TS, Go, Rust, JVM, Lua, Ruby, PHP, Perl, Haskell, Nim, Dart,
+  shell `source`); D01/D02 for imports, D04 for subcommands and unknown parameter counts.
+- Import: one leaf per file, a Go package per folder, `index.ts` / `mod.rs` / `__init__.py` named by the folder,
+  `any` per parameter; test programs `*.spec.ts`, `*_spec.rb`, `test-*.sh`, `conftest.py`. A data-only imported
+  block is `implemented`.
+- Agents: a file of a language without headers is the contract other blocks read and keeps its public names
+  (`contract_kept`); only C/C++ files go into a CMakeLists.txt or `build()`'s quick compile; a project without
+  C++ gets no generated CMake, mocks, probe or skeletons and builds with `build_command` (none: no build step)
+  and tests with `[test] command`.
+- Not yet: schema-first (native) projects in other languages (api/ contracts and contract tests in the
+  language, prompts).

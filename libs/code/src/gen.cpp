@@ -1,5 +1,7 @@
 #include "kk/code/gen.hpp"
 
+#include "kk/core/lang.hpp"
+
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -288,7 +290,17 @@ bool has_own_cmake(const fs::path& root) {
   return text && !cmake_hashes(*text).generated;
 }
 
+namespace {
+// Generation writes C++ (CMake, doctest, mocks, skeletons): a project without C++ in `lang` builds and
+// tests itself through [project] build_command and [test] command (ADR 0051).
+bool generates_cpp(const core::Schema& s) {
+  const auto langs = core::project_languages(s.project);
+  return std::any_of(langs.begin(), langs.end(), [](const core::Language* l) { return l->id == "cpp"; });
+}
+}  // namespace
+
 kk::Result<GenResult> write_cmake(const core::Schema& s) {
+  if (!generates_cpp(s)) return GenResult{};
   GenResult g;
   auto p = s.root / "CMakeLists.txt";
   if (fs::exists(p)) {
@@ -414,6 +426,7 @@ std::string mock_text(const core::Block& owner, const std::vector<Interface>& it
 }  // namespace
 
 kk::Result<GenResult> write_mocks(const core::Schema& s, std::string_view block) {
+  if (!generates_cpp(s)) return GenResult{};
   GenResult g;
   CppAnalyzer an;
   for (const auto& b : s.blocks) {
@@ -444,6 +457,7 @@ kk::Result<GenResult> write_mocks(const core::Schema& s, std::string_view block)
 // --- probe (12.5) ------------------------------------------------------------------------
 
 kk::Result<GenResult> write_probe(const core::Schema& s) {
+  if (!generates_cpp(s)) return GenResult{};
   GenResult g;
   auto text = target_template("karkas_probe.hpp");
   if (!text) return std::unexpected(text.error());
@@ -475,6 +489,7 @@ kk::Result<GenResult> write_probe(const core::Schema& s) {
 // --- skeletons --------------------------------------------------------------------------------
 
 kk::Result<GenResult> write_skel(const core::Schema& s, std::string_view block) {
+  if (!generates_cpp(s)) return GenResult{};
   GenResult g;
   const auto& dirs = s.project.dirs;
   auto touch = [&](const fs::path& p) -> kk::VoidResult {

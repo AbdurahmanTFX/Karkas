@@ -20,8 +20,9 @@ enum class ProjectKind { Auto, Code, Notes };
 
 struct InitResult {
   std::string name;                  // project id
-  bool existing_code = false;        // the folder already had C/C++ code: next is import
+  bool existing_code = false;        // the folder already had code (any language, ADR 0051): next is import
   bool notes = false;                // a notes project (project.ksl: lang notes)
+  std::vector<std::string> langs;    // languages of the code found there, most files first (ADR 0051)
   std::vector<std::string> imported; // notes projects: cards made for the .txt files already there
   std::vector<std::string> written;  // project-relative files created (existing ones are kept)
 };
@@ -32,6 +33,9 @@ std::string project_id_from(std::string_view folder);
 
 // True when the folder (outside build*/, hidden folders, third_party/, _deps/) holds C/C++ code.
 bool has_code(const std::filesystem::path& dir);
+// The languages of the code in `dir` (core::Language ids), most files first; build trees, vendored code
+// and package caches do not count (ADR 0051).
+std::vector<std::string> code_languages(const std::filesystem::path& dir);
 
 // Writes the Karkas guide for coding agents into <root>/CLAUDE.md (Claude Code reads it at
 // start): a block between "<!-- karkas:begin -->" and "<!-- karkas:end -->", created, replaced

@@ -1,10 +1,12 @@
 #pragma once
-// karkas import (stage 11, docs/adr/0009): turns existing C/C++ code into blocks without
-// moving it. Deterministic, no model calls:
+// karkas import (stage 11, docs/adr/0009): turns existing code into blocks without moving it, in
+// every language of `lang` in project.ksl (docs/adr/0051). Deterministic, no model calls:
 //   folders                  → groups (a leading src/ is dropped, one-child chains fold)
-//   x.cpp + x.hpp (any area) → one leaf whose card lists the files ("files")
-//   public functions/methods of the headers → fn ports (names as KSL identifiers)
-//   calls of those functions → call links; includes without calls → use links
+//   x.cpp + x.hpp (any area) → one leaf whose card lists the files ("files"); x.py, x.ts, x.sh → one
+//   leaf per file; a Go package (folder) → one leaf; index.ts, mod.rs, __init__.py → named by the folder
+//   public functions/methods of the headers (other languages: their public names, shell subcommands)
+//                            → fn ports (names as KSL identifiers)
+//   calls of those functions → call links; includes / imports without calls → use links
 //   main()                   → the entry block; header-only modules without calls → shared
 //   first comment of the header → purpose (otherwise a placeholder to describe later)
 //   test folders and test programs (foo_test.cc next to foo.cc) stay out: the project's own suite

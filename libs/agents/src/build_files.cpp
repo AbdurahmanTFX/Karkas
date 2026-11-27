@@ -1,4 +1,5 @@
 #include "kk/agents/build_files.hpp"
+#include "kk/core/lang.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -82,7 +83,8 @@ std::optional<fs::path> named_file(const fs::path& root, const fs::path& list_di
   }
   if (token.empty() || core::contains(token, "${") || core::contains(token, "*")) return std::nullopt;
   fs::path p(token);
-  if (!core::is_code_file(p)) return std::nullopt;
+  const auto* lang = core::language_of(p);
+  if (lang == nullptr || lang->id != "cpp") return std::nullopt;  // a CMakeLists.txt names C and C++ files
   return fs::relative((list_dir / p).lexically_normal(), root).lexically_normal();
 }
 
@@ -115,7 +117,9 @@ std::vector<std::string> add_sources_to_build(const fs::path& root, const std::v
   for (const auto& f : files) {
     fs::path file = fs::path(std::string(core::trim(f))).lexically_normal();
     std::error_code ec;
-    if (file.empty() || file.is_absolute() || !core::is_code_file(file) || !fs::is_regular_file(root / file, ec)) continue;
+    // A CMakeLists.txt builds C and C++; a new Python or shell file of a block needs no build entry (ADR 0051).
+    const auto* lang = core::language_of(file);
+    if (file.empty() || file.is_absolute() || lang == nullptr || lang->id != "cpp" || !fs::is_regular_file(root / file, ec)) continue;
     const bool header = is_header(file);
     // Already in a build file?
     bool named = false;

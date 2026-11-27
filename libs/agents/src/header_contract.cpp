@@ -5,12 +5,15 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <map>
 #include <cctype>
 #include <regex>
 #include <set>
 #include <vector>
 
 #include "kk/agents/sandbox.hpp"
+#include "kk/code/lexical.hpp"
+#include "kk/core/lang.hpp"
 #include "kk/core/text.hpp"
 
 namespace kk::agents {
@@ -382,6 +385,43 @@ bool header_contract_kept(std::string_view before, std::string_view after, std::
     if (is_constant_decl(text)) continue;
     if (why != nullptr) *why = fmt::format("`{}`{} is a new public declaration", text, where(scope));
     return false;
+  }
+  return true;
+}
+
+bool contract_kept(const std::filesystem::path& file, std::string_view before, std::string_view after, std::string* why) {
+  const auto* lang = core::language_of(file);
+  if (lang == nullptr) return true;  // data: no contract
+  if (lang->id == "cpp") return header_contract_kept(before, after, why);
+  const bool iface = core::is_interface_file(file);
+  auto publics = [&](std::string_view text) {
+    std::map<std::string, int> out;  // "kind scope.name" -> parameters
+    for (const auto& s : code::analyze_lexical(*lang, text, iface).symbols) {
+      if (!s.exported) continue;
+      const bool type = s.kind == "class" || s.kind == "struct" || s.kind == "enum" || s.kind == "alias";
+      out[fmt::format("{} {}{}", type ? "type" : s.kind == "command" ? "subcommand" : "function", s.scope.empty() ? "" : s.scope + ".",
+                      s.name)] = s.params;
+    }
+    return out;
+  };
+  const auto was = publics(before);
+  const auto now = publics(after);
+  for (const auto& [name, params] : was) {
+    auto it = now.find(name);
+    if (it == now.end()) {
+      if (why != nullptr) *why = fmt::format("public {} is gone", name);
+      return false;
+    }
+    if (it->second != params) {
+      if (why != nullptr) *why = fmt::format("public {} takes {} parameter(s) instead of {}", name, it->second, params);
+      return false;
+    }
+  }
+  for (const auto& [name, params] : now) {
+    if (!was.contains(name)) {
+      if (why != nullptr) *why = fmt::format("new public {}", name);
+      return false;
+    }
   }
   return true;
 }

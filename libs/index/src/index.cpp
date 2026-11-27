@@ -10,6 +10,7 @@
 #include <set>
 
 #include "kk/core/notes.hpp"
+#include "kk/core/lang.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/validate.hpp"
@@ -184,13 +185,10 @@ void add_files_under(const core::Schema& schema, const fs::path& dir, const std:
   }
 }
 
-bool is_header(const fs::path& p) {
-  auto ext = p.extension().string();
-  return ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx" || ext == ".ipp" || ext == ".inl";
-}
-
-// Files listed by "files" of an imported block: headers are its api, the rest its impl. Listed files
-// that are not code (data, configuration; ADR 0027) belong to the block but are no code facts.
+// Files listed by "files" of an imported block: headers (and the interface files of other languages:
+// .pyi, .d.ts, .mli) are its api, the rest its impl; a file of a language without headers is impl
+// whose public names the analyzer marks exported (ADR 0051). Listed files that are not code (data,
+// configuration; ADR 0027) belong to the block but are no code facts.
 void add_listed_files(const core::Schema& schema, const core::Block& b, std::vector<CodeFile>& out) {
   for (const auto& rel : b.file_list()) {
     auto p = schema.root / rel;
@@ -200,7 +198,7 @@ void add_listed_files(const core::Schema& schema, const core::Block& b, std::vec
     CodeFile f;
     f.path = rel;
     f.block = b.id;
-    f.role = is_header(p) ? "api" : "impl";
+    f.role = core::is_interface_file(p) ? "api" : "impl";
     f.hash = xxh3_hex(*text);
     f.lines = static_cast<int>(std::count(text->begin(), text->end(), '\n'));
     f.skeleton = text->find(kSkeletonMarker) != std::string::npos;
@@ -238,7 +236,7 @@ std::int64_t mtime_s(const fs::path& p) {
 
 core::BlockStatus compute_status(const core::Block& b, const std::vector<const CodeFile*>& files,
                                  const ProjectState& st, bool drift_error, const std::string& api_hash,
-                                 const std::string& code_hash) {
+                                 const std::string& code_hash, bool listed_exist) {
   using core::BlockStatus;
   if (drift_error) return BlockStatus::Drift;
   if (st.review.contains(b.id)) return BlockStatus::NeedsReview;
@@ -258,6 +256,8 @@ core::BlockStatus compute_status(const core::Block& b, const std::vector<const C
   if (b.external() && std::any_of(files.begin(), files.end(), [](const CodeFile* f) { return f->role == "api" && !f->skeleton; })) {
     return BlockStatus::Implemented;
   }
+  // An imported block of data or configuration only (hypridle.conf, a dunstrc): its files exist.
+  if (b.external() && files.empty() && listed_exist) return BlockStatus::Implemented;
   if (contract) return BlockStatus::TestsReady;
   auto fz = st.frozen_api.find(b.id);
   if (fz != st.frozen_api.end() && !api_hash.empty() && fz->second == api_hash) return BlockStatus::ApiFrozen;
@@ -786,7 +786,15 @@ kk::Result<UpdateStats> Index::update(const UpdateOptions& opts) {
     std::string frozen;
     if (auto it = state->frozen_api.find(b.id); it != state->frozen_api.end()) frozen = it->second;
     auto code_h = block_test_hash(links, files, b.id);
-    auto status = b.has_code() ? compute_status(b, by_block[b.id], *state, drift_blocks.contains(b.id), api_h, code_h)
+    bool listed_exist = false;
+    if (b.external()) {
+      const auto list = b.file_list();
+      std::error_code fec;
+      listed_exist = !list.empty() && std::all_of(list.begin(), list.end(), [&](const std::string& f) {
+        return fs::is_regular_file(schema->root / f, fec);
+      });
+    }
+    auto status = b.has_code() ? compute_status(b, by_block[b.id], *state, drift_blocks.contains(b.id), api_h, code_h, listed_exist)
                                : (drift_blocks.contains(b.id) ? core::BlockStatus::Drift : core::BlockStatus::Design);
     ins_block.bind(1, b.id)
         .bind_opt(2, b.parent)

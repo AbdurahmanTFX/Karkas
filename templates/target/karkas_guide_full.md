@@ -106,6 +106,13 @@ kk_model_for <block> explains it.
 - Not a Claude model: do the work here and tell the user. Missing subagents: `karkas gen agents`.
 
 ## Imported projects (own CMakeLists.txt)
+- Any language (C/C++, Python, JS/TS, Go, Rust, Java, Kotlin, C#, shell, Lua, Ruby, PHP and more):
+  `lang` of project.ksl names the languages of the project (`lang cpp bash lua python`); import,
+  the orphan check and kk_locate take their code. In C/C++ the headers are a block's api; in every
+  other language a file is its own api: its public names (`export`, `pub`, a capital in Go, no
+  leading `_` ...; a shell script's subcommands, the labels of its `case "$1" in`) are the
+  contract, a new or changed one is a card change. Karkas generates builds and tests for C++ only:
+  another language builds and tests with `[project] build_command` and `[test] command`.
 - Blocks name their existing files (`files`). A new block may name files that do not exist
   yet (warning W07): propose the card first, then write the files.
 - Karkas never writes the project's CMakeLists.txt: add new source files to it yourself.

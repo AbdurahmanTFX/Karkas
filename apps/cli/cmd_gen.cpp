@@ -1,6 +1,7 @@
 // karkas init <dir> and karkas gen cmake|mocks|probe|skel (8.3, 13.1).
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <iostream>
 #include <regex>
 
@@ -79,7 +80,11 @@ AutoRegister reg_init([](CLI::App& cli, App& app) {
       if (!r->imported.empty()) std::cout << "cards for the notes already there: " << r->imported.size() << " (the files stay in place)\n";
       std::cout << "next: karkas gui   (write notes; [[name]] links one note to another)\n";
     } else if (r->existing_code) {
+      if (!r->langs.empty()) std::cout << "languages: " << core::join(r->langs, " ") << " (lang of project.ksl)\n";
       std::cout << "next: karkas import   (existing code becomes blocks; files stay where they are)\n";
+      if (std::find(r->langs.begin(), r->langs.end(), "cpp") == r->langs.end()) {
+        std::cout << "then: set [project] build_command and [test] command in karkas.toml (Karkas generates builds for C++ only)\n";
+      }
     } else {
       std::cout << "next: karkas design \"<idea>\"\n";
     }

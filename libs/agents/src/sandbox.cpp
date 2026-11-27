@@ -1,4 +1,5 @@
 #include "kk/agents/sandbox.hpp"
+#include "kk/core/lang.hpp"
 
 #include <fmt/format.h>
 
@@ -27,10 +28,11 @@ std::string_view to_string(Role r) {
 
 namespace {
 
-bool is_header(const fs::path& p) {
-  auto ext = p.extension().string();
-  return ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx" || ext == ".ipp" || ext == ".inl";
-}
+// What other blocks read of an imported block: its headers, or its files in a language without headers,
+// whose public part is the contract (ADR 0051).
+bool is_header(const fs::path& p) { return core::is_contract_file(p); }
+// A file that only declares (a C/C++ header, .pyi, .d.ts): read-only when the run may not touch the api.
+bool declares_only(const fs::path& p) { return core::is_interface_file(p); }
 
 }  // namespace
 
@@ -157,7 +159,7 @@ kk::Result<fs::path> Sandbox::resolve_imported(const std::string& p, bool write)
                                              "needs_contract_change with '~ @block {}' and '+ files {}'",
                                              p, core::join(own_files_, " "), whose, block_, p));
     }
-    if (is_header(abs) && api_access_ == ApiAccess::None) {
+    if (declares_only(abs) && api_access_ == ApiAccess::None) {
       return kk::fail("sandbox", fmt::format("'{}': the headers of {} are read-only in this run", p, block_));
     }
     std::error_code ec;

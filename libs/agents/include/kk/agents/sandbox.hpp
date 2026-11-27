@@ -32,6 +32,10 @@ bool api_values_or_new_constants(std::string_view before, std::string_view after
 // private sections; bodies, initial values and comments do not count) and adds at most public
 // constants and #include lines (ADR 0027). `why` names the first declaration that breaks it.
 bool header_contract_kept(std::string_view before, std::string_view after, std::string* why = nullptr);
+// The same for any contract file of an imported block (ADR 0051): a C/C++ header as above; a file of
+// another language keeps its public names (functions, methods, types, shell subcommands) with their
+// parameter counts and adds none; private names and bodies are free.
+bool contract_kept(const std::filesystem::path& file, std::string_view before, std::string_view after, std::string* why = nullptr);
 
 class Sandbox {
  public:
