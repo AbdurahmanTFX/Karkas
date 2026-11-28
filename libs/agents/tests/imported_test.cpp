@@ -806,6 +806,34 @@ TEST_CASE("imported ticket: a worker's done with no file of its block changed is
   CHECK_MESSAGE(core::contains(t, "status  closed"), t);
 }
 
+TEST_CASE("imported blocks: the entry block adds a public name without a card change (bugs.txt 28)") {
+  // T-0007 of ~/.config/hypr: the worker of the entry (hyprland.lua) could not add a global function — the
+  // file refused it as a new public name, and the card change '+ fn' was refused by E08.
+  Legacy p;
+  p.card("game.main", "purpose entry point\nkind entry\nthread main\nfiles src/game/main.cpp src/game/setup.lua\n"
+                    "call game.world:update\ncall game.world:draw\ncall game.player:update\n"
+                    "call game.player:position\ncall game.player:bag\ncall util.camera:follow\n");
+  test::write(p / "src/game/setup.lua", "function setup()\n  return 1\nend\n");
+  test::write(p / "src/game/world.lua", "function tiles()\n  return 2\nend\n");
+  p.card("game.world", "purpose the island\nkind leaf\nthread main\nfiles src/game/world.cpp src/game/hpp/world.hpp src/game/world.lua\n"
+                     "fn update(float) -> void\nfn is_walkable(Vec2) -> bool\nfn draw() -> void\ncall util.math:clampf\n");
+  test::FakeTests tests;
+  auto add_fn = [&](const std::string& block, const std::string& path, const std::string& end) {
+    agents::Sandbox sb(p.schema(), block, agents::Role::Worker);
+    sb.set_api_access(agents::ApiAccess::Imported);
+    agents::LeafToolHost host(std::move(sb), agents::Role::Worker, tests, {block});
+    return host.call({"1", "edit_file", json{{"path", path}, {"old", end}, {"new", end + "\nfunction ws_anim(style)\n  return style\nend\n"}}.dump()});
+  };
+  auto entry = add_fn("game.main", "src/game/setup.lua", "  return 1\nend\n");
+  CHECK_MESSAGE(!entry.is_error, entry.content);
+  CHECK(core::contains(test::read(p / "src/game/setup.lua"), "function ws_anim(style)"));
+  // A leaf keeps its contract: other blocks build on its public names.
+  auto leaf = add_fn("game.world", "src/game/world.lua", "  return 2\nend\n");
+  CHECK(leaf.is_error);
+  CHECK(core::contains(leaf.content, "new public"));
+  CHECK_FALSE(core::contains(test::read(p / "src/game/world.lua"), "ws_anim"));
+}
+
 TEST_CASE("imported blocks: a file of a language without headers keeps its public names (ADR 0051)") {
   using kk::agents::contract_kept;
   const std::string py = "def push(frame):\n    return _wrap(frame)\n\n\ndef _wrap(frame):\n    return frame\n";

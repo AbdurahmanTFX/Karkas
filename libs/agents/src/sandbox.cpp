@@ -47,6 +47,7 @@ Sandbox::Sandbox(const core::Schema& schema, std::string block, Role role)
   // An imported block works on the files of its card where they are (ADR 0027): paths from the
   // project root, which is its first root (so display() shows them as the card and the compiler do).
   imported_ = b != nullptr && !group && b->external();
+  entry_ = b != nullptr && b->kind == core::BlockKind::Entry;
   read_roots_.push_back({"", imported_ ? project_ : own_});
   if (imported_) {
     for (const auto& x : schema.blocks) {

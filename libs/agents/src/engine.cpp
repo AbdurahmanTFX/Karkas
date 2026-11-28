@@ -1029,6 +1029,12 @@ struct Engine::Impl {
       if (ticket_changed_block(changes, tid, block)) {
         api_access = ApiAccess::Full;
         api_note = imported_unfrozen_note;
+      } else if (b->kind == core::BlockKind::Entry) {
+        // Nothing builds on the entry block and its card lists no fn (E08): its public names are free,
+        // or a new global function of a script could never be added (bugs.txt 28).
+        api_access = ApiAccess::Imported;
+        api_note = "--- files of this block\nthe entry block: no other block builds on it, so its public names are free (a new "
+                   "function, type or subcommand needs no card change).\n";
       } else {
         api_access = ApiAccess::Imported;
         api_note = "--- headers of this block (in a language without headers: its files)\ntheir public part is the contract: "
@@ -1141,8 +1147,10 @@ struct Engine::Impl {
             auto h = index::block_api_hash(index::collect_code_files(*s2), block);
             refrozen = !h.empty() && index::StateStore(root).freeze_api(block, h).has_value();
           }
-          out.api_note = std::string("headers changed in their private part, constants or includes; public declarations unchanged") +
-                         (refrozen ? " (re-frozen)" : "");
+          out.api_note = b->kind == core::BlockKind::Entry
+                             ? std::string("files of the entry block changed (no block builds on its public names)")
+                             : std::string("headers changed in their private part, constants or includes; public declarations unchanged") +
+                                   (refrozen ? " (re-frozen)" : "");
         } else if (cfg.auto_approve) {
           // auto_approve: the human left approvals to the program, so it also freezes the api it
           // approved, now in line with the card; no command is left for a client to run (ADR 0029).

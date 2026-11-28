@@ -543,8 +543,9 @@ ToolOutcome LeafToolHost::call(const ToolCall& c) {
                      "added (a removed or changed declaration, a new type, field or function is a contract change: "
                      "report needs_contract_change with a KSL proposal)");
         }
-      } else if (sb_.api_access() == ApiAccess::Imported) {
-        // The public part of an imported header is what other blocks build on (ADR 0027).
+      } else if (sb_.api_access() == ApiAccess::Imported && !sb_.entry()) {
+        // The public part of an imported header is what other blocks build on (ADR 0027); nothing builds
+        // on the entry block, whose card may not list fn (E08): its public names are free (bugs.txt 28).
         std::string why;
         auto before = core::read_file(*p);
         if (before && !contract_kept(*p, *before, content, &why)) {
