@@ -912,3 +912,20 @@
   and tests with `[test] command`.
 - Not yet: schema-first (native) projects in other languages (api/ contracts and contract tests in the
   language, prompts).
+
+## ADR 0052 — the main session only coordinates; bugs.txt 2, 12, 26, 27, 28 (2026-11-28)
+
+- Mode mcp: kk_task names the ticket's first run and its subagent; the end of a run names the next run of the
+  ticket (serve it only if it names you) or that the ticket ended, never the ticket's result
+  (`McpTurns::first_run`, `after_run`). The instructions and guides: the main session serves no turn, reads no
+  code, hands each run to a new subagent of its tier, one ticket per subagent, one feature per session.
+- `claude_agent_mcp.md`: in mode mcp the karkas-<tier> subagents have only kk_agent_next / kk_agent_act (and
+  ToolSearch) and a short prompt; `karkas mode` and the GUI's switch rewrite them with the mode.
+- bugs.txt 28: the entry block's public names are free (no card change for a new function of a script entry).
+- bugs.txt 26: a failing project test of no block goes once to the behaviour tester (update an outdated test,
+  or report the regression), not to the worker up the tiers; the imported tester checks behaviour, not a
+  source line letter by letter.
+- bugs.txt 27 (confirmed): a worker's retry was shown its block's files as they were before the first attempt;
+  the context is built again for every retry.
+- bugs.txt 12: apps.gui calls libs.llm:waiting; `karkas check` in this repository has no error.
+- bugs.txt 2: a test shows a worker's proposal changing a neighbour's card in the same @change.
