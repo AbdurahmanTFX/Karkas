@@ -181,7 +181,7 @@ AutoRegister reg([](CLI::App& cli, App& app) {
       (*started)[id] = Started{*pid, log.string(), false, 0};
       return std::string();
     };
-    auto next_steps = [root, mode_of](const std::string& id) {
+    auto next_steps = [root, mode_of, turns](const std::string& id) {
       if (auto cfg = core::load_config(root); cfg && cfg->mcp() && cfg->mcp_launch == "claude") {
         return fmt::format("Karkas serves its agents' turns itself ([agents] launch = \"claude\": a headless Claude Code per run "
                            "on the claude.ai login), so do not serve them. Wait for the end with kk_agent_next(list=true, "
@@ -189,8 +189,15 @@ AutoRegister reg([](CLI::App& cli, App& app) {
                            id);
       }
       if (mode_of() == "mcp") {
-        return fmt::format("Its agents start now and wait for their model (mode mcp: you). Serve them: kk_agent_next(list=true) shows "
-                           "who waits and the subagent of each; go on until no turn waits and {} ended.",
+        // The first run is named here: no list call is needed to hand it on (token-cost-notes 3).
+        if (auto first = turns->first_run(id, 20); !first.empty()) {
+          return fmt::format("Its first {}. Hand it to a new subagent of that name with the task \"serve karkas run <run>\"; do not "
+                             "serve it yourself. Each subagent names the run that follows; kk_agent_next(list=true, wait_s=300) when "
+                             "none is named.",
+                             first);
+        }
+        return fmt::format("Its agents start now and wait for their model (mode mcp). kk_agent_next(list=true, wait_s=300) names the "
+                           "run that waits and its subagent; hand each run to a new subagent of that name, until {} ended.",
                            id);
       }
       return fmt::format("Its agents work through the API (mode api). Follow it with kk_ticket_view(id=\"{}\") or kk_agent_next(list=true).", id);
@@ -266,7 +273,7 @@ AutoRegister reg([](CLI::App& cli, App& app) {
                            : plan.sent == "expand" ? "the architect expands " + s->scope + " from the prototype (karkas expand --sketch)"
                                                    : "the orchestrator adds what the prototype shows as a change (a ticket" +
                                                          (s->scope.empty() ? std::string(")") : ", limited to " + s->scope + ")");
-        std::string serve = mode_of() == "mcp" ? " Its agents wait for their model (mode mcp: you): kk_agent_next(list=true) shows who waits." : "";
+        std::string serve = mode_of() == "mcp" ? " Its agents wait for their model (mode mcp): kk_agent_next(list=true) names each run and the subagent to hand it to." : "";
         return fmt::format("started in the background: {}.{} The result names what is kept, renamed or left out and the "
                            "architect's variants (C-NNNN) for the user to approve or reject; kk_prototype(action=view) shows the "
                            "check afterwards.",
@@ -278,8 +285,9 @@ AutoRegister reg([](CLI::App& cli, App& app) {
       auto id = "implement-" + target;
       if (auto r = launch(id, {"implement", target}); !r) return std::unexpected(r.error());
       if (mode_of() == "mcp") {
-        return fmt::format("implement {} started in the background. Its testers and workers wait for their model (mode mcp: you): "
-                           "kk_agent_next(list=true) shows who waits and the subagent of each; go on until no turn waits and {} ended.",
+        return fmt::format("implement {} started in the background. Its testers and workers wait for their model (mode mcp): "
+                           "kk_agent_next(list=true, wait_s=300) names each run that waits and its subagent; hand each run to a new "
+                           "subagent of that name, until {} ended.",
                            target, id);
       }
       return fmt::format("implement {} started in the background (mode api); kk_agent_next(list=true) says when it ended.", target);

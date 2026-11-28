@@ -4,6 +4,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <map>
@@ -182,6 +183,21 @@ json shown_record(const llm::McpTurn& t, const json& req) {
           {"sections", sec}};
 }
 
+// "run X — tester at desktop, tier cheap → subagent karkas-cheap".
+std::string run_line(const llm::McpTurn& t) {
+  return fmt::format("run {} — {}, tier {} → subagent {}", t.run, who(t), t.tier.empty() ? "?" : t.tier,
+                     t.subagent.empty() ? "?" : t.subagent);
+}
+
+// A ticket whose engine has stopped: closed or escalated ("" while it goes on).
+std::string ticket_end(const fs::path& root, const std::string& id) {
+  if (id.empty()) return {};
+  auto t = core::TicketStore(root).load(id);
+  if (!t) return {};
+  if (t->status.value == "closed" || t->status.value == "escalated") return t->status.value;
+  return {};
+}
+
 }  // namespace
 
 std::string ended_ticket_text(const fs::path& root, const std::string& id, int exit_code, const std::string& log, bool& reported) {
@@ -244,12 +260,9 @@ std::string format_turn(const llm::McpTurn& t, const std::string& request_json, 
   } else if (whole) {
     out += fmt::format(
         "\nYou are the model of this Karkas agent. Answer only with kk_agent_act(turn=\"{}\", calls=[{{\"name\": \"<tool>\", "
-        "\"input\": {{...}}}}, ...], text=\"<optional thoughts>\"). Each call is one of the agent's tools below: Karkas runs it in "
-        "the agent's sandbox (the files of its block) and shows the results in the next turn. Use no other tool on the project "
-        "— the agent's tools are its only way in. The run ends when you call the tool its instructions name as the end. If your "
-        "session runs another model than the one named above, hand the run to that subagent: it serves the run with "
-        "kk_agent_next(run=\"{}\") and kk_agent_act until the run ends.\n",
-        t.id, t.run);
+        "\"input\": {{...}}}}, ...], text=\"<optional thoughts>\"), calling only the agent's tools below: Karkas runs them in its "
+        "sandbox and shows the results in the next turn. The run ends with the tool its instructions name as the end.\n",
+        t.id);
     out += "\n=== SYSTEM ===\n" + str(req, "system") + "\n";
     out += "\n=== TOOLS (input fields, * = required) ===\n";
     for (const auto& tool : req.value("tools", json::array())) {
@@ -352,6 +365,37 @@ std::string McpTurns::show(const llm::McpTurn& t, const std::string& req_text, b
   return text;
 }
 
+std::string McpTurns::first_run(const std::string& ticket, int wait_s) const {
+  auto t0 = std::chrono::steady_clock::now();
+  while (true) {
+    for (const auto& t : queue_.waiting()) {
+      if (t.ticket == ticket && !t.taken && !fs::exists(RunLauncher::marker(root_, t.run))) return run_line(t);
+    }
+    if (!ticket_end(root_, ticket).empty() || std::chrono::steady_clock::now() - t0 >= std::chrono::seconds(wait_s)) return {};
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+}
+
+std::string McpTurns::after_run(const std::string& ticket, const std::string& run, int wait_s) const {
+  auto t0 = std::chrono::steady_clock::now();
+  if (ticket.empty() || !core::TicketStore(root_).load(ticket)) wait_s = 0;  // no ticket to wait for
+  while (!ticket.empty()) {
+    for (const auto& t : queue_.waiting()) {
+      if (t.ticket != ticket || t.run == run || t.taken || fs::exists(RunLauncher::marker(root_, t.run))) continue;
+      return fmt::format("Next of {}: {}. Serve it only if you are {}: kk_agent_next(run=\"{}\", seen=[the runs you served]). "
+                         "Otherwise stop and name it in one line.",
+                         ticket, run_line(t), t.subagent.empty() ? "that subagent" : t.subagent, t.run);
+    }
+    if (auto end = ticket_end(root_, ticket); !end.empty()) {
+      return fmt::format("{} has ended ({}): nothing is left to serve. Stop and say so in one line.", ticket, end);
+    }
+    if (std::chrono::steady_clock::now() - t0 >= std::chrono::seconds(wait_s)) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  return fmt::format("No next run of {} waits yet (a build or the tests run). Stop and say in one line that run {} ended.",
+                     ticket.empty() ? std::string("its ticket") : ticket, run);
+}
+
 std::string McpTurns::next(const std::string& run, int wait_s, bool list, const std::string& after, const std::vector<std::string>& seen) {
   auto t0 = std::chrono::steady_clock::now();
   auto now = core::unix_now();
@@ -399,8 +443,12 @@ std::string McpTurns::next(const std::string& run, int wait_s, bool list, const 
         return show(*pick, *req, !follows(*pick, after), seen);
       }
       // The run has ended: no turn of it will come, say so now (ADR 0029).
+      // A subagent that asks for a run that ended learns what follows, not the ticket's result: that is the main
+      // session's to report, and shown once only (bugs.txt 25).
       if (!run.empty()) {
-        if (auto end = run_end(run); !end.empty()) return fmt::format("Run {} ended: {}.", run, end) + status_text();
+        if (auto end = run_end(run); !end.empty()) {
+          return fmt::format("Run {} ended: {}. ", run, end) + after_run(ticket_of_run(run), run, std::min(wait_s, 20));
+        }
       }
       if (!run.empty()) {
         // The run (still going) waits on a nested run of its ticket: that one comes first.
@@ -419,7 +467,9 @@ std::string McpTurns::next(const std::string& run, int wait_s, bool list, const 
       }
       if (std::chrono::steady_clock::now() - t0 >= std::chrono::seconds(wait_s)) {
         if (!run.empty()) {
-          if (auto end = run_end(run); !end.empty()) return fmt::format("Run {} ended: {}.", run, end) + status_text();
+          if (auto end = run_end(run); !end.empty()) {
+            return fmt::format("Run {} ended: {}. ", run, end) + after_run(ticket_of_run(run), run, 0);
+          }
           return fmt::format("No turn of run {} waits yet (its agent is busy: tool calls, a build or tests). Call kk_agent_next(run=\"{}\"{}) "
                              "again.",
                              run, run, after.empty() ? "" : fmt::format(", after=\"{}\"", after));
@@ -467,9 +517,9 @@ kk::Result<std::string> McpTurns::act(const std::string& turn, const std::string
     }
     // The run ended (the engine writes that before it starts the next agent of the ticket)...
     if (auto end = run_end(t->run); !end.empty()) {
-      return fmt::format("Run {} ended: {}. Call kk_agent_next: the ticket may go on with another agent (another role or block, maybe "
-                         "another subagent).",
-                         t->run, end);
+      auto left = std::chrono::seconds(wait_s) - (std::chrono::steady_clock::now() - t0);
+      int wait_next = std::clamp(static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(left).count()), 0, 20);
+      return fmt::format("Run {} ended: {}. ", t->run, end) + after_run(t->ticket, t->run, wait_next);
     }
     // ... or it waits on a nested run of the same ticket (an `ask`): serve that one now — unless Karkas serves
     // the runs itself, which gives the nested run a session of its own tier (ADR 0029).

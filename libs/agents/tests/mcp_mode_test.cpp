@@ -337,6 +337,51 @@ TEST_CASE("mcp mode: a wait for a run that has ended returns at once, not when w
   CHECK(core::contains(text, "Run r1.jsonl ended: done."));
 }
 
+TEST_CASE("mcp mode: the end of a run names the next run of its ticket and its subagent, never the ticket's result (token-cost-notes 3)") {
+  test::TempDir d;
+  std::filesystem::create_directories(d.path() / ".karkas" / "runs");
+  core::TicketStore store(d.path());
+  auto t = store.create(core::TicketKind::Feature, "human", "the script starts at 2", {}, "");
+  REQUIRE(t);
+  REQUIRE(core::write_file(d.path() / ".karkas" / "runs" / "A.jsonl",
+                           R"({"type":"run_start","ticket":"T-0001","role":"worker","block":"b"})" "\n"
+                           R"({"type":"run_end","outcome":"done"})" "\n"));
+  llm::McpQueue q(d.path() / ".karkas" / "mcp");
+  llm::McpTurn next;
+  next.id = "B-001";
+  next.run = "B.jsonl";
+  next.ticket = "T-0001";
+  next.role = "tester";
+  next.block = "b";
+  next.tier = "cheap";
+  next.model = "m-cheap";
+  next.subagent = "karkas-cheap";
+  next.seq = 1;
+  next.ts = core::unix_now();
+  REQUIRE(q.put(next, R"({"id":"B-001","system":"test it","tools":[],"messages":[{"role":"user","content":"go"}]})"));
+  agents::McpTurns turns(d.path());
+  int status_calls = 0;
+  turns.tickets_status = [&] {
+    ++status_calls;
+    return std::string("T-0001: ended — closed.\n  fix    the whole result\n");
+  };
+  // kk_task names the first run, so the main session hands it on without a list.
+  CHECK(turns.first_run("T-0001", 1) == "run B.jsonl — T-0001 · tester at b, tier cheap → subagent karkas-cheap");
+  auto after = turns.next("A.jsonl", 5, false);
+  CHECK_MESSAGE(core::contains(after, "Run A.jsonl ended: done. Next of T-0001: run B.jsonl — T-0001 · tester at b, tier cheap → "
+                                      "subagent karkas-cheap. Serve it only if you are karkas-cheap"),
+                after);
+  CHECK(status_calls == 0);  // the result is the main session's to report, once (bugs.txt 25)
+  // The next run taken by another subagent, the ticket closed: nothing is left to serve.
+  q.take("B-001");
+  REQUIRE(store.set_status("T-0001", core::TicketStatus::Closed));
+  auto t0 = std::chrono::steady_clock::now();
+  auto ended = turns.next("A.jsonl", 5, false);
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+  CHECK_MESSAGE(core::contains(ended, "T-0001 has ended (closed): nothing is left to serve"), ended);
+  CHECK_FALSE(core::contains(ended, "the whole result"));
+}
+
 TEST_CASE("mcp mode: with launch = claude Karkas serves a run itself, with a session on the login and never an API key (ADR 0029)") {
   test::FixtureCopy p{"wavkit"};
   test::FakeTests tests;
