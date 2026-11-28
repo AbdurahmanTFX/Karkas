@@ -14,6 +14,7 @@
 
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
+#include "kk/core/tickets.hpp"
 
 namespace kk::agents {
 
@@ -183,6 +184,34 @@ json shown_record(const llm::McpTurn& t, const json& req) {
 
 }  // namespace
 
+std::string ended_ticket_text(const fs::path& root, const std::string& id, int exit_code, const std::string& log, bool& reported) {
+  core::TicketStore store(root);
+  auto t = store.load(id);
+  if (!t) return fmt::format("{}: ended (exit code {}); its log is {}.\n", id, exit_code, log);
+  std::string status = t->result_value("status");
+  std::string head = fmt::format("{}: ended — {}{}", id, t->status.value, status.empty() ? "" : " (status " + status + ")");
+  if (reported) return fmt::format("{}; its result was shown when it ended (kk_ticket_view(id=\"{}\") shows it again).\n", head, id);
+  reported = true;
+  auto cut = [](std::string text) {
+    constexpr std::size_t kMax = 240;
+    if (text.size() > kMax) text = text.substr(0, kMax - 3) + "...";
+    return text;
+  };
+  std::string out = head + ".\n";
+  int facts = 0;
+  for (const auto& e : t->trail) {
+    if (e.type != core::TrailEntry::Type::Fact || ++facts > 8) continue;
+    out += "  fact   " + cut(e.text) + "\n";
+  }
+  for (const auto& r : t->result) {
+    if (r.key == "verify" || r.key == "api" || r.key == "note" || r.key == "fix" || r.key == "files") {
+      out += fmt::format("  {:<6} {}\n", r.key, cut(r.text));
+    }
+  }
+  out += fmt::format("  (kk_ticket_view(id=\"{}\") shows the whole ticket.)\n", id);
+  return out;
+}
+
 std::string format_turn(const llm::McpTurn& t, const std::string& request_json, bool whole) {
   return format_turn(t, request_json, whole, std::string());
 }
@@ -335,7 +364,8 @@ std::string McpTurns::next(const std::string& run, int wait_s, bool list, const 
     if (list) {
       // Nothing waits and every ticket this server started has ended: no turn can come any more.
       if (turns.empty() && tickets_running && tickets_running() == 0) {
-        return "No agent turn waits, and the tickets this server started have ended (their result below; report from it)." +
+        return "No agent turn waits, and the tickets this server started have ended (the result of one that just ended is "
+               "below; report from it)." +
                status_text();
       }
       if (!turns.empty() || std::chrono::steady_clock::now() - t0 >= std::chrono::seconds(wait_s)) {

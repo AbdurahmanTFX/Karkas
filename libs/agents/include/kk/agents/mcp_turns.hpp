@@ -48,6 +48,13 @@ class McpTurns {
   llm::McpQueue queue_;
 };
 
+// The status of a ticket this server started that has ended (ADR 0029). The first time (reported is
+// false) it is the result the client reports from: what each block's agent did, the checks, the api and
+// the notes; reported becomes true. After that it is one line: every status of kk_agent_next carries
+// it, and repeating each ended ticket's result filled the client's context (bugs.txt 25).
+std::string ended_ticket_text(const std::filesystem::path& root, const std::string& id, int exit_code, const std::string& log,
+                              bool& reported);
+
 // A turn as the model reads it: whole (system, tools, every message) or only what came after
 // the model's last answer (the results of its calls).
 std::string format_turn(const llm::McpTurn& t, const std::string& request_json, bool whole);

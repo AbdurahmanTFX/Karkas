@@ -58,6 +58,7 @@ struct Started {
   std::string log;
   bool done = false;
   int exit_code = 0;
+  bool reported = false;  // its result was shown once (ended_ticket_text)
 };
 
 kk::Result<EngineProcess> spawn_engine(const fs::path& root, const std::vector<std::string>& args, const fs::path& log) {
@@ -322,32 +323,8 @@ AutoRegister reg([](CLI::App& cli, App& app) {
           out += fmt::format("{}: ended with exit code {}; its output is in {}.\n", id, s.exit_code, s.log);
           continue;
         }
-        // The result an ended ticket's client reports from (ADR 0029): what each block's agent did, the
-        // checks, the api and the notes, so no kk_ticket_view is needed for the report.
-        core::TicketStore store(root);
-        auto t = store.load(id);
-        if (!t) {
-          out += fmt::format("{}: ended (exit code {}); its log is {}.\n", id, s.exit_code, s.log);
-          continue;
-        }
-        auto cut = [](std::string text) {
-          constexpr std::size_t kMax = 240;
-          if (text.size() > kMax) text = text.substr(0, kMax - 3) + "...";
-          return text;
-        };
-        std::string status = t->result_value("status");
-        out += fmt::format("{}: ended — {}{}.\n", id, t->status.value, status.empty() ? "" : " (status " + status + ")");
-        int facts = 0;
-        for (const auto& e : t->trail) {
-          if (e.type != core::TrailEntry::Type::Fact || ++facts > 8) continue;
-          out += "  fact   " + cut(e.text) + "\n";
-        }
-        for (const auto& r : t->result) {
-          if (r.key == "verify" || r.key == "api" || r.key == "note" || r.key == "fix" || r.key == "files") {
-            out += fmt::format("  {:<6} {}\n", r.key, cut(r.text));
-          }
-        }
-        out += fmt::format("  (kk_ticket_view(id=\"{}\") shows the whole ticket.)\n", id);
+        // The result an ended ticket's client reports from (ADR 0029), whole the first time only (bugs.txt 25).
+        out += agents::ended_ticket_text(root, id, s.exit_code, s.log, s.reported);
       }
       return out;
     };

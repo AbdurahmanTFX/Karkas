@@ -3,10 +3,12 @@
 // queue (kk_agent_next / kk_agent_act).
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <thread>
 
 #include "kk/agents/engine.hpp"
@@ -15,6 +17,7 @@
 #include "kk/llm/mcp_bridge.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
+#include "kk/core/tickets.hpp"
 #include "kk/test/support.hpp"
 #include "scripted.hpp"
 
@@ -292,6 +295,33 @@ TEST_CASE("mcp mode: a list wait ends as soon as the tickets this server started
   t0 = std::chrono::steady_clock::now();
   text = turns.next("", 1, true);
   CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(900));
+}
+
+TEST_CASE("mcp mode: an ended ticket's result is shown whole once, then as one line (bugs.txt 25)") {
+  test::TempDir d;
+  core::TicketStore store(d.path());
+  auto t = store.create(core::TicketKind::Feature, "human", "a row of three profiles", {});
+  REQUIRE(t);
+  core::TrailEntry fact;
+  fact.type = core::TrailEntry::Type::Fact;
+  fact.text = "b done: one row";
+  REQUIRE(store.append(t->id, fact));
+  REQUIRE(store.add_result(t->id, {{"status", "done", {}, 0}, {"fix", "b: one row of three cells", {}, 0}}));
+  std::map<std::string, bool> reported;
+  // First time: the result the client reports from (ADR 0029).
+  auto first = agents::ended_ticket_text(d.path(), t->id, 0, "log", reported[t->id]);
+  CHECK(core::contains(first, t->id + ": ended"));
+  CHECK(core::contains(first, "fact   b done: one row"));
+  CHECK(core::contains(first, "fix    b: one row of three cells"));
+  CHECK(reported[t->id]);
+  // Every later status line: one line, the result is not repeated into the client's context.
+  auto again = agents::ended_ticket_text(d.path(), t->id, 0, "log", reported[t->id]);
+  CHECK(core::contains(again, t->id + ": ended"));
+  CHECK_FALSE(core::contains(again, "fact"));
+  CHECK_FALSE(core::contains(again, "one row of three cells"));
+  CHECK(core::contains(again, "(status done)"));
+  CHECK(std::count(again.begin(), again.end(), '\n') == 1);
+  CHECK(core::contains(again, "kk_ticket_view"));
 }
 
 TEST_CASE("mcp mode: a wait for a run that has ended returns at once, not when wait_s runs out (ADR 0029)") {
