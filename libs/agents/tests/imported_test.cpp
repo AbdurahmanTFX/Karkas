@@ -476,6 +476,49 @@ struct BehaviourRig {
 
 }  // namespace
 
+TEST_CASE("imported ticket: a project test of no block that checks the old behaviour goes to the tester, not up the tiers (bugs.txt 26)") {
+  // T-0003 of ~/.config/hypr: the change was right, an old test of the project (a file of no card) expected the
+  // old number; the worker ran again on cheap, then on medium, and could not touch the test.
+  Legacy p;
+  p.card("game.scripts", "purpose scripts\nkind leaf\nthread main\nfiles scripts/start.sh\n");
+  test::write(p / "scripts/start.sh", "#!/bin/bash\necho 1\n");
+  test::write(p / "tests/behaviour/start_test.sh", "#!/bin/bash\n[ \"$(scripts/start.sh)\" = 1 ]\n");
+  test::ScriptedModel model;
+  test::FakeTests tests;
+  int runs = 0;
+  tests.fn = [&](const std::vector<std::string>&) {
+    if (++runs == 1) return agents::TestRun{true, false, "", {}, "build ok\nFAIL tests/behaviour/start_test.sh\n"};
+    return agents::TestRun{true, true, "", {}, "build ok; tests ok\n"};
+  };
+  auto cfg = test::test_config();
+  cfg.test_dir = "tests/behaviour";
+  cfg.test_command = "true";
+  agents::EngineOptions o;
+  o.providers = model.factory();
+  o.tests = &tests;
+  auto e = agents::Engine::create(p.path(), cfg, o);
+  REQUIRE_MESSAGE(e, (e ? "" : e.error().str()));
+  model.tool("dispatch", {{"block", "game.scripts"}, {"difficulty", "S"}, {"why", "start at 2"}});
+  model.tool("write_file", {{"path", "scripts/start.sh"}, {"content", "#!/bin/bash\necho 2\n"}});
+  model.tool("report", {{"status", "done"}, {"fix", "the script starts at 2"}, {"files", "scripts/start.sh"}, {"api", "unchanged"}});
+  model.tool("write_file", {{"path", "tests/behaviour/start_test.sh"}, {"content", "#!/bin/bash\n[ \"$(scripts/start.sh)\" = 2 ]\n"}});
+  model.tool("report", {{"status", "done"}, {"fix", "the test expects 2, as the ticket asks"}, {"files", "tests/behaviour/start_test.sh"}});
+  // The behaviour test of the feature, as always at its end.
+  model.tool("write_file", {{"path", "tests/behaviour/start_twice_test.sh"}, {"content", "#!/bin/bash\n[ \"$(scripts/start.sh)\" = 2 ]\n"}});
+  model.tool("report", {{"status", "done"}, {"files", "tests/behaviour/start_twice_test.sh"}, {"fix", "starts at 2"}});
+  model.tool("close", {{"verdict", "done"}});
+  auto r = (*e)->task("The script starts at 2");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(model.calls.size() == 8);  // one worker run, no second one on a stronger tier
+  auto tester = test::ScriptedModel::request_text(model.calls[3].req);
+  CHECK_MESSAGE(core::contains(tester, "After it the project's tests tests/behaviour/start_test.sh fail"), tester);
+  CHECK(core::contains(tester, "the script starts at 2"));
+  CHECK(core::contains(test::read(p / "tests/behaviour/start_test.sh"), "= 2 ]"));
+  auto t = test::read(p / ".karkas/tickets/T-0001.ksl");
+  CHECK_MESSAGE(core::contains(t, "status  closed"), t);
+  CHECK_FALSE(core::contains(t, "escalating"));
+}
+
 TEST_CASE("imported ticket: with [test] dir, guide and command a feature ends with a behaviour test in the project's framework") {
   BehaviourRig rig;
   rig.script_until_the_test();

@@ -140,6 +140,42 @@ std::vector<std::string> own_sources(const core::Block& b) {
   return out;
 }
 
+// The project's tests (files under [test] dir that no card lists) a failed test run names: no worker may
+// change them, so a worker sent again for them only climbs the tiers (bugs.txt 26).
+std::vector<std::string> tests_of_no_block(const core::Schema& s, const std::string& test_dir, const std::string& text) {
+  std::vector<std::string> out;
+  if (test_dir.empty()) return out;
+  std::set<std::string> listed;
+  for (const auto& b : s.blocks) {
+    for (const auto& f : b.file_list()) listed.insert(f);
+  }
+  auto strip = [](std::string w, std::string_view chars) {
+    while (!w.empty() && chars.find(w.front()) != std::string_view::npos) w.erase(0, 1);
+    while (!w.empty() && chars.find(w.back()) != std::string_view::npos) w.pop_back();
+    return w;
+  };
+  const std::string prefix = strip(test_dir, "/") + "/";
+  std::string word;
+  auto take = [&] {
+    auto w = strip(word, "\"'`()[]{}<>:;,");
+    word.clear();
+    if (w.starts_with("./")) w = w.substr(2);
+    w = strip(w, ".:;,");
+    if (!w.starts_with(prefix) || listed.contains(w) || std::find(out.begin(), out.end(), w) != out.end()) return;
+    std::error_code ec;
+    if (fs::is_regular_file(s.root / w, ec)) out.push_back(w);
+  };
+  for (char c : text) {
+    if (std::isspace(static_cast<unsigned char>(c)) != 0) {
+      take();
+    } else {
+      word += c;
+    }
+  }
+  take();
+  return out;
+}
+
 // The inv lines a block gains by the approved changes of a ticket ("+ inv" under its "@block").
 std::vector<std::string> ticket_invariants(const ChangeStore& changes, const std::string& tid, const std::string& block) {
   std::vector<std::string> out;
@@ -1092,6 +1128,7 @@ struct Engine::Impl {
     }
     int at_tier = 0;
     std::string history;
+    bool stale_test_asked = false;  // the tester looked at failing project tests of no block (bugs.txt 26)
     for (int attempt = 1; attempt <= 12; ++attempt) {
       std::string task_text;
       if (!tid.empty()) {
@@ -1211,6 +1248,43 @@ struct Engine::Impl {
         auto tr = !sources.empty() ? tests->compile_check(sources) : tests->build_and_test({block});
         out.tests_ok = tr && tr->ok;
         out.test_text = tr ? tr->text : tr.error().message;
+        // A project test of no block fails: it may check the behaviour this ticket changes on purpose. No worker
+        // may change it, so the behaviour tester looks at it once instead of the worker going up the tiers
+        // (bugs.txt 26: T-0003 of ~/.config/hypr, a test that expected the old workspace number).
+        if (!out.tests_ok && tr && tr->build_ok && imported && !tid.empty() && !stale_test_asked) {
+          if (auto stale = tests_of_no_block(*s, cfg.test_dir, out.test_text); !stale.empty()) {
+            stale_test_asked = true;
+            say(fmt::format("worker {}: the project's tests {} fail after its change; they belong to no block: the tester looks at them",
+                            block, core::join(stale, " ")));
+            std::string what = fmt::format(
+                "The worker of {} made this change for the ticket:\n{}\nThe task of the block: {}\nAfter it the project's "
+                "tests {} fail. They belong to no block, so no worker may change them:\n{}\nRead the tests and the changed "
+                "code. If a test checks the old behaviour that this task changes on purpose, update it to the new behaviour "
+                "and keep everything else it checks; check behaviour where you can, not the exact text of a source line. "
+                "If the change broke what a test checks, leave the test as it is and report failed with the cause. Run "
+                "test() and report done when it passes.",
+                block, shorten(out.fix.empty() ? out.cause : out.fix, 600), shorten(task, 600), core::join(stale, " "),
+                shorten(out.test_text, 1500));
+            auto bt = run_behavior_tester(block, tid, what);
+            out.tokens += bt.tokens;
+            out.cost += bt.cost;
+            trail(tid, level_entry(level, "tester", {{"at", block}, {"model", bt.tier}, {"attempt", "1"}, {"outcome", bt.status}}));
+            if (bt.status == "cancelled") {
+              out.status = "cancelled";
+              out.cause = "stopped by the user";
+              return out;
+            }
+            auto tr2 = !sources.empty() ? tests->compile_check(sources) : tests->build_and_test({block});
+            out.tests_ok = tr2 && tr2->ok;
+            out.test_text = tr2 ? tr2->text : tr2.error().message;
+            if (out.tests_ok) {
+              out.tests = fmt::format("the project's tests {} checked the old behaviour; the tester updated them ({})",
+                                      core::join(stale, " "), shorten(bt.fix.empty() ? bt.cause : bt.fix, 200));
+            } else if (!bt.cause.empty()) {
+              history += fmt::format("tester of the failing project tests ({}): {}\n", bt.status, shorten(bt.cause, 300));
+            }
+          }
+        }
         if (!out.tests_ok) {
           status = "failed";
           out.cause = "tests fail after the report: " + shorten(out.test_text, 160);
