@@ -64,10 +64,12 @@ AutoRegister reg([](CLI::App& cli, App& app) {
     auto cfg = core::load_config(root);
     if (!cfg) die(cfg.error().str());
     print_maps(*cfg);
-    // The subagents follow the tiers ([models.*]); written when missing.
-    if (cfg->mcp() && !std::filesystem::exists(root / ".claude" / "agents")) {
-      auto g = code::write_claude_agents(root, *cfg);
-      if (g) std::cout << "wrote the Claude Code subagents of the tiers (.claude/agents/)\n";
+    // The subagents follow the tiers ([models.*]) and the mode: in mode mcp they only serve turns. Written when
+    // missing, rewritten when the mode changes (a file without the generated mark is kept).
+    if (cfg->mcp() || (!mode.empty() && std::filesystem::exists(root / ".claude" / "agents"))) {
+      if (auto g = code::write_claude_agents(root, *cfg); g && !g->written.empty()) {
+        std::cout << "wrote the Claude Code subagents of the tiers (.claude/agents/): " << core::join(g->written, ", ") << "\n";
+      }
     }
   });
 });

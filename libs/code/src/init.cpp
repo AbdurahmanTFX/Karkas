@@ -102,7 +102,10 @@ kk::Result<GenResult> write_claude_agents(const fs::path& root, const core::Conf
   for (const auto& [tier, t] : cfg.models) {
     if (t.claude_model().empty()) continue;  // not a Claude model: Claude Code cannot run it
     auto name = core::subagent_name(tier);
-    auto text = target_template("claude_agent.md", {{"name", name}, {"tier", tier}, {"model", t.claude_model()}});
+    // Mode mcp: Karkas's agents do the work and a subagent only serves their turns — the two turn tools and
+    // a short prompt, so a run costs its turns and nothing of a whole Claude Code tool set (token-cost-notes 5).
+    auto text = target_template(cfg.mcp() ? "claude_agent_mcp.md" : "claude_agent.md",
+                                {{"name", name}, {"tier", tier}, {"model", t.claude_model()}});
     if (!text) return std::unexpected(text.error());
     wanted.insert(name + ".md");
     auto path = dir / (name + ".md");
