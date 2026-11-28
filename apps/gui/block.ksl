@@ -11,6 +11,7 @@ call    libs.code:check_drift
 call    libs.metrics:active_runs
 call    libs.metrics:request_stop
 call    libs.agents:run_target
+call    libs.llm:waiting
 use     libs.core
 inv     the GUI thread never waits for disk or network
 inv     idle CPU use stays near zero
