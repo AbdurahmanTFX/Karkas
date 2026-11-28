@@ -519,6 +519,37 @@ TEST_CASE("imported ticket: a project test of no block that checks the old behav
   CHECK_FALSE(core::contains(t, "escalating"));
 }
 
+TEST_CASE("imported ticket: a worker's retry sees its block's files as the last attempt left them (bugs.txt 27)") {
+  Legacy p;
+  p.card("game.scripts", "purpose scripts\nkind leaf\nthread main\nfiles scripts/start.sh\n");
+  test::write(p / "scripts/start.sh", "#!/bin/bash\necho one\n");
+  test::ScriptedModel model;
+  test::FakeTests tests;
+  int runs = 0;
+  tests.fn = [&](const std::vector<std::string>&) {
+    if (++runs == 1) return agents::TestRun{true, false, "", {}, "build ok\nthe start is wrong\n"};
+    return agents::TestRun{true, true, "", {}, "build ok; tests ok\n"};
+  };
+  agents::EngineOptions o;
+  o.providers = model.factory();
+  o.tests = &tests;
+  auto e = agents::Engine::create(p.path(), test::test_config(), o);
+  REQUIRE_MESSAGE(e, (e ? "" : e.error().str()));
+  model.tool("dispatch", {{"block", "game.scripts"}, {"difficulty", "S"}, {"why", "start at two"}});
+  model.tool("write_file", {{"path", "scripts/start.sh"}, {"content", "#!/bin/bash\necho two\n"}});
+  model.tool("report", {{"status", "done"}, {"fix", "starts at two"}, {"files", "scripts/start.sh"}, {"api", "unchanged"}});
+  model.tool("report", {{"status", "done"}, {"fix", "starts at two, checked"}, {"files", "scripts/start.sh"}, {"api", "unchanged"}});
+  model.tool("close", {{"verdict", "done"}});
+  auto r = (*e)->task("The script starts at two");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(model.calls.size() == 5);
+  auto first = test::ScriptedModel::request_text(model.calls[1].req);
+  auto retry = test::ScriptedModel::request_text(model.calls[3].req);
+  CHECK(core::contains(first, "echo one"));
+  CHECK_MESSAGE(core::contains(retry, "echo two"), retry);
+  CHECK_FALSE(core::contains(retry, "echo one"));
+}
+
 TEST_CASE("imported ticket: with [test] dir, guide and command a feature ends with a behaviour test in the project's framework") {
   BehaviourRig rig;
   rig.script_until_the_test();

@@ -1130,6 +1130,9 @@ struct Engine::Impl {
     std::string history;
     bool stale_test_asked = false;  // the tester looked at failing project tests of no block (bugs.txt 26)
     for (int attempt = 1; attempt <= 12; ++attempt) {
+      // The context shows the block's files: a retry sees them as the last attempt left them, not as they were
+      // before it (bugs.txt 27: the retry of workspaces.profiles was shown the old notify_profile).
+      if (attempt > 1) context = context_for(Role::Worker, block, focus_task);
       std::string task_text;
       if (!tid.empty()) {
         auto t = tickets.load(tid);
