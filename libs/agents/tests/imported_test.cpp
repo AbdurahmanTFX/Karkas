@@ -212,11 +212,18 @@ TEST_CASE("imported sandbox: only the files of the card are written, headers by 
   auto data = sb.resolve_write("data/levels.txt");
   REQUIRE_FALSE(data);
   CHECK(core::contains(data.error().message, "'~ @block game.player' and '+ files data/levels.txt'"));
-  // The tester of an imported block reads its headers only and writes nothing.
+  // The tester of an imported block is the behaviour tester (ADR 0029): its prompt says to read the code
+  // the workers changed, so it reads every file of its card (a block of one .cpp has no header to read,
+  // bugs.txt 24), and writes none of them.
   agents::Sandbox tester(p.schema(), "game.player", agents::Role::Tester);
   CHECK(tester.resolve_read("src/game/hpp/player.hpp"));
-  CHECK_FALSE(tester.resolve_read("src/game/player.cpp"));
+  CHECK(tester.resolve_read("src/game/player.cpp"));
+  CHECK(tester.own_files() == std::vector<std::string>{"src/game/player.cpp", "src/game/hpp/player.hpp"});
   CHECK_FALSE(tester.resolve_write("src/game/hpp/player.hpp"));
+  CHECK_FALSE(tester.resolve_write("src/game/player.cpp"));
+  auto world = tester.resolve_read("src/game/world.cpp");  // another block's code stays closed
+  REQUIRE_FALSE(world);
+  CHECK(core::contains(world.error().message, "belongs to block game.world"));
 }
 
 // --- the tools of a worker there -----------------------------------------------------------------

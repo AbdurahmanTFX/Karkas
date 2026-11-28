@@ -52,12 +52,12 @@ Sandbox::Sandbox(const core::Schema& schema, std::string block, Role role)
     for (const auto& x : schema.blocks) {
       for (const auto& f : x.file_list()) listed_owner_[core::normalize(project_ / f)] = x.id;
     }
+    // Every role reads all files of the card. The tester of an imported block is the behaviour tester
+    // (ADR 0029), whose prompt says to read the code the workers changed; with the headers only it could
+    // read nothing of a block that is one .cpp (bugs.txt 24). It still writes none of them (resolve_imported).
     for (const auto& f : b->file_list()) {
-      auto abs = core::normalize(project_ / f);
-      // The tester checks promises: of an imported block it reads the headers only.
-      if (role == Role::Tester && !is_header(abs)) continue;
       own_files_.push_back(f);
-      own_listed_.insert(abs);
+      own_listed_.insert(core::normalize(project_ / f));
     }
     internal_dirs_ = {core::normalize(project_ / ".karkas"), core::normalize(project_ / dirs.blocks), core::normalize(project_ / "build")};
   }
