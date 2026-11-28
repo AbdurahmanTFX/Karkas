@@ -82,6 +82,12 @@ VoidResult write_file(const fs::path& p, std::string_view content) {
     out.write(content.data(), static_cast<std::streamsize>(content.size()));
     if (!out) return fail("io", fmt::format("cannot write {}", p.string()));
   }
+  // The new file replaces the old one by rename: it takes the old one's mode, or a script an agent
+  // edited is no longer executable (bugs.txt 23). Best effort: a mode that cannot be read stays default.
+  std::error_code mode_ec;
+  if (auto st = fs::status(p, mode_ec); !mode_ec && fs::is_regular_file(st)) {
+    fs::permissions(tmp, st.permissions(), fs::perm_options::replace, mode_ec);
+  }
   fs::rename(tmp, p, ec);
   if (ec) {
     fs::remove(tmp, ec);
