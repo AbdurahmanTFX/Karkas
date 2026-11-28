@@ -37,7 +37,7 @@ not read or grep the whole code base.
 ## Agents through MCP (mode mcp)
 `[agents] mode = "mcp"` in karkas.toml (the switch in karkas-gui, `karkas mode mcp`): the work is
 done by Karkas's own agents — orchestrator, navigators, workers, testers — exactly as with an API,
-and you are their model. The MCP server's instructions say so when it starts.
+and Claude models answer their turns. The MCP server's instructions say so when it starts.
 - A feature goes to kk_task, a bug to kk_debug (a ticket, as `karkas task` / `karkas debug`).
   Do not change the project with your own tools: the agents do it in their sandboxes.
 - A request the user limits to one block (or group) passes it as `block`: the descent starts there
@@ -48,30 +48,31 @@ and you are their model. The MCP server's instructions say so when it starts.
   and approves it there; send it yourself (action=send) only when asked. The architect keeps its
   blocks and dependencies and offers variants of critical places as changes C-NNNN;
   kk_prototype(action=view) shows what the schema keeps of it.
-- kk_agent_next(list=true) shows the turns that wait: ticket, role, block, the tier of its
-  model ([mcp.levels], [mcp.roles], [mcp.blocks]) and the Claude Code subagent of that tier.
-- Serve a run yourself when you run that model; otherwise hand the run to the subagent
-  (karkas-<tier>): "serve karkas run <run>". Runs of different blocks can go in parallel.
-- A turn is what an API would get: the agent's system prompt, its tools, its messages. Answer
-  with kk_agent_act(turn, calls=[{name, input}], text): only the agent's tools; Karkas runs them
-  and shows the results in the next turn. The run ends with the tool its instructions name.
-  When the results take longer than kk_agent_act waits, go on with kk_agent_next(run, after=<the
-  turn you answered>): only what is new comes back, not the whole turn. Pass seen=[the runs you
-  served in this session] too: a new run of a role you served (every decision of the orchestrator
-  is one) comes without the system prompt, tools and unchanged context you have.
+- You coordinate and serve no turn yourself, even on the model a turn names: what a session reads
+  stays in its context and is paid again on every call. kk_task names the run that waits and its
+  subagent (karkas-<tier>): start a new subagent of that name with "serve karkas run <run>". In mode
+  mcp the subagents have only kk_agent_next and kk_agent_act (`karkas gen agents` writes them).
+- A subagent answers every turn with kk_agent_act(turn, calls=[{name, input}], text): only the
+  agent's tools; Karkas runs them and shows the results in the next turn. The run ends with the tool
+  its instructions name; the answer then names the next run of the ticket and its subagent (served
+  by the same subagent only when it is named, one ticket per subagent), or that the ticket ended.
+  kk_agent_next(list=true) shows every turn that waits: ticket, role, block, the tier of its model
+  ([mcp.levels], [mcp.roles], [mcp.blocks]) and its subagent. Runs of different blocks can go in
+  parallel.
 - A feature is planned in one decision of the orchestrator (dispatch with next): its blocks run one
   after another, and the ticket closes when the last is done. With Auto a worker's card change is
   approved in its own run. `karkas stats <ticket>` shows the runs and the traffic of the turns.
 - Go on until kk_agent_next says the ticket ended: that answer carries its result (what each block's
   agent did, the checks); report from it. After the ticket run nothing else yourself: no approve, no
-  build. Proposed schema changes wait for the user (kk_changes); after approval: kk_ticket_run, and
+  build. One feature, one session: a long session pays its whole context again on every call.
+  Proposed schema changes wait for the user (kk_changes); after approval: kk_ticket_run, and
   kk_implement builds the code of an approved new schema.
 - `[agents] launch = "claude"`: Karkas serves the turns itself, one headless Claude Code per run
   (`claude -p` on the claude.ai login, the model of the run's tier, only kk_agent_next / kk_agent_act,
   started outside the project); then nobody serves turns: kk_task (or `karkas task` in a terminal)
   and wait for the end. The sessions' streams and costs are in .karkas/mcp/launch/.
-- Commands that run agents (karkas approve, expand, implement, ticket run) wait for you to serve
-  their turns: never run one in the foreground of your own shell; use kk_implement /
+- Commands that run agents (karkas approve, expand, implement, ticket run) wait for their turns to
+  be served: never run one in the foreground of your own shell; use kk_implement /
   kk_ticket_run or the background, or the command waits on you while you wait on it.
 
 ## Models and delegation
