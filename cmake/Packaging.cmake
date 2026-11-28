@@ -84,7 +84,7 @@ endif()
 string(REPLACE ";" "," _kk_components_arg "${_kk_components}")
 add_custom_target(packages
   COMMAND "${CMAKE_COMMAND}" "-DBUILD_DIR=${PROJECT_BINARY_DIR}" "-DOUT_DIR=${PROJECT_BINARY_DIR}/packages"
-          "-DCOMPONENTS=${_kk_components_arg}" "-DSUFFIX=${PROJECT_VERSION}-${_kk_os}-x86_64" "-DFORMAT=${_kk_format}"
+          "-DCOMPONENTS=${_kk_components_arg}" "-DSUFFIX=${KARKAS_VERSION}-${_kk_os}-x86_64" "-DFORMAT=${_kk_format}"
           -P "${PROJECT_SOURCE_DIR}/cmake/MakePackages.cmake"
   DEPENDS ${_kk_pkg_deps}
   USES_TERMINAL

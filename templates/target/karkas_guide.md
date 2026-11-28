@@ -17,17 +17,22 @@ source of truth and the code follows them. MCP server "karkas" (without it: `kar
   approves it (`karkas approve C-NNNN`; approve yourself only when the user said so). Never edit
   block.ksl or a frozen api silently.
 - Do only the task you were given. Another bug you notice on the way is not yours to fix: record
-  it with kk_note_bug (what, where, evidence), name it in your report and go on.
-- Done means: kk_check shows 0 errors and kk_run_tests passes.
+  it with kk_note_bug (what, where, evidence), name it in your report and go on (it answers with
+  the existing ticket when the block already has one).
+- Done means: kk_check shows 0 errors and kk_run_tests passes, except the failures it lists as
+  known (they have open tickets; fix one only if it is your task).
 - kk_view ends with the model line of the block. On another model, hand larger work on that block
   (new functions, a whole leaf) to the named subagent: start the brief with kk_brief, fill every
   [fill] line with concrete numbers and checks, and accept the work only after kk_review (visual
   work: a visual spec in numbers, and you look at the preview image it delivers). Fixes of a few
   lines you do yourself (kk_guide: Models and delegation).
+- Any language: `lang` of project.ksl names the project's languages (`lang cpp python bash`). Outside
+  C/C++ a file is its own api: its public names (shell: its subcommands) are the contract.
 - Imported project (own CMakeLists.txt): add new files to its build yourself; kk_run_tests builds
   with `[project] build_command` (when set) and runs `[test] command` of karkas.toml.
-- Mode mcp (`[agents] mode = "mcp"`): Karkas's own agents do the work and you are their model —
-  a task goes to kk_task, a bug to kk_debug, then serve their turns with kk_agent_next /
-  kk_agent_act (kk_guide: Agents through MCP).
+- Mode mcp (`[agents] mode = "mcp"`): Karkas's own agents do the work, you only coordinate — a
+  task goes to kk_task, a bug to kk_debug, and each run that waits goes to a new subagent of the
+  tier it names ("serve karkas run <run>"), never to you; then report the ticket's result and stop
+  (kk_guide: Agents through MCP).
 
 Answer the user in the language they write in.

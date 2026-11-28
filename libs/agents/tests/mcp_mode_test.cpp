@@ -3,10 +3,12 @@
 // queue (kk_agent_next / kk_agent_act).
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <thread>
 
 #include "kk/agents/engine.hpp"
@@ -15,6 +17,7 @@
 #include "kk/llm/mcp_bridge.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
+#include "kk/core/tickets.hpp"
 #include "kk/test/support.hpp"
 #include "scripted.hpp"
 
@@ -294,6 +297,33 @@ TEST_CASE("mcp mode: a list wait ends as soon as the tickets this server started
   CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(900));
 }
 
+TEST_CASE("mcp mode: an ended ticket's result is shown whole once, then as one line (bugs.txt 25)") {
+  test::TempDir d;
+  core::TicketStore store(d.path());
+  auto t = store.create(core::TicketKind::Feature, "human", "a row of three profiles", {});
+  REQUIRE(t);
+  core::TrailEntry fact;
+  fact.type = core::TrailEntry::Type::Fact;
+  fact.text = "b done: one row";
+  REQUIRE(store.append(t->id, fact));
+  REQUIRE(store.add_result(t->id, {{"status", "done", {}, 0}, {"fix", "b: one row of three cells", {}, 0}}));
+  std::map<std::string, bool> reported;
+  // First time: the result the client reports from (ADR 0029).
+  auto first = agents::ended_ticket_text(d.path(), t->id, 0, "log", reported[t->id]);
+  CHECK(core::contains(first, t->id + ": ended"));
+  CHECK(core::contains(first, "fact   b done: one row"));
+  CHECK(core::contains(first, "fix    b: one row of three cells"));
+  CHECK(reported[t->id]);
+  // Every later status line: one line, the result is not repeated into the client's context.
+  auto again = agents::ended_ticket_text(d.path(), t->id, 0, "log", reported[t->id]);
+  CHECK(core::contains(again, t->id + ": ended"));
+  CHECK_FALSE(core::contains(again, "fact"));
+  CHECK_FALSE(core::contains(again, "one row of three cells"));
+  CHECK(core::contains(again, "(status done)"));
+  CHECK(std::count(again.begin(), again.end(), '\n') == 1);
+  CHECK(core::contains(again, "kk_ticket_view"));
+}
+
 TEST_CASE("mcp mode: a wait for a run that has ended returns at once, not when wait_s runs out (ADR 0029)") {
   test::TempDir d;
   std::filesystem::create_directories(d.path() / ".karkas" / "runs");
@@ -305,6 +335,51 @@ TEST_CASE("mcp mode: a wait for a run that has ended returns at once, not when w
   auto text = turns.next("r1.jsonl", 30, false);
   CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5));
   CHECK(core::contains(text, "Run r1.jsonl ended: done."));
+}
+
+TEST_CASE("mcp mode: the end of a run names the next run of its ticket and its subagent, never the ticket's result (token-cost-notes 3)") {
+  test::TempDir d;
+  std::filesystem::create_directories(d.path() / ".karkas" / "runs");
+  core::TicketStore store(d.path());
+  auto t = store.create(core::TicketKind::Feature, "human", "the script starts at 2", {}, "");
+  REQUIRE(t);
+  REQUIRE(core::write_file(d.path() / ".karkas" / "runs" / "A.jsonl",
+                           R"({"type":"run_start","ticket":"T-0001","role":"worker","block":"b"})" "\n"
+                           R"({"type":"run_end","outcome":"done"})" "\n"));
+  llm::McpQueue q(d.path() / ".karkas" / "mcp");
+  llm::McpTurn next;
+  next.id = "B-001";
+  next.run = "B.jsonl";
+  next.ticket = "T-0001";
+  next.role = "tester";
+  next.block = "b";
+  next.tier = "cheap";
+  next.model = "m-cheap";
+  next.subagent = "karkas-cheap";
+  next.seq = 1;
+  next.ts = core::unix_now();
+  REQUIRE(q.put(next, R"({"id":"B-001","system":"test it","tools":[],"messages":[{"role":"user","content":"go"}]})"));
+  agents::McpTurns turns(d.path());
+  int status_calls = 0;
+  turns.tickets_status = [&] {
+    ++status_calls;
+    return std::string("T-0001: ended — closed.\n  fix    the whole result\n");
+  };
+  // kk_task names the first run, so the main session hands it on without a list.
+  CHECK(turns.first_run("T-0001", 1) == "run B.jsonl — T-0001 · tester at b, tier cheap → subagent karkas-cheap");
+  auto after = turns.next("A.jsonl", 5, false);
+  CHECK_MESSAGE(core::contains(after, "Run A.jsonl ended: done. Next of T-0001: run B.jsonl — T-0001 · tester at b, tier cheap → "
+                                      "subagent karkas-cheap. Serve it only if you are karkas-cheap"),
+                after);
+  CHECK(status_calls == 0);  // the result is the main session's to report, once (bugs.txt 25)
+  // The next run taken by another subagent, the ticket closed: nothing is left to serve.
+  q.take("B-001");
+  REQUIRE(store.set_status("T-0001", core::TicketStatus::Closed));
+  auto t0 = std::chrono::steady_clock::now();
+  auto ended = turns.next("A.jsonl", 5, false);
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+  CHECK_MESSAGE(core::contains(ended, "T-0001 has ended (closed): nothing is left to serve"), ended);
+  CHECK_FALSE(core::contains(ended, "the whole result"));
 }
 
 TEST_CASE("mcp mode: with launch = claude Karkas serves a run itself, with a session on the login and never an API key (ADR 0029)") {

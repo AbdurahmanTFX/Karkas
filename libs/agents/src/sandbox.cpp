@@ -1,4 +1,5 @@
 #include "kk/agents/sandbox.hpp"
+#include "kk/core/lang.hpp"
 
 #include <fmt/format.h>
 
@@ -27,10 +28,11 @@ std::string_view to_string(Role r) {
 
 namespace {
 
-bool is_header(const fs::path& p) {
-  auto ext = p.extension().string();
-  return ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx" || ext == ".ipp" || ext == ".inl";
-}
+// What other blocks read of an imported block: its headers, or its files in a language without headers,
+// whose public part is the contract (ADR 0051).
+bool is_header(const fs::path& p) { return core::is_contract_file(p); }
+// A file that only declares (a C/C++ header, .pyi, .d.ts): read-only when the run may not touch the api.
+bool declares_only(const fs::path& p) { return core::is_interface_file(p); }
 
 }  // namespace
 
@@ -45,17 +47,18 @@ Sandbox::Sandbox(const core::Schema& schema, std::string block, Role role)
   // An imported block works on the files of its card where they are (ADR 0027): paths from the
   // project root, which is its first root (so display() shows them as the card and the compiler do).
   imported_ = b != nullptr && !group && b->external();
+  entry_ = b != nullptr && b->kind == core::BlockKind::Entry;
   read_roots_.push_back({"", imported_ ? project_ : own_});
   if (imported_) {
     for (const auto& x : schema.blocks) {
       for (const auto& f : x.file_list()) listed_owner_[core::normalize(project_ / f)] = x.id;
     }
+    // Every role reads all files of the card. The tester of an imported block is the behaviour tester
+    // (ADR 0029), whose prompt says to read the code the workers changed; with the headers only it could
+    // read nothing of a block that is one .cpp (bugs.txt 24). It still writes none of them (resolve_imported).
     for (const auto& f : b->file_list()) {
-      auto abs = core::normalize(project_ / f);
-      // The tester checks promises: of an imported block it reads the headers only.
-      if (role == Role::Tester && !is_header(abs)) continue;
       own_files_.push_back(f);
-      own_listed_.insert(abs);
+      own_listed_.insert(core::normalize(project_ / f));
     }
     internal_dirs_ = {core::normalize(project_ / ".karkas"), core::normalize(project_ / dirs.blocks), core::normalize(project_ / "build")};
   }
@@ -157,7 +160,7 @@ kk::Result<fs::path> Sandbox::resolve_imported(const std::string& p, bool write)
                                              "needs_contract_change with '~ @block {}' and '+ files {}'",
                                              p, core::join(own_files_, " "), whose, block_, p));
     }
-    if (is_header(abs) && api_access_ == ApiAccess::None) {
+    if (declares_only(abs) && api_access_ == ApiAccess::None) {
       return kk::fail("sandbox", fmt::format("'{}': the headers of {} are read-only in this run", p, block_));
     }
     std::error_code ec;

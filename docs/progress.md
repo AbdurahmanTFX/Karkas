@@ -820,3 +820,112 @@
 
 - Version 0.1.1: the fixes above (doctest carried in the binary, builder folders, import of tests), packages for
   Linux and Windows rebuilt; README links point to v0.1.1.
+
+## Nightly — HSGM measurements (docs/adr/0049)
+
+- `kk::hsgm` and `karkas hsgm [diag|views|propagation|consistency|width]` (no argument: a summary): read-only
+  measurements of a code project from its index; every output ends with its assumptions. diag — group testing
+  over the suites (items are blocks and links; classes, k-disjunctness, COMP/DD over fresh results); views —
+  precision of lifted views and false cycles; propagation — visibility matrix (MacCormack et al. 2012);
+  consistency — forms of a leaf and what to regenerate; width — the tree width that minimizes the navigator's
+  cost, fitted on navigator runs.
+- wavkit (recorded state of the view tests):
+  `diag blocks alone 11/13, links alone 0/8 (3 in classes, 5 undetectable), k 0`;
+  `views level 0 precision 9/12, false cycles 1` (io -> stream -> dsp -> mix -> io exists only in the view);
+  `propagation transitive 0.32, direct 0.21, self 0.08`; `consistency 1 of 10 disagree` (stream.ring t-i);
+  `width not enough data: 0 runs, 0 widths`.
+- Karkas itself: `diag blocks alone 11/12, links alone 0/19 (0 in classes, 19 undetectable), k 2`;
+  `views level 0 precision 1/1, false cycles 0`; `propagation transitive 0.28, direct 0.26, self 0.08`;
+  `consistency 10 of 11 disagree` (the libraries' tests are not contract tests named after their inv, D08;
+  D04 on `Result<T>` against `kk::Result<T>`); `width not enough data: 0 runs, 0 widths`.
+- The formatters are `to_text(...)`: a free `format(...)` in a library made the D09 heuristic take every
+  `fmt::format` call in the repository for a call into it (645 warnings).
+- Found in wavkit while checking the model: `mix` adds tracks frame by frame and the composition root opens
+  the writer at the sample rate of the last track read; no card states that all tracks share one rate, and
+  no test covers it (left as it is: a reference project).
+- Fixes from the final review of the branch: a lifted cycle is real when any of its nodes holds a real cycle
+  between blocks (it looked only at the first node); an integration outcome counts only when no block under
+  its group changed since (a group's freshness hash does not see its blocks); a failed suite that no item
+  explains is listed as unexplained; a vacuous k is printed as vacuous; imported leaves and entries are not
+  asked for contract tests; the summary points to the assumptions.
+- Tests: 36 in kk_hsgm_tests; golden files in tests/golden/hsgm.
+
+## Nightly — known failures carry over between agent sessions (docs/adr/0050)
+
+- `kk_run_tests` (MCP) ends with the failing blocks that already have an open bug ticket (with the ticket)
+  and those without one; `karkas test` prints what it printed before. `kk_note_bug` records the block of the
+  bug (`block <id>`) and answers with the open tickets of that block instead of creating another;
+  `distinct: true` records a different bug of the same block. Deterministic: the block comes from a path
+  (folder or listed file, also inside an absolute path), else from the longest block id in the text.
+- Measured on s3, method B, sonnet, one run (the author's decision) against the runs of 2026-11-26: cost
+  $0.579 (main $0.558 [0.551–0.596]), sessions 2–5 $0.369 (baseline $0.398–0.449), session 1 $0.210
+  (baseline $0.109–0.197); notes 6, no repeats (baseline 7–12 per run, 61% repeats); shell
+  output that reads only other blocks 24% (baseline 44%); hidden 11/11. Details in the ADR.
+- The first attempt of the measurement ran into the subscription's 5-hour limit: every session ended with an
+  API error, and `karkas bench run` still reported the run as valid (exit 0, "hidden 1/11"); not counted.
+  The bench does not yet mark such runs as failed.
+- For reference, the same s3 without Karkas (method A: Claude Code alone on the copy without `.karkas`, cards
+  and the MCP server), one run: $0.809 and 1652 s against method B's $0.558–0.595 and 535–1192 s; 37 API calls
+  (B 39–45); 208k characters of code read through the shell (B 86–92k), so 140k tokens written to the cache
+  (B 88–96k); hidden 11/11 in both. Every session but the first cost more than in B; the first two took ~11
+  minutes each (the agent built the project itself and its runs of all tests waited on the hanging ring test).
+- Time without build and test runs (from the session logs: the build and test calls while the model is idle are
+  taken out): method A 152 s, method B 128–142 s on main, 144–225 s on nightly, 119 s with this ADR; the model
+  itself 147 s against 112–137 s. Build and tests are 80–92% of the wall time in every variant, mostly the hanging
+  ring test of the injected bug: kk_run_tests stops it at its timeout, while the agent alone ran ctest without one
+  and twice waited for the shell's 10-minute limit.
+- Fixes from the final review: a path inside a longer one and the files of imported blocks name a block;
+  the answer of `kk_note_bug` lists every open ticket of the block; the sections end with "Any of them that
+  started failing after your change is yours to fix."; the test of "other kinds are never known" now checks
+  a feature and a change that name a block.
+
+## Beta 0.2.0-beta.1 (nightly, pre-release)
+
+- Version 0.2.0 with the pre-release label `-beta.1` (`KARKAS_VERSION_LABEL` in CMakeLists.txt; empty for a
+  release): `--version`, the package names and the Windows resource strings carry it, the resource's numeric
+  version stays 0.2.0.0.
+- Packages for Linux and Windows rebuilt and checked: Linux as 0.1.1 (needs libcurl, libsqlite3 and glibc 2.38+,
+  C++ runtime static), `check` and `hsgm` on wavkit; Windows under wine (`--version`, `hsgm`).
+- Pre-release v0.2.0-beta.1 on GitHub from nightly (ADR 0049, ADR 0050 and the s3 measurements); v0.1.1 stays
+  the latest release.
+
+## ADR 0051 — any language (2026-11-28)
+
+- `kk/core/lang.hpp`: 28 languages as data (extensions, comments, strings, interface files, whether the
+  interface lives in headers); `is_code_file` is "a known language", `is_interface_file` / `is_contract_file`
+  replace the header checks of the index, import, sandbox, brief and engine.
+- `lang` of project.ksl takes several words (`lang cpp bash lua python`); D06, import and init take the code of
+  these languages; an empty or unknown `lang` is C/C++ as before. `karkas init` writes the languages it finds,
+  most files first, and the C++ build lines only where there is C++.
+- `kk/code/lexical.hpp`: facts of every other language without a new dependency — masking by the language's
+  syntax (heredocs, Lua long brackets, triple quotes), declarations with scope (braces or indentation),
+  parameter counts without the receiver, visibility by the language's rule, imports, calls; shell subcommands
+  (`case "$1" in` labels) are public symbols of kind `command`; entries (`__main__`, `static void main`) are
+  `main`. `resolve_import` per language (Python, JS/TS, Go, Rust, JVM, Lua, Ruby, PHP, Perl, Haskell, Nim, Dart,
+  shell `source`); D01/D02 for imports, D04 for subcommands and unknown parameter counts.
+- Import: one leaf per file, a Go package per folder, `index.ts` / `mod.rs` / `__init__.py` named by the folder,
+  `any` per parameter; test programs `*.spec.ts`, `*_spec.rb`, `test-*.sh`, `conftest.py`. A data-only imported
+  block is `implemented`.
+- Agents: a file of a language without headers is the contract other blocks read and keeps its public names
+  (`contract_kept`); only C/C++ files go into a CMakeLists.txt or `build()`'s quick compile; a project without
+  C++ gets no generated CMake, mocks, probe or skeletons and builds with `build_command` (none: no build step)
+  and tests with `[test] command`.
+- Not yet: schema-first (native) projects in other languages (api/ contracts and contract tests in the
+  language, prompts).
+
+## ADR 0052 — the main session only coordinates; bugs.txt 2, 12, 26, 27, 28 (2026-11-28)
+
+- Mode mcp: kk_task names the ticket's first run and its subagent; the end of a run names the next run of the
+  ticket (serve it only if it names you) or that the ticket ended, never the ticket's result
+  (`McpTurns::first_run`, `after_run`). The instructions and guides: the main session serves no turn, reads no
+  code, hands each run to a new subagent of its tier, one ticket per subagent, one feature per session.
+- `claude_agent_mcp.md`: in mode mcp the karkas-<tier> subagents have only kk_agent_next / kk_agent_act (and
+  ToolSearch) and a short prompt; `karkas mode` and the GUI's switch rewrite them with the mode.
+- bugs.txt 28: the entry block's public names are free (no card change for a new function of a script entry).
+- bugs.txt 26: a failing project test of no block goes once to the behaviour tester (update an outdated test,
+  or report the regression), not to the worker up the tiers; the imported tester checks behaviour, not a
+  source line letter by letter.
+- bugs.txt 27 (confirmed): a worker's retry was shown its block's files as they were before the first attempt;
+  the context is built again for every retry.
+- bugs.txt 12: apps.gui calls libs.llm:waiting; `karkas check` in this repository has no error.
+- bugs.txt 2: a test shows a worker's proposal changing a neighbour's card in the same @change.

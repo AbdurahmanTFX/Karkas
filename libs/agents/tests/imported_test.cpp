@@ -212,11 +212,18 @@ TEST_CASE("imported sandbox: only the files of the card are written, headers by 
   auto data = sb.resolve_write("data/levels.txt");
   REQUIRE_FALSE(data);
   CHECK(core::contains(data.error().message, "'~ @block game.player' and '+ files data/levels.txt'"));
-  // The tester of an imported block reads its headers only and writes nothing.
+  // The tester of an imported block is the behaviour tester (ADR 0029): its prompt says to read the code
+  // the workers changed, so it reads every file of its card (a block of one .cpp has no header to read,
+  // bugs.txt 24), and writes none of them.
   agents::Sandbox tester(p.schema(), "game.player", agents::Role::Tester);
   CHECK(tester.resolve_read("src/game/hpp/player.hpp"));
-  CHECK_FALSE(tester.resolve_read("src/game/player.cpp"));
+  CHECK(tester.resolve_read("src/game/player.cpp"));
+  CHECK(tester.own_files() == std::vector<std::string>{"src/game/player.cpp", "src/game/hpp/player.hpp"});
   CHECK_FALSE(tester.resolve_write("src/game/hpp/player.hpp"));
+  CHECK_FALSE(tester.resolve_write("src/game/player.cpp"));
+  auto world = tester.resolve_read("src/game/world.cpp");  // another block's code stays closed
+  REQUIRE_FALSE(world);
+  CHECK(core::contains(world.error().message, "belongs to block game.world"));
 }
 
 // --- the tools of a worker there -----------------------------------------------------------------
@@ -468,6 +475,80 @@ struct BehaviourRig {
 };
 
 }  // namespace
+
+TEST_CASE("imported ticket: a project test of no block that checks the old behaviour goes to the tester, not up the tiers (bugs.txt 26)") {
+  // T-0003 of ~/.config/hypr: the change was right, an old test of the project (a file of no card) expected the
+  // old number; the worker ran again on cheap, then on medium, and could not touch the test.
+  Legacy p;
+  p.card("game.scripts", "purpose scripts\nkind leaf\nthread main\nfiles scripts/start.sh\n");
+  test::write(p / "scripts/start.sh", "#!/bin/bash\necho 1\n");
+  test::write(p / "tests/behaviour/start_test.sh", "#!/bin/bash\n[ \"$(scripts/start.sh)\" = 1 ]\n");
+  test::ScriptedModel model;
+  test::FakeTests tests;
+  int runs = 0;
+  tests.fn = [&](const std::vector<std::string>&) {
+    if (++runs == 1) return agents::TestRun{true, false, "", {}, "build ok\nFAIL tests/behaviour/start_test.sh\n"};
+    return agents::TestRun{true, true, "", {}, "build ok; tests ok\n"};
+  };
+  auto cfg = test::test_config();
+  cfg.test_dir = "tests/behaviour";
+  cfg.test_command = "true";
+  agents::EngineOptions o;
+  o.providers = model.factory();
+  o.tests = &tests;
+  auto e = agents::Engine::create(p.path(), cfg, o);
+  REQUIRE_MESSAGE(e, (e ? "" : e.error().str()));
+  model.tool("dispatch", {{"block", "game.scripts"}, {"difficulty", "S"}, {"why", "start at 2"}});
+  model.tool("write_file", {{"path", "scripts/start.sh"}, {"content", "#!/bin/bash\necho 2\n"}});
+  model.tool("report", {{"status", "done"}, {"fix", "the script starts at 2"}, {"files", "scripts/start.sh"}, {"api", "unchanged"}});
+  model.tool("write_file", {{"path", "tests/behaviour/start_test.sh"}, {"content", "#!/bin/bash\n[ \"$(scripts/start.sh)\" = 2 ]\n"}});
+  model.tool("report", {{"status", "done"}, {"fix", "the test expects 2, as the ticket asks"}, {"files", "tests/behaviour/start_test.sh"}});
+  // The behaviour test of the feature, as always at its end.
+  model.tool("write_file", {{"path", "tests/behaviour/start_twice_test.sh"}, {"content", "#!/bin/bash\n[ \"$(scripts/start.sh)\" = 2 ]\n"}});
+  model.tool("report", {{"status", "done"}, {"files", "tests/behaviour/start_twice_test.sh"}, {"fix", "starts at 2"}});
+  model.tool("close", {{"verdict", "done"}});
+  auto r = (*e)->task("The script starts at 2");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(model.calls.size() == 8);  // one worker run, no second one on a stronger tier
+  auto tester = test::ScriptedModel::request_text(model.calls[3].req);
+  CHECK_MESSAGE(core::contains(tester, "After it the project's tests tests/behaviour/start_test.sh fail"), tester);
+  CHECK(core::contains(tester, "the script starts at 2"));
+  CHECK(core::contains(test::read(p / "tests/behaviour/start_test.sh"), "= 2 ]"));
+  auto t = test::read(p / ".karkas/tickets/T-0001.ksl");
+  CHECK_MESSAGE(core::contains(t, "status  closed"), t);
+  CHECK_FALSE(core::contains(t, "escalating"));
+}
+
+TEST_CASE("imported ticket: a worker's retry sees its block's files as the last attempt left them (bugs.txt 27)") {
+  Legacy p;
+  p.card("game.scripts", "purpose scripts\nkind leaf\nthread main\nfiles scripts/start.sh\n");
+  test::write(p / "scripts/start.sh", "#!/bin/bash\necho one\n");
+  test::ScriptedModel model;
+  test::FakeTests tests;
+  int runs = 0;
+  tests.fn = [&](const std::vector<std::string>&) {
+    if (++runs == 1) return agents::TestRun{true, false, "", {}, "build ok\nthe start is wrong\n"};
+    return agents::TestRun{true, true, "", {}, "build ok; tests ok\n"};
+  };
+  agents::EngineOptions o;
+  o.providers = model.factory();
+  o.tests = &tests;
+  auto e = agents::Engine::create(p.path(), test::test_config(), o);
+  REQUIRE_MESSAGE(e, (e ? "" : e.error().str()));
+  model.tool("dispatch", {{"block", "game.scripts"}, {"difficulty", "S"}, {"why", "start at two"}});
+  model.tool("write_file", {{"path", "scripts/start.sh"}, {"content", "#!/bin/bash\necho two\n"}});
+  model.tool("report", {{"status", "done"}, {"fix", "starts at two"}, {"files", "scripts/start.sh"}, {"api", "unchanged"}});
+  model.tool("report", {{"status", "done"}, {"fix", "starts at two, checked"}, {"files", "scripts/start.sh"}, {"api", "unchanged"}});
+  model.tool("close", {{"verdict", "done"}});
+  auto r = (*e)->task("The script starts at two");
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  REQUIRE(model.calls.size() == 5);
+  auto first = test::ScriptedModel::request_text(model.calls[1].req);
+  auto retry = test::ScriptedModel::request_text(model.calls[3].req);
+  CHECK(core::contains(first, "echo one"));
+  CHECK_MESSAGE(core::contains(retry, "echo two"), retry);
+  CHECK_FALSE(core::contains(retry, "echo one"));
+}
 
 TEST_CASE("imported ticket: with [test] dir, guide and command a feature ends with a behaviour test in the project's framework") {
   BehaviourRig rig;
@@ -797,4 +878,51 @@ TEST_CASE("imported ticket: a worker's done with no file of its block changed is
   CHECK(core::contains(t, "fix     game.player: the player walks at the tile's speed"));
   CHECK_FALSE(core::contains(t, "fix     game.world:"));
   CHECK_MESSAGE(core::contains(t, "status  closed"), t);
+}
+
+TEST_CASE("imported blocks: the entry block adds a public name without a card change (bugs.txt 28)") {
+  // T-0007 of ~/.config/hypr: the worker of the entry (hyprland.lua) could not add a global function — the
+  // file refused it as a new public name, and the card change '+ fn' was refused by E08.
+  Legacy p;
+  p.card("game.main", "purpose entry point\nkind entry\nthread main\nfiles src/game/main.cpp src/game/setup.lua\n"
+                    "call game.world:update\ncall game.world:draw\ncall game.player:update\n"
+                    "call game.player:position\ncall game.player:bag\ncall util.camera:follow\n");
+  test::write(p / "src/game/setup.lua", "function setup()\n  return 1\nend\n");
+  test::write(p / "src/game/world.lua", "function tiles()\n  return 2\nend\n");
+  p.card("game.world", "purpose the island\nkind leaf\nthread main\nfiles src/game/world.cpp src/game/hpp/world.hpp src/game/world.lua\n"
+                     "fn update(float) -> void\nfn is_walkable(Vec2) -> bool\nfn draw() -> void\ncall util.math:clampf\n");
+  test::FakeTests tests;
+  auto add_fn = [&](const std::string& block, const std::string& path, const std::string& end) {
+    agents::Sandbox sb(p.schema(), block, agents::Role::Worker);
+    sb.set_api_access(agents::ApiAccess::Imported);
+    agents::LeafToolHost host(std::move(sb), agents::Role::Worker, tests, {block});
+    return host.call({"1", "edit_file", json{{"path", path}, {"old", end}, {"new", end + "\nfunction ws_anim(style)\n  return style\nend\n"}}.dump()});
+  };
+  auto entry = add_fn("game.main", "src/game/setup.lua", "  return 1\nend\n");
+  CHECK_MESSAGE(!entry.is_error, entry.content);
+  CHECK(core::contains(test::read(p / "src/game/setup.lua"), "function ws_anim(style)"));
+  // A leaf keeps its contract: other blocks build on its public names.
+  auto leaf = add_fn("game.world", "src/game/world.lua", "  return 2\nend\n");
+  CHECK(leaf.is_error);
+  CHECK(core::contains(leaf.content, "new public"));
+  CHECK_FALSE(core::contains(test::read(p / "src/game/world.lua"), "ws_anim"));
+}
+
+TEST_CASE("imported blocks: a file of a language without headers keeps its public names (ADR 0051)") {
+  using kk::agents::contract_kept;
+  const std::string py = "def push(frame):\n    return _wrap(frame)\n\n\ndef _wrap(frame):\n    return frame\n";
+  std::string why;
+  // Bodies and private names are free.
+  CHECK(contract_kept("app/ring.py", py, "def push(frame):\n    return frame\n", &why));
+  // A public function gone, a changed parameter count or a new public function is a card change.
+  CHECK_FALSE(contract_kept("app/ring.py", py, "def _wrap(frame):\n    return frame\n", &why));
+  CHECK(kk::core::contains(why, "push"));
+  CHECK_FALSE(contract_kept("app/ring.py", py, "def push(frame, n):\n    return frame\n", &why));
+  CHECK_FALSE(contract_kept("app/ring.py", py, py + "\ndef reset():\n    pass\n", &why));
+  CHECK(kk::core::contains(why, "new public"));
+  // A shell script's subcommands are its contract; data files have none.
+  const std::string sh = "#!/bin/bash\ncase \"$1\" in\n  start) echo s ;;\n  stop) echo t ;;\nesac\n";
+  CHECK(contract_kept("run.sh", sh, core::replace_all(sh, "echo s", "echo started"), &why));
+  CHECK_FALSE(contract_kept("run.sh", sh, core::replace_all(sh, "  stop) echo t ;;\n", ""), &why));
+  CHECK(contract_kept("conf/idle.conf", "a = 1\n", "b = 2\n", &why));
 }

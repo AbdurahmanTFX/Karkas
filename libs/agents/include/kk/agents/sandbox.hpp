@@ -32,6 +32,10 @@ bool api_values_or_new_constants(std::string_view before, std::string_view after
 // private sections; bodies, initial values and comments do not count) and adds at most public
 // constants and #include lines (ADR 0027). `why` names the first declaration that breaks it.
 bool header_contract_kept(std::string_view before, std::string_view after, std::string* why = nullptr);
+// The same for any contract file of an imported block (ADR 0051): a C/C++ header as above; a file of
+// another language keeps its public names (functions, methods, types, shell subcommands) with their
+// parameter counts and adds none; private names and bodies are free.
+bool contract_kept(const std::filesystem::path& file, std::string_view before, std::string_view after, std::string* why = nullptr);
 
 class Sandbox {
  public:
@@ -59,6 +63,9 @@ class Sandbox {
   [[nodiscard]] bool is_own_api(const std::filesystem::path& abs) const;
   // An imported block: the files of its card, relative to the project root.
   [[nodiscard]] bool imported() const { return imported_; }
+  // The entry block (kind entry): no block builds on it and its card lists no fn (E08), so the public
+  // names of its files are no contract (bugs.txt 28).
+  [[nodiscard]] bool entry() const { return entry_; }
   [[nodiscard]] const std::vector<std::string>& own_files() const { return own_files_; }
   // Files a recursive grep reads under `dir`. An imported block searching from the project root reads
   // its files and the headers it may read, not the whole tree; empty: walk the folder.
@@ -91,6 +98,7 @@ class Sandbox {
   // An imported block (ADR 0027): absolute paths of its files and of the headers of other blocks it
   // may read; the owner of every file a card lists; folders no agent reads (.karkas, build, blocks).
   bool imported_ = false;
+  bool entry_ = false;
   std::vector<std::string> own_files_;
   std::set<std::filesystem::path> own_listed_;
   std::set<std::filesystem::path> read_listed_;

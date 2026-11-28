@@ -187,9 +187,41 @@ TEST_CASE("mcp: kk_note_bug records a bug found on the way as an open ticket") {
   CHECK(t->origin.value == "agent");
   CHECK(t->status.value == "open");
   CHECK(t->symptom.value == "echo feedback is not clamped to 0.99");
-  REQUIRE(t->facts.size() == 2);
+  REQUIRE(t->facts.size() == 3);
   CHECK(t->facts[0].text == "found at blocks/dsp/echo/impl/echo.cpp:24");
+  CHECK(t->facts[2].text == "block dsp.echo");
   CHECK(call({{"summary", "  "}})["isError"] == true);
+}
+
+TEST_CASE("mcp: kk_note_bug answers with the open ticket of the block instead of a duplicate") {
+  McpFixture f;  // holds T-0001, a bug about stream.ring
+  mcp::Server server(*f.idx, {});
+  auto call = [&](const json& args) {
+    json req = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"}, {"params", {{"name", "kk_note_bug"}, {"arguments", args}}}};
+    return json::parse(*server.handle(req.dump()))["result"];
+  };
+  auto r = call({{"summary", "ring buffer loses frames at wraparound"}, {"where", "blocks/stream/ring/impl/ring.cpp:30"}});
+  CHECK(r["isError"] == false);
+  CHECK(r["content"][0]["text"].get<std::string>().starts_with("already noted as T-0001"));
+  CHECK_FALSE(core::TicketStore(f.p.path()).load("T-0002"));
+  auto again = call({{"summary", "fill() can exceed capacity"}, {"where", "stream.ring"}, {"distinct", true}});
+  CHECK(again["content"][0]["text"].get<std::string>().starts_with("noted T-0002"));
+  // Two open tickets in the block: the answer names both, so a repeat of the second is recognised.
+  auto third = call({{"summary", "fill() can exceed capacity"}, {"where", "blocks/stream/ring/impl/ring.cpp:12"}});
+  CHECK(third["content"][0]["text"].get<std::string>().starts_with(
+      "already noted in stream.ring: T-0001 (crackle after 10 s); T-0002 (fill() can exceed capacity)."));
+  CHECK_FALSE(core::TicketStore(f.p.path()).load("T-0003"));
+}
+
+TEST_CASE("mcp: kk_note_bug without a known block still records the bug") {
+  McpFixture f;
+  mcp::Server server(*f.idx, {});
+  auto call = [&](const json& args) {
+    json req = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"}, {"params", {{"name", "kk_note_bug"}, {"arguments", args}}}};
+    return json::parse(*server.handle(req.dump()))["result"];
+  };
+  auto r = call({{"summary", "the output sounds wrong"}, {"where", "somewhere in the pipeline"}});
+  CHECK(r["content"][0]["text"].get<std::string>().starts_with("noted T-0002"));
 }
 
 TEST_CASE("mcp: a request limited to a block, a message about a ticket, the prototype (ADR 0034, 0035)") {

@@ -2,6 +2,7 @@
 // Ticket files .karkas/tickets/T-NNNN.ksl (10): append-only except the status line,
 // one agent per ticket (lock file), and the "path view" handed to agents (10.1, app. D).
 #include <filesystem>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -74,5 +75,25 @@ std::string path_view(const Ticket& t, std::string_view at, std::size_t token_bu
 
 // Next trail level for a block: root = 0, top-level block = 1, ...
 int trail_level(std::string_view at);
+
+// --- known failures (docs/adr/0050) -------------------------------------------------------
+
+struct Schema;
+
+// The block a free text names: the block whose folder (Block::dir) or listed file (an imported block,
+// docs/adr/0009) occurs as a path in the text, also inside a longer one (absolute, "./"), the longest
+// match winning; else the longest block id that occurs as a whole word outside a path (the character
+// before is not [a-z0-9_./], the one after is not [a-z0-9_]); "" when none.
+std::string block_named_in(std::string_view text, const Schema& schema);
+// The block a ticket is about: a fact "block <id>" of an existing block; else block_named_in of each
+// "found at ..." fact in order, then of the symptom, then of the other facts; "" when none.
+std::string ticket_block(const Ticket& t, const Schema& schema);
+// Bug tickets whose status is not "closed", by ticket_block; tickets without a block are left out;
+// each list in id order.
+Result<std::map<std::string, std::vector<Ticket>>> open_bugs(const TicketStore& store, const Schema& schema);
+// The sections kk_run_tests adds after its summary: failing blocks with an open bug ticket (a failing
+// group uses the tickets of the blocks under it) and those without; "" when nothing fails.
+std::string known_failures_text(const std::vector<std::string>& failing,
+                                const std::map<std::string, std::vector<Ticket>>& bugs, const Schema& schema);
 
 }  // namespace kk::core

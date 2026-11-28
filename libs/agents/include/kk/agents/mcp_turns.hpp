@@ -38,6 +38,13 @@ class McpTurns {
   // `karkas mcp`: a list wait ends as soon as they have all ended, not when wait_s runs out (ADR 0029).
   std::function<int()> tickets_running;
 
+  // The first run of `ticket` that waits for its model (who, tier, subagent), waiting up to wait_s; "" when
+  // none came. kk_task names it, so the client hands it on without a list (token-cost-notes 3).
+  [[nodiscard]] std::string first_run(const std::string& ticket, int wait_s) const;
+  // What follows the end of `run` of `ticket`: its next run that waits (to serve only by the subagent it
+  // names), or that the ticket has ended — never the ticket's result, which is the main session's to report.
+  [[nodiscard]] std::string after_run(const std::string& ticket, const std::string& run, int wait_s) const;
+
  private:
   [[nodiscard]] std::string run_end(const std::string& run) const;  // "" while the run goes on
   // The record (JSON text) of the newest seen run of the same role, preferably of the same block.
@@ -47,6 +54,13 @@ class McpTurns {
   std::filesystem::path root_;
   llm::McpQueue queue_;
 };
+
+// The status of a ticket this server started that has ended (ADR 0029). The first time (reported is
+// false) it is the result the client reports from: what each block's agent did, the checks, the api and
+// the notes; reported becomes true. After that it is one line: every status of kk_agent_next carries
+// it, and repeating each ended ticket's result filled the client's context (bugs.txt 25).
+std::string ended_ticket_text(const std::filesystem::path& root, const std::string& id, int exit_code, const std::string& log,
+                              bool& reported);
 
 // A turn as the model reads it: whole (system, tools, every message) or only what came after
 // the model's last answer (the results of its calls).

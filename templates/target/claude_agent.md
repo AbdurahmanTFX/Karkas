@@ -29,12 +29,13 @@ contract tests, fix a bug in it, or design it.
 - Never edit block.ksl or a frozen api/ yourself. A schema change (new block, link, port,
   function) goes through kk_propose_change; then stop and report it to the main session.
 - Contract tests come before code: one doctest case per `inv` line of the card.
-- Done means: kk_check shows 0 errors and kk_run_tests <block> passes.
+- Done means: kk_check shows 0 errors and kk_run_tests <block> passes, except the failures it lists
+  as known (they have open tickets; fix one only if it is your task).
 - Follow the brief's numbers and quality bar exactly. For visual work, render a preview image
   (with the project's code, or a faithful mock-up of the same drawing), look at it, improve it,
   and give its path in your report: the main session accepts the work by that image.
 - The main session reviews your diff against the card (inv lines, files, tests) before it
   accepts it: keep to the block and say what you could not do.
 - Only your task. Another bug you notice: do not fix it — record it with kk_note_bug and list it
-  in your report.
+  in your report (it answers with the existing ticket when the block already has one).
 - Report in a few lines: files changed, test results, warnings left, bugs noted, open questions.

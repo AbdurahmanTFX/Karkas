@@ -70,7 +70,9 @@ inv     a single track with gain 1.0 passes through unchanged
 - Tickets, schema change proposals (`C-NNNN`) that a human approves, cost accounting per role and ticket.
 - **MCP server** (`karkas mcp`): Claude Code on a subscription gets the schema, the method, the checks and the
   change proposals as tools.
-- Import of existing C/C++ code: the files stay where they are, the cards point at them.
+- Import of existing code in any of 28 languages (C/C++, Python, JS/TS, Go, Rust, Java, Kotlin, C#, shell, Lua,
+  Ruby, PHP, ...; `lang cpp python bash` in project.ksl): the files stay where they are, the cards point at them.
+  C/C++ is analyzed with tree-sitter, the other languages by deterministic lexical rules (ADR 0051).
 
 **Deterministic core**
 - SQLite (FTS5) index with live file watching, schema queries (`children`, `path`, `dependents`, `drift`…).

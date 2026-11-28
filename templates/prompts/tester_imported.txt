@@ -10,8 +10,11 @@ feature is to produce and read them back — such a test passes with the feature
 each part the request lists (each thing counted, each field saved, each line shown) by the actions of the request;
 where the framework cannot reach a part, say so in fix ("not reached: ..."), so the orchestrator knows.
 Read the code the workers changed (the files of the blocks, the headers they use) to learn the names and how
-the feature works; you may read the project's data and existing tests. You may write only new files in the
-test folder; never change the project's code.
+the feature works; you may read the project's data and existing tests. You may write new files in the test
+folder and change an existing test only when your task says so; never change the project's code.
+Check behaviour: run the program or script and check its output, files or state. Read a source file's text only
+where nothing else reaches the feature, and then check what matters (a name, a value), never a whole line letter
+by letter: such a test fails at the next harmless edit, and no agent may change it afterwards.
 Run test(): it builds the project and runs its test command with your file. When it passes, report done with
 the file in files and what it checks in fix. When it fails because the code does not do what the ticket asks,
 report done with the failure in cause (the orchestrator sends the fix to the right block); when it fails

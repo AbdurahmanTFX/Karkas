@@ -1,4 +1,5 @@
 #include "kk/agents/brief.hpp"
+#include "kk/core/lang.hpp"
 
 #include <fmt/format.h>
 
@@ -21,9 +22,8 @@ namespace fs = std::filesystem;
 
 namespace {
 
-bool is_header(std::string_view p) {
-  return p.ends_with(".h") || p.ends_with(".hpp") || p.ends_with(".hh") || p.ends_with(".hxx");
-}
+// The files other blocks read as the contract: headers, or every file of a language without them (ADR 0051).
+bool is_header(std::string_view p) { return core::is_contract_file(std::filesystem::path(p)); }
 
 // Files of a block: the files line of imported blocks, or what is in its own folder.
 std::vector<std::string> files_of(const fs::path& root, const core::Block& b) {
@@ -48,7 +48,7 @@ std::string api_of(const core::Block& b) {
   for (const auto& f : b.file_list()) {
     if (is_header(f)) h.push_back(f);
   }
-  return h.empty() ? std::string("(no header)") : core::join(h, " ");
+  return h.empty() ? std::string("(no header)") : core::join(h, " ");  // e.g. only C sources or data
 }
 
 std::string list_lines(const std::vector<std::string>& items, std::size_t max, std::string_view indent = "  ") {

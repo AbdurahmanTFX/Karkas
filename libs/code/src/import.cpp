@@ -11,6 +11,8 @@
 #include <set>
 
 #include "kk/code/analyzer.hpp"
+#include "kk/code/lexical.hpp"
+#include "kk/core/lang.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/schema.hpp"
 #include "kk/core/text.hpp"
@@ -21,11 +23,6 @@ namespace kk::code {
 namespace fs = std::filesystem;
 
 namespace {
-
-bool is_header(const fs::path& p) {
-  auto ext = p.extension().string();
-  return ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx" || ext == ".ipp" || ext == ".inl";
-}
 
 // Folder names that only separate headers from sources: "src/active/hpp/cat.hpp" and
 // "src/active/cat.cpp" are the same module of the area "src/active".
@@ -66,7 +63,8 @@ std::string area_of(const std::string& rel) {
 
 struct SourceFile {
   std::string path;
-  bool header = false;
+  bool header = false;  // declares only: a C/C++ header, a .pyi, a .d.ts (ADR 0051)
+  bool split = true;    // its language keeps the interface in headers (C/C++); otherwise the file is its api
   std::string text;
   index::FileFacts facts;
 };
@@ -173,6 +171,65 @@ std::string comment_purpose(const std::string& text) {
   return all;
 }
 
+// The leading comment of a file in a language other than C/C++, as "//" lines for comment_purpose:
+// "#" or "--" lines after a shebang, a Python module docstring, a leading block comment (ADR 0051).
+std::string lead_comment(const core::Language& lang, const std::string& text) {
+  std::string out;
+  auto lines = core::split(text, '\n', false);
+  std::size_t i = 0;
+  while (i < lines.size()) {
+    std::string l(core::trim(lines[i]));
+    if (l.empty() || l.starts_with("#!") || l.starts_with("<?php") || l.starts_with("# -*-") || l.starts_with("\"use strict\"") ||
+        l.starts_with("'use strict'") || l.starts_with("package ")) {
+      ++i;
+      continue;
+    }
+    break;
+  }
+  if (i >= lines.size()) return out;
+  std::string first(core::trim(lines[i]));
+  if (lang.triple_quotes && (first.starts_with("\"\"\"") || first.starts_with("'''"))) {
+    const std::string q = first.substr(0, 3);
+    std::string body = first.substr(3);
+    for (std::size_t k = i;; ++k) {
+      auto end = body.find(q);
+      if (end != std::string::npos) body = body.substr(0, end);
+      if (!core::trim(body).empty()) out += "// " + std::string(core::trim(body)) + "\n";
+      if (end != std::string::npos || k + 1 >= lines.size()) break;
+      body = lines[k + 1];
+    }
+    return out;
+  }
+  for (const auto& [open, close] : lang.block_comments) {
+    if (!first.starts_with(open) || open.front() == '=') continue;
+    std::string body = first.substr(open.size());
+    for (std::size_t k = i;; ++k) {
+      auto end = body.find(close);
+      if (end != std::string::npos) body = body.substr(0, end);
+      std::string b(core::trim(body));
+      while (!b.empty() && (b.front() == '*' || b.front() == '-')) b.erase(0, 1);
+      if (!core::trim(b).empty()) out += "// " + std::string(core::trim(b)) + "\n";
+      if (end != std::string::npos || k + 1 >= lines.size()) break;
+      body = lines[k + 1];
+    }
+    return out;
+  }
+  for (; i < lines.size(); ++i) {
+    std::string l(core::trim(lines[i]));
+    bool comment = false;
+    for (const auto& lc : lang.line_comments) {
+      if (!l.starts_with(lc)) continue;
+      std::string c = l.substr(lc.size());
+      while (!c.empty() && c.front() == lc.back()) c.erase(0, 1);  // "##", "---", "///"
+      out += "// " + std::string(core::trim(c)) + "\n";
+      comment = true;
+      break;
+    }
+    if (!comment) break;
+  }
+  return out;
+}
+
 struct Node {
   std::map<std::string, Node> groups;
   std::vector<std::size_t> modules;
@@ -202,14 +259,16 @@ std::string cmake_std(const fs::path& root) {
 bool import_skips_dir(std::string_view name) { return is_foreign_dir(std::string(name)); }
 
 bool is_test_source(const fs::path& p) {
-  if (!core::is_code_file(p) || is_header(p)) return false;
+  if (!core::is_code_file(p) || core::is_interface_file(p)) return false;
   const auto stem = p.stem().string();
   const auto low = core::to_lower(stem);
-  if (low == "test" || low == "tests" || low == "unittest" || low == "unittests") return true;
-  for (std::string_view s : {"_test", "_tests", "_unittest", "_unittests", "-test", "-tests", ".test", ".tests"}) {
+  if (low == "test" || low == "tests" || low == "unittest" || low == "unittests" || low == "conftest") return true;
+  // Other languages (ADR 0051): foo_test.go, foo.spec.ts, foo_spec.rb, test-foo.sh.
+  for (std::string_view s : {"_test", "_tests", "_unittest", "_unittests", "-test", "-tests", ".test", ".tests", ".spec", "_spec",
+                             "-spec"}) {
     if (low.ends_with(s)) return true;
   }
-  for (std::string_view s : {"test_", "tests_", "tst_"}) {
+  for (std::string_view s : {"test_", "tests_", "tst_", "test-"}) {
     if (low.starts_with(s)) return true;
   }
   // CamelCase: FooTest, FooTests (not "Latest" or "Contest": the T is a capital after a small letter).
@@ -255,7 +314,7 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
         for (auto in = fs::recursive_directory_iterator(p, fs::directory_options::skip_permission_denied, ec);
              in != fs::recursive_directory_iterator() && !has_code; in.increment(ec)) {
           if (ec) break;
-          has_code = in->is_regular_file(ec) && core::is_code_file(in->path());
+          has_code = in->is_regular_file(ec) && core::is_project_code(schema->project, in->path());
         }
         if (has_code) plan.skipped.push_back(rel);
       } else if (user_excluded) {
@@ -264,14 +323,15 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
       if (skip) it.disable_recursion_pending();
       continue;
     }
-    if (it->is_regular_file(ec) && core::is_code_file(p) && !claimed.contains(rel)) paths.push_back(p);
+    // Code of the project's languages (`lang` of project.ksl, ADR 0051).
+    if (it->is_regular_file(ec) && core::is_project_code(schema->project, p) && !claimed.contains(rel)) paths.push_back(p);
   }
   std::sort(paths.begin(), paths.end());
   // Test programs next to the code stay in the project's own suite, like test folders (docs/adr/0048).
   {
     std::set<std::string> header_stems;
     for (const auto& p : paths) {
-      if (is_header(p)) header_stems.insert(p.stem().string());
+      if (core::is_interface_file(p)) header_stems.insert(p.stem().string());
     }
     std::erase_if(paths, [&](const fs::path& p) {
       if (!is_test_source(p) || header_stems.contains(p.stem().string())) return false;
@@ -285,7 +345,9 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
     if (!text) continue;
     SourceFile f;
     f.path = core::rel_str(root, p);
-    f.header = is_header(p);
+    f.header = core::is_interface_file(p);
+    const auto* lang = core::language_of(p);
+    f.split = lang == nullptr || lang->split_interface;
     f.text = std::move(*text);
     index::CodeFile cf;
     cf.path = f.path;
@@ -300,7 +362,18 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
   std::vector<Module> mods;
   std::map<std::pair<std::string, std::string>, std::size_t> by_key;
   for (std::size_t i = 0; i < files.size(); ++i) {
-    auto key = std::make_pair(area_of(files[i].path), fs::path(files[i].path).stem().string());
+    // The module's name: the file's stem; the folder's name for a Go package and for the files that
+    // stand for their folder (index.ts, mod.rs, __init__.py, init.lua).
+    fs::path fp(files[i].path);
+    std::string stem = fp.stem().string();
+    if (stem.ends_with(".d")) stem.resize(stem.size() - 2);  // index.d.ts
+    const auto* lang = core::language_of(fp);
+    const auto folder = fp.parent_path().filename().string();
+    if (!folder.empty() && ((lang != nullptr && lang->package_is_folder) || stem == "index" || stem == "mod" || stem == "__init__" ||
+                            (stem == "init" && lang != nullptr && lang->id == "lua"))) {
+      stem = folder;
+    }
+    auto key = std::make_pair(area_of(files[i].path), stem);
     auto [it, fresh] = by_key.emplace(key, mods.size());
     if (fresh) mods.push_back(Module{key.first, key.second, {}, {}});
     mods[it->second].files.push_back(i);
@@ -376,8 +449,9 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
     for (auto i : mod.files) {
       for (const auto& s : files[i].facts.symbols) {
         mod.own.insert(s.name);
-        if (!files[i].header || !public_symbol(s)) continue;
-        if (s.kind == "function" || s.kind == "method") {
+        // C/C++: the public declarations of headers; other languages: what the language makes public.
+        if (files[i].split ? (!files[i].header || !public_symbol(s)) : !s.exported) continue;
+        if (s.kind == "function" || s.kind == "method" || s.kind == "command") {
           if (s.name == "main" || s.name.starts_with("operator") || s.name.starts_with("~")) continue;
           auto port = core::to_ident(s.name);
           if (port.empty()) continue;
@@ -438,15 +512,23 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
     return n == 1 ? hit : std::nullopt;
   };
   const auto& common = common_call_names();
+  const PathIndex path_index(std::vector<std::string>(all_paths.begin(), all_paths.end()));
   for (auto m : live) {
     auto& mod = mods[m];
     for (auto i : mod.files) {
       for (const auto& r : files[i].facts.refs) {
-        if (r.kind != "include") continue;
-        auto t = resolve(files[i].path, r);
-        if (!t) continue;
-        auto tm = module_of_file[*t];
-        if (tm != m && tm != entry) mod.includes.insert(tm);
+        std::vector<std::size_t> targets;
+        if (r.kind == "include") {
+          if (auto t = resolve(files[i].path, r)) targets.push_back(*t);
+        } else if (r.kind == "import") {
+          if (const auto* lang = core::language_of(files[i].path)) {
+            for (const auto& p : resolve_import(*lang, files[i].path, r.target, path_index)) targets.push_back(file_index[p]);
+          }
+        }
+        for (auto t : targets) {
+          auto tm = module_of_file[t];
+          if (tm != m && tm != entry) mod.includes.insert(tm);
+        }
       }
     }
   }
@@ -553,7 +635,10 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
     std::string purpose;
     for (bool header : {true, false}) {
       for (auto i : mod.files) {
-        if (purpose.empty() && files[i].header == header) purpose = comment_purpose(files[i].text);
+        if (purpose.empty() && files[i].header == header) {
+          const auto* lang = core::language_of(files[i].path);
+          purpose = comment_purpose(files[i].split || lang == nullptr ? files[i].text : lead_comment(*lang, files[i].text));
+        }
       }
     }
     bool placeholder = purpose.empty();
@@ -600,6 +685,11 @@ kk::Result<ImportPlan> plan_import(const fs::path& root_in, const ImportOptions&
         for (const auto& [type, name] : sig.params) {
           auto t = card_type(type);
           port.params.push_back(type_ok(t) ? t : (name.empty() ? std::string("arg") : name));
+        }
+        // A language without types in the facts: as many "any" as the code has parameters (none when
+        // it does not say, like a shell function or subcommand).
+        if (s->signature.empty()) {
+          for (int k = 0; k < s->params; ++k) port.params.emplace_back("any");
         }
         auto ret = card_type(sig.ret);
         if (type_ok(ret) && ret != "void") port.ret = ret;

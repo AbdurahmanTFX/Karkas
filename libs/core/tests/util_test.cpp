@@ -97,6 +97,26 @@ TEST_CASE("paths: atomic write and target names") {
   CHECK_FALSE(is_code_file("x/block.ksl"));
 }
 
+#ifndef _WIN32  // POSIX modes
+TEST_CASE("paths: write_file keeps the mode of the file it replaces, so a script stays executable (bugs.txt 23)") {
+  namespace fs = std::filesystem;
+  kk::test::TempDir d{"mode"};
+  const auto script = d / "run.sh";
+  REQUIRE(write_file(script, "#!/bin/sh\n"));
+  fs::permissions(script, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec | fs::perms::others_read |
+                              fs::perms::others_exec,
+                  fs::perm_options::replace);
+  REQUIRE(write_file(script, "#!/bin/sh\necho hi\n"));
+  CHECK(read_file(script).value() == "#!/bin/sh\necho hi\n");
+  const auto mode = fs::status(script).permissions();
+  CHECK((mode & fs::perms::owner_exec) != fs::perms::none);
+  CHECK((mode & fs::perms::others_exec) != fs::perms::none);
+  // A new file gets the default mode: nothing to keep.
+  REQUIRE(write_file(d / "new.txt", "x"));
+  CHECK((fs::status(d / "new.txt").permissions() & fs::perms::owner_exec) == fs::perms::none);
+}
+#endif
+
 TEST_CASE("paths: build trees are told by name (build, build-debug, build_linux) but builder is code") {
   for (const char* n : {"build", "build-debug", "build_linux", "build.x", "build64", "buildRelease"}) {
     CHECK_MESSAGE(is_build_dir_name(n), n);

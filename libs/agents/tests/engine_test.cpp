@@ -145,6 +145,25 @@ TEST_CASE("engine: needs_contract_change becomes a pending @change and the ticke
   CHECK(core::contains(rig.ticket_text("T-0001"), "note    C-0001 approved"));
 }
 
+TEST_CASE("engine: a worker's proposal may change a neighbour's card too: one @change for both blocks (bugs.txt 2)") {
+  Rig rig;
+  rig.model.tool("dispatch", dispatch("stream", "M", "x"));
+  rig.model.tool("dispatch", dispatch("stream.ring", "M", "y"));
+  rig.model.tool("report", {{"status", "needs_contract_change"}, {"cause", "the pump must drain the ring before a restart"},
+                            {"api", "change_requested"},
+                            {"proposal", "~ @block stream.ring\n+ fn reset() -> void\n~ @block stream.pump\n+ call stream.ring:reset"}});
+  auto r = rig.engine->debug("crackle after a restart", {});
+  REQUIRE(r);
+  agents::ChangeStore changes(rig.p.path());
+  auto c = changes.load("C-0001");
+  REQUIRE(c);
+  REQUIRE(c->diff.size() == 4);
+  auto a = rig.engine->approve("C-0001");
+  REQUIRE_MESSAGE(a, (a ? "" : a.error().str()));
+  CHECK(core::contains(test::read(rig.p / "blocks/stream/ring/block.ksl"), "fn      reset() -> void"));
+  CHECK(core::contains(test::read(rig.p / "blocks/stream/pump/block.ksl"), "call    stream.ring:reset"));
+}
+
 TEST_CASE("engine: a code diff of api/ as proposal is refused by report and the worker corrects it in the same run") {
   Rig rig;
   rig.model.tool("dispatch", dispatch("stream", "M", "x"));

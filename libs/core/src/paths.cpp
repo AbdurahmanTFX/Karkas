@@ -1,5 +1,7 @@
 #include "kk/core/paths.hpp"
 
+#include "kk/core/lang.hpp"
+
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -80,6 +82,12 @@ VoidResult write_file(const fs::path& p, std::string_view content) {
     out.write(content.data(), static_cast<std::streamsize>(content.size()));
     if (!out) return fail("io", fmt::format("cannot write {}", p.string()));
   }
+  // The new file replaces the old one by rename: it takes the old one's mode, or a script an agent
+  // edited is no longer executable (bugs.txt 23). Best effort: a mode that cannot be read stays default.
+  std::error_code mode_ec;
+  if (auto st = fs::status(p, mode_ec); !mode_ec && fs::is_regular_file(st)) {
+    fs::permissions(tmp, st.permissions(), fs::perm_options::replace, mode_ec);
+  }
   fs::rename(tmp, p, ec);
   if (ec) {
     fs::remove(tmp, ec);
@@ -103,12 +111,7 @@ std::string target_name(std::string_view block_id) {
   return s;
 }
 
-bool is_code_file(const fs::path& p) {
-  static constexpr std::array<std::string_view, 10> kExt = {".cpp", ".cc",  ".cxx", ".c",   ".hpp",
-                                                            ".hh",  ".h",   ".hxx", ".ipp", ".inl"};
-  auto ext = p.extension().string();
-  return std::find(kExt.begin(), kExt.end(), ext) != kExt.end();
-}
+bool is_code_file(const fs::path& p) { return language_of(p) != nullptr; }
 
 bool is_build_dir_name(std::string_view name) {
   if (!name.starts_with("build")) return false;

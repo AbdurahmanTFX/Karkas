@@ -24,6 +24,7 @@
 #include "kk/code/gen.hpp"
 #include "kk/core/cancel.hpp"
 #include "kk/core/notes.hpp"
+#include "kk/core/lang.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/core/validate.hpp"
@@ -134,8 +135,44 @@ std::vector<std::string> own_sources(const core::Block& b) {
   std::vector<std::string> out;
   for (const auto& f : b.file_list()) {
     fs::path p(f);
-    if (core::is_code_file(p) && p.extension().string().starts_with(".c")) out.push_back(f);
+    if (core::language_of(p) != nullptr && core::language_of(p)->id == "cpp" && !core::is_interface_file(p)) out.push_back(f);
   }
+  return out;
+}
+
+// The project's tests (files under [test] dir that no card lists) a failed test run names: no worker may
+// change them, so a worker sent again for them only climbs the tiers (bugs.txt 26).
+std::vector<std::string> tests_of_no_block(const core::Schema& s, const std::string& test_dir, const std::string& text) {
+  std::vector<std::string> out;
+  if (test_dir.empty()) return out;
+  std::set<std::string> listed;
+  for (const auto& b : s.blocks) {
+    for (const auto& f : b.file_list()) listed.insert(f);
+  }
+  auto strip = [](std::string w, std::string_view chars) {
+    while (!w.empty() && chars.find(w.front()) != std::string_view::npos) w.erase(0, 1);
+    while (!w.empty() && chars.find(w.back()) != std::string_view::npos) w.pop_back();
+    return w;
+  };
+  const std::string prefix = strip(test_dir, "/") + "/";
+  std::string word;
+  auto take = [&] {
+    auto w = strip(word, "\"'`()[]{}<>:;,");
+    word.clear();
+    if (w.starts_with("./")) w = w.substr(2);
+    w = strip(w, ".:;,");
+    if (!w.starts_with(prefix) || listed.contains(w) || std::find(out.begin(), out.end(), w) != out.end()) return;
+    std::error_code ec;
+    if (fs::is_regular_file(s.root / w, ec)) out.push_back(w);
+  };
+  for (char c : text) {
+    if (std::isspace(static_cast<unsigned char>(c)) != 0) {
+      take();
+    } else {
+      word += c;
+    }
+  }
+  take();
   return out;
 }
 
@@ -520,7 +557,7 @@ struct Engine::Impl {
     std::set<std::string> out;
     for (const auto& f : b->file_list()) {
       fs::path p = s.root / f;
-      if (!core::is_code_file(p) || !p.extension().string().starts_with(".c")) continue;
+      if (core::language_of(p) == nullptr || core::is_contract_file(p)) continue;  // the sources: C/C++ files that are no header
       auto text = core::read_file(p);
       if (!text) continue;
       for (const auto& fn : wanted) {
@@ -908,7 +945,7 @@ struct Engine::Impl {
             }
             for (const auto& f : nb->file_list()) {
               fs::path p = s->root / f;
-              if (!core::is_code_file(p) || p.extension().string().starts_with(".c")) continue;
+              if (!core::is_contract_file(p)) continue;  // headers, or the files of a language without them (ADR 0051)
               if (!add_used_declarations(out, p, f, used, neighbor_budget)) more.push_back(f);
             }
           }
@@ -1028,12 +1065,19 @@ struct Engine::Impl {
       if (ticket_changed_block(changes, tid, block)) {
         api_access = ApiAccess::Full;
         api_note = imported_unfrozen_note;
+      } else if (b->kind == core::BlockKind::Entry) {
+        // Nothing builds on the entry block and its card lists no fn (E08): its public names are free,
+        // or a new global function of a script could never be added (bugs.txt 28).
+        api_access = ApiAccess::Imported;
+        api_note = "--- files of this block\nthe entry block: no other block builds on it, so its public names are free (a new "
+                   "function, type or subcommand needs no card change).\n";
       } else {
         api_access = ApiAccess::Imported;
-        api_note = "--- headers of this block\ntheir public part is the contract: keep every public or protected declaration "
-                   "as it is. Free: private members (fields, helper methods, types), inline bodies, initial values, "
-                   "comments, new #include lines and new public constants. A new or changed public function, type or "
-                   "field is a card change: report needs_contract_change with the card line in proposal.\n";
+        api_note = "--- headers of this block (in a language without headers: its files)\ntheir public part is the contract: "
+                   "keep every public or protected declaration as it is. Free: private members (fields, helper methods, "
+                   "types), bodies, initial values, comments, new #include or import lines and new public constants (C/C++). "
+                   "A new or changed public function, type, field or shell subcommand is a card change: report "
+                   "needs_contract_change with the card line in proposal.\n";
       }
     } else if (!tid.empty() && prompt_name == "worker") {
       auto st = index::StateStore(root).load();
@@ -1084,7 +1128,11 @@ struct Engine::Impl {
     }
     int at_tier = 0;
     std::string history;
+    bool stale_test_asked = false;  // the tester looked at failing project tests of no block (bugs.txt 26)
     for (int attempt = 1; attempt <= 12; ++attempt) {
+      // The context shows the block's files: a retry sees them as the last attempt left them, not as they were
+      // before it (bugs.txt 27: the retry of workspaces.profiles was shown the old notify_profile).
+      if (attempt > 1) context = context_for(Role::Worker, block, focus_task);
       std::string task_text;
       if (!tid.empty()) {
         auto t = tickets.load(tid);
@@ -1139,8 +1187,10 @@ struct Engine::Impl {
             auto h = index::block_api_hash(index::collect_code_files(*s2), block);
             refrozen = !h.empty() && index::StateStore(root).freeze_api(block, h).has_value();
           }
-          out.api_note = std::string("headers changed in their private part, constants or includes; public declarations unchanged") +
-                         (refrozen ? " (re-frozen)" : "");
+          out.api_note = b->kind == core::BlockKind::Entry
+                             ? std::string("files of the entry block changed (no block builds on its public names)")
+                             : std::string("headers changed in their private part, constants or includes; public declarations unchanged") +
+                                   (refrozen ? " (re-frozen)" : "");
         } else if (cfg.auto_approve) {
           // auto_approve: the human left approvals to the program, so it also freezes the api it
           // approved, now in line with the card; no command is left for a client to run (ADR 0029).
@@ -1201,6 +1251,43 @@ struct Engine::Impl {
         auto tr = !sources.empty() ? tests->compile_check(sources) : tests->build_and_test({block});
         out.tests_ok = tr && tr->ok;
         out.test_text = tr ? tr->text : tr.error().message;
+        // A project test of no block fails: it may check the behaviour this ticket changes on purpose. No worker
+        // may change it, so the behaviour tester looks at it once instead of the worker going up the tiers
+        // (bugs.txt 26: T-0003 of ~/.config/hypr, a test that expected the old workspace number).
+        if (!out.tests_ok && tr && tr->build_ok && imported && !tid.empty() && !stale_test_asked) {
+          if (auto stale = tests_of_no_block(*s, cfg.test_dir, out.test_text); !stale.empty()) {
+            stale_test_asked = true;
+            say(fmt::format("worker {}: the project's tests {} fail after its change; they belong to no block: the tester looks at them",
+                            block, core::join(stale, " ")));
+            std::string what = fmt::format(
+                "The worker of {} made this change for the ticket:\n{}\nThe task of the block: {}\nAfter it the project's "
+                "tests {} fail. They belong to no block, so no worker may change them:\n{}\nRead the tests and the changed "
+                "code. If a test checks the old behaviour that this task changes on purpose, update it to the new behaviour "
+                "and keep everything else it checks; check behaviour where you can, not the exact text of a source line. "
+                "If the change broke what a test checks, leave the test as it is and report failed with the cause. Run "
+                "test() and report done when it passes.",
+                block, shorten(out.fix.empty() ? out.cause : out.fix, 600), shorten(task, 600), core::join(stale, " "),
+                shorten(out.test_text, 1500));
+            auto bt = run_behavior_tester(block, tid, what);
+            out.tokens += bt.tokens;
+            out.cost += bt.cost;
+            trail(tid, level_entry(level, "tester", {{"at", block}, {"model", bt.tier}, {"attempt", "1"}, {"outcome", bt.status}}));
+            if (bt.status == "cancelled") {
+              out.status = "cancelled";
+              out.cause = "stopped by the user";
+              return out;
+            }
+            auto tr2 = !sources.empty() ? tests->compile_check(sources) : tests->build_and_test({block});
+            out.tests_ok = tr2 && tr2->ok;
+            out.test_text = tr2 ? tr2->text : tr2.error().message;
+            if (out.tests_ok) {
+              out.tests = fmt::format("the project's tests {} checked the old behaviour; the tester updated them ({})",
+                                      core::join(stale, " "), shorten(bt.fix.empty() ? bt.cause : bt.fix, 200));
+            } else if (!bt.cause.empty()) {
+              history += fmt::format("tester of the failing project tests ({}): {}\n", bt.status, shorten(bt.cause, 300));
+            }
+          }
+        }
         if (!out.tests_ok) {
           status = "failed";
           out.cause = "tests fail after the report: " + shorten(out.test_text, 160);

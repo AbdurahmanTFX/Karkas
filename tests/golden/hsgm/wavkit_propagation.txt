@@ -1,0 +1,12 @@
+@hsgm propagation blocks=13
+transitive  54/169  0.32
+direct      35/169  0.21
+self        13/169  0.08
+--- reach
+shared.types  12
+io.reader     6
+shared.probe  6
+stream.pump   5
+dsp.echo      4
+assume a change reaches every block that depends on it through the schema's links (data, event, call, state, use)
+assume complete contracts stop a change at the direct dependents (direct) or at the block itself (self)

@@ -15,6 +15,8 @@
 
 #include "kk/code/gen.hpp"
 #include "kk/code/import.hpp"
+#include "kk/code/lexical.hpp"
+#include "kk/core/lang.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 
@@ -335,6 +337,10 @@ bool is_contract_test(std::string_view path) { return core::contains(path, "/tes
 // --- public ---------------------------------------------------------------------------------
 
 index::FileFacts CppAnalyzer::analyze(const index::CodeFile& file, std::string_view content) {
+  // Other languages: the lexical analysis (ADR 0051); C and C++ (and a file without a path): tree-sitter.
+  if (const auto* lang = core::language_of(file.path); lang != nullptr && lang->id != "cpp") {
+    return analyze_lexical(*lang, content, file.role == "api" || core::is_interface_file(file.path), file.path);
+  }
   TSParser* parser = ts_parser_new();
   ts_parser_set_language(parser, tree_sitter_cpp());
   TSTree* tree = ts_parser_parse_string(parser, nullptr, content.data(), static_cast<uint32_t>(content.size()));
@@ -364,7 +370,7 @@ std::string card_type(std::string t) {
   return std::string(core::trim(t));
 }
 
-std::string CppAnalyzer::version() const { return "cpp " __DATE__ " " __TIME__; }
+std::string CppAnalyzer::version() const { return "cpp " __DATE__ " " __TIME__ " " + lexical_version(); }
 
 Signature decode_signature(std::string_view json_text) {
   Signature s;
@@ -504,6 +510,25 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
     return cands;
   };
 
+  // Imports of other languages (ADR 0051): the file they name, by the rules of the language. A file of a
+  // language without headers in an imported block is that block's api.
+  std::vector<std::string> all_paths(known.begin(), known.end());
+  const PathIndex path_index(all_paths);
+  auto resolve_lang_import = [&](const index::CodeFile& from, const std::string& target) -> std::vector<Target> {
+    std::vector<Target> cands;
+    const auto* lang = core::language_of(from.path);
+    if (lang == nullptr) return cands;
+    for (const auto& p : resolve_import(*lang, from.path, target, path_index)) {
+      const auto* f = by_path[p];
+      if (f == nullptr) continue;
+      std::string role = f->role;
+      const auto* ob = f->block.empty() ? nullptr : schema.find(f->block);
+      if (ob != nullptr && ob->external() && core::is_contract_file(p)) role = "api";
+      cands.push_back({f->block, role, p});
+    }
+    return cands;
+  };
+
   std::map<std::string, std::set<std::string>> allowed;
   const auto links = schema.links();
   for (const auto& b : schema.blocks) {
@@ -519,7 +544,9 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
     if (it == facts.facts.end()) continue;
     for (const auto& s : it->second.symbols) {
       own_names[f.block].insert(s.name);
-      if (f.role == "api") exported[f.block].push_back(&s);
+      // api/ files and headers export everything they declare; a file of a language without headers
+      // exports what the language makes public (ADR 0051).
+      if (f.role == "api" || s.exported) exported[f.block].push_back(&s);
     }
   }
   // The blocks that export a function or method of a name, in the order of `exported` (by block id):
@@ -527,7 +554,7 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
   std::unordered_map<std::string, std::vector<std::string>> fn_owners;
   for (const auto& [blk, syms] : exported) {
     for (const auto* s : syms) {
-      if (s->kind != "method" && s->kind != "function") continue;
+      if (s->kind != "method" && s->kind != "function" && s->kind != "command") continue;
       auto& v = fn_owners[s->name];
       if (v.empty() || v.back() != blk) v.push_back(blk);
     }
@@ -541,8 +568,9 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
     const auto* owner = schema.find(f.block);
     bool entry = owner != nullptr && owner->kind == core::BlockKind::Entry;
     for (const auto& r : it->second.refs) {
-      if (r.kind == "include") {
-        auto cands = resolve(f, r.target, r.system);
+      if (r.kind == "include" || r.kind == "import") {
+        const bool inc = r.kind == "include";
+        auto cands = inc ? resolve(f, r.target, r.system) : resolve_lang_import(f, r.target);
         if (cands.empty()) continue;
         // Prefer the own block, then allowed blocks.
         std::stable_sort(cands.begin(), cands.end(), [&](const Target& a, const Target& b) {
@@ -550,13 +578,14 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
           return rank(a) < rank(b);
         });
         const auto& t = cands.front();
-        out.refs.push_back(index::ResolvedRef{f.block, f.path, r.line, t.block, t.role, "include"});
+        out.refs.push_back(index::ResolvedRef{f.block, f.path, r.line, t.block, t.role, r.kind});
         if (t.block == f.block) continue;
         if (t.role == "impl") {
-          issue("D01", 'E', f.block, fmt::format("includes {} impl/ ({}): impl/ of another block is never visible", t.block, r.target),
+          issue("D01", 'E', f.block,
+                fmt::format("{} {} impl/ ({}): impl/ of another block is never visible", inc ? "includes" : "imports", t.block, r.target),
                 f.path, r.line);
         } else if (t.role == "api" && !entry && !allowed[f.block].contains(t.block)) {
-          issue("D02", 'E', f.block, fmt::format("includes {} api without link", t.block), f.path, r.line);
+          issue("D02", 'E', f.block, fmt::format("{} {} api without link", inc ? "includes" : "imports", t.block), f.path, r.line);
         }
       } else if (r.kind == "call" && f.role == "impl") {
         if (kCommon.contains(r.target) || own_names[f.block].contains(r.target)) continue;
@@ -630,14 +659,17 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
       // Names are compared as KSL identifiers: imported C++ code keeps "ResolveCollision"
       // while the card says "resolve_collision".
       for (const auto* s : exported[b.id]) {
-        if ((s->name == p.name || core::to_ident(s->name) == p.name) && (s->kind == "method" || s->kind == "function")) {
+        if ((s->name == p.name || core::to_ident(s->name) == p.name) &&
+            (s->kind == "method" || s->kind == "function" || s->kind == "command")) {
           overloads.push_back(s);
         }
       }
       if (overloads.empty()) {
         issue("D04", 'E', b.id, fmt::format("fn {} of the card is not declared in api/", p.signature()), b.file, p.line);
-      } else if (std::none_of(overloads.begin(), overloads.end(),
-                              [&](const index::SymbolFact* s) { return s->params == static_cast<int>(p.params.size()); })) {
+      } else if (std::none_of(overloads.begin(), overloads.end(), [&](const index::SymbolFact* s) {
+                   // -1: the language does not say (a shell function or subcommand takes "$@").
+                   return s->params < 0 || s->params == static_cast<int>(p.params.size());
+                 })) {
         issue("D04", 'W', b.id,
               fmt::format("fn {} takes {} parameter(s) in the card but {} in api/", p.name, p.params.size(), overloads[0]->params),
               b.file, p.line);
@@ -700,7 +732,9 @@ index::CheckOutput CppAnalyzer::check(const core::Schema& schema, const index::I
         if (leaf_dir) it.disable_recursion_pending();
         continue;
       }
-      if (!it->is_regular_file(ec) || !core::is_code_file(p)) continue;
+      // Orphans are code of the project's languages (`lang` of project.ksl): a C++ project's build scripts
+      // in Python are no orphans of it (ADR 0051).
+      if (!it->is_regular_file(ec) || !core::is_project_code(schema.project, p)) continue;
       auto rel = core::rel_str(root, p);
       if (known.contains(rel) || (imported && is_test_source(p))) continue;
       issue("D06", 'W', "", "code file outside the block folders (orphan)", rel, 0);

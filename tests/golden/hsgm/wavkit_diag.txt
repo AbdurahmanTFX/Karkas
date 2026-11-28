@@ -1,0 +1,50 @@
+@hsgm diag suites=11 blocks=13 links=8
+--- suites
+contract:dsp.chain    dsp.chain | shared.types
+contract:dsp.echo     dsp.echo | shared.types
+contract:dsp.gain     dsp.gain | shared.types
+contract:dsp.lowpass  dsp.lowpass | shared.types
+contract:io.reader    io.reader | shared.types
+contract:io.writer    io.writer | shared.types
+contract:mix          mix | shared.types
+contract:stream.pump  shared.probe | shared.types | stream.pump
+contract:stream.ring  shared.probe | shared.types | stream.ring
+integration:dsp       dsp.chain | dsp.echo | dsp.gain | dsp.lowpass | shared.types | call dsp.chain -> dsp.echo:process | call dsp.chain -> dsp.gain:process | call dsp.chain -> dsp.lowpass:process
+unit:stream.ring      shared.probe | shared.types | stream.ring
+--- blocks
+app           entry   undetectable
+dsp.chain     leaf    alone             contract:dsp.chain integration:dsp
+dsp.echo      leaf    alone             contract:dsp.echo integration:dsp
+dsp.gain      leaf    alone             contract:dsp.gain integration:dsp
+dsp.lowpass   leaf    alone             contract:dsp.lowpass integration:dsp
+io.reader     leaf    alone             contract:io.reader
+io.writer     leaf    alone             contract:io.writer
+mix           leaf    alone             contract:mix
+shared.log    shared  undetectable
+shared.probe  shared  alone             contract:stream.pump contract:stream.ring unit:stream.ring
+shared.types  shared  alone everywhere  all suites
+stream.pump   leaf    alone             contract:stream.pump
+stream.ring   leaf    alone             contract:stream.ring unit:stream.ring
+--- links
+call dsp.chain -> dsp.echo:process           class 1       integration:dsp
+call dsp.chain -> dsp.gain:process           class 1       integration:dsp
+call dsp.chain -> dsp.lowpass:process        class 1       integration:dsp
+data dsp.chain:out -> mix:in                 undetectable
+data io.reader:frames -> stream.pump:src     undetectable
+data mix:out -> io.writer:frames             undetectable
+data stream.pump:frames -> stream.ring:push  undetectable
+data stream.ring:pop -> dsp.chain:in         undetectable
+--- classes
+class 1  call dsp.chain -> dsp.echo:process | call dsp.chain -> dsp.gain:process | call dsp.chain -> dsp.lowpass:process
+--- disjunct
+k 0  dominated 5  witness stream.pump inside shared.probe
+--- now
+passed 8 failed 1 unknown 2
+surely stream.ring
+possibly stream.ring | call dsp.chain -> dsp.echo:process | call dsp.chain -> dsp.gain:process | call dsp.chain -> dsp.lowpass:process
+cannot rule out app | shared.log | data dsp.chain:out -> mix:in | data io.reader:frames -> stream.pump:src | data mix:out -> io.writer:frames | data stream.pump:frames -> stream.ring:push | data stream.ring:pop -> dsp.chain:in
+--- summary
+blocks alone 11/13, in classes 0, undetectable 2
+links alone 0/8, in classes 3, undetectable 5
+assume a suite fails when it covers a broken item and passes otherwise
+assume contract and unit suites isolate their block with mocks (12.2)

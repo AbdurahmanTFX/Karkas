@@ -1,0 +1,5 @@
+@hsgm views levels=1
+level 0  precision 9/12  false 3  cycles real 0 false 1
+false dsp -> stream | mix -> dsp | mix -> stream
+false cycle dsp io mix stream
+assume arrows as the views draw them (src -> dst); use links left out (3.7)

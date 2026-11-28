@@ -121,6 +121,31 @@ TEST_CASE("init: Claude Code subagents follow the model tiers (ADR 0013)") {
   CHECK(core::subagent_name("Fast_One") == "karkas-fast-one");
 }
 
+TEST_CASE("init: in mode mcp a subagent only serves turns: the two turn tools and a short prompt (token-cost-notes 5)") {
+  test::TempDir d;
+  const auto& root = d.path();
+  core::Config cfg;
+  core::ModelTier t;
+  t.provider = "anthropic";
+  t.model = "claude-haiku-5-5";
+  cfg.models["cheap"] = t;
+  cfg.agents_mode = "mcp";
+  auto r = code::write_claude_agents(root, cfg);
+  REQUIRE_MESSAGE(r, (r ? "" : r.error().str()));
+  auto cheap = test::read(root / ".claude/agents/karkas-cheap.md");
+  CHECK(cheap.starts_with("---\nname: karkas-cheap\n"));
+  CHECK(core::contains(cheap, "\ntools: mcp__karkas__kk_agent_next, mcp__karkas__kk_agent_act, ToolSearch\n"));
+  CHECK(core::contains(cheap, "serve the\n  next run only when it names you (karkas-cheap)"));
+  CHECK_FALSE(core::contains(cheap, "A block and a task"));
+  CHECK(cheap.size() < 2200);
+  // Back to mode api: the subagent works on blocks again, with every tool.
+  cfg.agents_mode = "api";
+  REQUIRE(code::write_claude_agents(root, cfg)->written.size() == 1);
+  auto api = test::read(root / ".claude/agents/karkas-cheap.md");
+  CHECK(core::contains(api, "A block and a task"));
+  CHECK_FALSE(core::contains(api, "\ntools:"));
+}
+
 TEST_CASE("init: the subagents as JSON for claude --agents") {
   core::Config cfg;
   core::ModelTier t;

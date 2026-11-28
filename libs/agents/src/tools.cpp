@@ -8,6 +8,7 @@
 #include <regex>
 
 #include "kk/agents/changes.hpp"
+#include "kk/core/lang.hpp"
 #include "kk/core/paths.hpp"
 #include "kk/core/text.hpp"
 #include "kk/templates.hpp"
@@ -542,16 +543,20 @@ ToolOutcome LeafToolHost::call(const ToolCall& c) {
                      "added (a removed or changed declaration, a new type, field or function is a contract change: "
                      "report needs_contract_change with a KSL proposal)");
         }
-      } else if (sb_.api_access() == ApiAccess::Imported) {
-        // The public part of an imported header is what other blocks build on (ADR 0027).
+      } else if (sb_.api_access() == ApiAccess::Imported && !sb_.entry()) {
+        // The public part of an imported header is what other blocks build on (ADR 0027); nothing builds
+        // on the entry block, whose card may not list fn (E08): its public names are free (bugs.txt 28).
         std::string why;
         auto before = core::read_file(*p);
-        if (before && !header_contract_kept(*before, content, &why)) {
-          return err(fmt::format("{}: {}. The public part of this header is the contract of {}: private members, inline "
-                                 "bodies, initial values, comments, new #include lines and new public constants may "
+        if (before && !contract_kept(*p, *before, content, &why)) {
+          const bool header = core::language_of(*p) != nullptr && core::language_of(*p)->id == "cpp";
+          return err(fmt::format("{}: {}. The public part of this {} is the contract of {}: {} may "
                                  "change; a new or changed public function, type or field is a card change: report "
                                  "needs_contract_change with the card line (e.g. '~ @block {}' then '+ fn reset() -> void')",
-                                 sb_.display(*p), why, sb_.block(), sb_.block()));
+                                 sb_.display(*p), why, header ? "header" : "file", sb_.block(),
+                                 header ? "private members, inline bodies, initial values, comments, new #include lines and new public constants"
+                                        : "private names, bodies, values, comments and imports",
+                                 sb_.block()));
         }
       }
       api_written_ = true;
@@ -567,7 +572,8 @@ ToolOutcome LeafToolHost::call(const ToolCall& c) {
     if (c.name == "build" && sb_.imported()) {
       for (const auto& f : sb_.own_files()) {
         fs::path p(f);
-        if (core::is_code_file(p) && p.extension().string().starts_with(".c")) sources.push_back(f);
+        // C and C++ sources compile alone; other languages are checked by the project's own build and tests.
+        if (core::language_of(p) != nullptr && core::language_of(p)->id == "cpp" && !core::is_interface_file(p)) sources.push_back(f);
       }
     }
     auto r = sources.empty() ? tests_.build_and_test(labels_, c.name == "build") : tests_.compile_check(sources);

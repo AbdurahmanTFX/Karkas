@@ -18,11 +18,11 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "Karkas"
       VALUE "FileDescription", "@KK_RC_DESCRIPTION@"
-      VALUE "FileVersion", "@PROJECT_VERSION@"
+      VALUE "FileVersion", "@KARKAS_VERSION@"
       VALUE "InternalName", "@KK_RC_NAME@"
       VALUE "OriginalFilename", "@KK_RC_NAME@.exe"
       VALUE "ProductName", "Karkas"
-      VALUE "ProductVersion", "@PROJECT_VERSION@"
+      VALUE "ProductVersion", "@KARKAS_VERSION@"
     END
   END
   BLOCK "VarFileInfo"

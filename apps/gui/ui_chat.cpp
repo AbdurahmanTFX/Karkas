@@ -92,7 +92,8 @@ void Ui::set_mode(const std::string& mode) {
   auto r = core::write_config_value(root_, "agents", "mode", std::optional<std::string>(mode));
   reload_models();
   w_.reload_config();
-  if (r && cfg_.mcp() && !std::filesystem::exists(root_ / ".claude" / "agents")) (void)code::write_claude_agents(root_, cfg_);
+  // In mode mcp the subagents only serve turns, in mode api they work on blocks: rewritten with the mode.
+  if (r && (cfg_.mcp() || std::filesystem::exists(root_ / ".claude" / "agents"))) (void)code::write_claude_agents(root_, cfg_);
   models_msg_ = r ? fmt::format(fmt::runtime(tr("saved to {}")), (root_ / "karkas.toml").string()) : r.error().message;
 }
 

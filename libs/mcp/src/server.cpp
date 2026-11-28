@@ -90,12 +90,15 @@ std::vector<Tool> make_tools(const ServerOptions& o) {
        {{"type", "object"}, {"properties", {{"block", str_prop("block id; empty = project")}}}}},
       {"kk_note_bug",
        "Record a bug you noticed that is not your task — do not fix it. It becomes an open ticket for the user (karkas ticket "
-       "list); name it in your report and go on with your own task.",
+       "list); name it in your report and go on with your own task. If the block already has an open bug ticket, it answers "
+       "with that ticket instead of creating another.",
        {{"type", "object"},
         {"properties",
          {{"summary", str_prop("one line: what is wrong, as a user would see it or as the code shows it")},
           {"where", str_prop("block, or file:line")},
-          {"evidence", str_prop("why you think so: the line of code, a value, a test")}}},
+          {"evidence", str_prop("why you think so: the line of code, a value, a test")},
+          {"distinct", {{"type", "boolean"},
+                        {"description", "true: a second, different bug in a block that already has an open bug ticket"}}}}},
         {"required", {"summary"}}}},
       {"kk_ticket_view", "A ticket. With 'at' it returns the path view an agent at that block would get.",
        {{"type", "object"},
@@ -155,7 +158,8 @@ std::vector<Tool> make_tools(const ServerOptions& o) {
                  {{"type", "object"}, {"properties", {{"block", str_prop("block whose work you review")}}}, {"required", {"block"}}}});
   }
   if (o.run_tests) {
-    t.push_back({"kk_run_tests", "Build and run the tests of a block subtree (no model involved); returns a compact summary.",
+    t.push_back({"kk_run_tests", "Build and run the tests of a block subtree (no model involved); returns a compact summary; failures that "
+                 "already have an open bug ticket are listed as known.",
                  {{"type", "object"}, {"properties", {{"block", str_prop("block id; empty = all")}}}}});
   }
   // The program's own agents (ADR 0024): the same protocol as `karkas task`; in mode "mcp" this
@@ -433,9 +437,39 @@ std::optional<std::string> Server::handle(std::string_view line) {
           auto summary = std::string(core::trim(sarg(args, "summary")));
           if (summary.empty()) return response(id, text_result("summary is required", true));
           std::vector<std::string> facts;
-          if (auto w = std::string(core::trim(sarg(args, "where"))); !w.empty()) facts.push_back("found at " + w);
+          const auto where = std::string(core::trim(sarg(args, "where")));
+          if (!where.empty()) facts.push_back("found at " + where);
           if (auto e = std::string(core::trim(sarg(args, "evidence"))); !e.empty()) facts.push_back("evidence " + e);
           core::TicketStore store(idx_.root());
+          // The block it is about; a block that already has an open bug ticket gets no second one (ADR 0050).
+          std::string block;
+          if (const auto* schema = idx_.schema(); schema != nullptr) {
+            block = core::block_named_in(where, *schema);
+            if (block.empty()) block = core::block_named_in(summary, *schema);
+            if (!block.empty() && !args.value("distinct", false)) {
+              auto bugs = core::open_bugs(store, *schema);
+              if (bugs) {
+                if (auto it = bugs->find(block); it != bugs->end() && !it->second.empty()) {
+                  const auto& noted = it->second;
+                  if (noted.size() == 1) {
+                    return response(id, text_result(fmt::format("already noted as {} ({}). Name it in your report. If this is "
+                                                                "a different bug in {}, call again with distinct=true.\n",
+                                                                noted[0].id, noted[0].symptom.value, block),
+                                                    false));
+                  }
+                  // Every open ticket of the block, so a repeat of the second one is recognised too.
+                  std::string list;
+                  for (const auto& t : noted) list += fmt::format("{}{} ({})", list.empty() ? "" : "; ", t.id, t.symptom.value);
+                  return response(id, text_result(fmt::format("already noted in {}: {}. If one of them is yours, name it in "
+                                                              "your report; if this is a different bug, call again with "
+                                                              "distinct=true.\n",
+                                                              block, list),
+                                                  false));
+                }
+              }
+            }
+          }
+          if (!block.empty()) facts.push_back("block " + block);
           auto t = store.create(core::TicketKind::Bug, "agent", summary, facts);
           if (!t) return response(id, text_result(t.error().message, true));
           return response(id, text_result(fmt::format("noted {} (open, for the user). Do not fix it now: name it in your "
